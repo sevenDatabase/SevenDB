@@ -21,6 +21,11 @@ We extend the excellent work of DiceDB with new primitives that make *subscripti
 
 ---
 
+## Design Plan
+
+[**View the Design Plan PDF**](./docs/design-plan.pdf)
+
+
 ## Core Concepts
 
 ### 1. Buckets
