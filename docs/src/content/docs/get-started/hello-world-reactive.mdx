@@ -1,0 +1,74 @@
+---
+title: Hello, World - Reactive
+description: Query Subscriptions is what makes DiceDB truly unique, here's a quick Hello, World! example to get a taste of it.
+sidebar:
+  order: 3
+---
+
+DiceDB is a [reactive database](/reactivity/) that allows you to create query subscriptions.
+When you `WATCH` a particular key or command, DiceDB proactively executes the
+query and sends you the result whenever the data changes.
+
+This eliminates the need to poll the database for changes or work with change events.
+To demonstrate this, here's a quick "Hello, World!" example.
+
+But, before we start, make sure you have
+complete the [Hello, World!](/get-started/hello-world/) example.
+
+## Watching a key
+
+To see what reactivity is, let's watch a key.
+
+You need to open three terminal sessions, connect all of them with the same DiceDB server using the DiceDB CLI.
+
+In the first _two_ terminal sessions, run the following command to watch the key `k1`.
+
+```bash
+localhost:7379> GET.WATCH k1
+OK
+```
+
+In the third terminal session, run the following command to set the value of `k1` to `v1`.
+
+```bash
+localhost:7379> SET k1 v1
+OK
+```
+
+In the first two terminal sessions, you will see the following output.
+
+```bash
+localhost:7379> GET.WATCH k1
+entered the watch mode for GET.WATCH k1
+OK [fingerprint=2356444921 ] "v1"
+```
+
+Now, if you set the value of `k1` to `v2`, you will see the following output in the first two terminal sessions.
+
+```bash
+localhost:7379> GET.WATCH k1
+entered the watch mode for GET.WATCH k1
+OK [fingerprint=2356444921 ] "v1"
+OK [fingerprint=2356444921 ] "v2"
+```
+
+This is the reactivity in action. Here you are watching the key `k1` and getting notified
+whenever the value of `k1` changes, but it is not just a change event, but the actual result set.
+This makes it really powerful and flexible to build real-time applications.
+
+> Note: In CLI, you can watch one command at a time, but programmatically you can watch multiple commands at the same time
+> and handle them in parallel. You can take a look at the following examples to see how to do that
+>
+> - [Chatroom](https://github.com/DiceDB/dice/tree/master/examples/chatroom-go)
+> - [Leaderboard](https://github.com/DiceDB/dice/tree/master/examples/leaderboard-go)
+
+## What else can I watch?
+
+Any readonly command will have a `.WATCH` version that allows you to watch the result of the command.
+This is a simple convention that we follow to make it easier to understand what is being watched.
+
+> we are in process of implementing the `.WATCH` commands for all query commands in DiceDB,
+> but today we support [`GET.WATCH`](/commands/getwatch), etc. You can find them
+> in the commands section.
+> With subsequent releases, we will keep shipping `.WATCH` commands for all the
+> query commands in DiceDB.

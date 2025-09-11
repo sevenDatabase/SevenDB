@@ -1,0 +1,67 @@
+---
+import { Github, Book } from "lucide-astro";
+import { YouTube } from "astro-embed";
+
+import { fetchRepoDetails } from "../utils/github.ts";
+
+const { stars } = await fetchRepoDetails();
+---
+
+<div>
+  <div class="columns content">
+    <div class="column is-7">
+      <div style="padding: 4em 0;">
+        <h1 class="title is-size-1 is-size-2-mobile">DiceDB;</h1>
+        <div style="padding: 0 0 2em 0;">
+          <p class="is-size-5 is-size-6-mobile">
+            <ul class="is-size-5 is-size-6-mobile">
+              <li>
+                is <a href="/get-started/hello-world-reactive/">reactive</a> with
+                query subscriptions
+              </li>
+              <li>
+                is <a href="/benchmarks">fast</a> and optimized for modern hardware
+              </li>
+              <li>is <a href="/commands/get/">familiar</a> and easy to use</li>
+              <li>
+                is <a
+                  target="_blank"
+                  href="https://github.com/DiceDB/dice/blob/master/LICENSE"
+                  >open source</a
+                >
+              </li>
+            </ul>
+          </p>
+        </div>
+        <div class="buttons">
+          <a href="/get-started/installation/" class="button is-primary">
+            <strong>Get Started →</strong>
+          </a>
+          <a
+            class="button"
+            target="_blank"
+            href="https://github.com/dicedb/dice"
+            title="DiceDB source code on GitHub"
+          >
+            <span class="icon"><Github /></span>
+            <span>{`GitHub ${stars} `}</span>
+          </a>
+          <a class="button" href="/commands/get/" title="DiceDB documentation">
+            <span class="icon"><Book /></span>
+            <span>Docs</span>
+          </a>
+        </div>
+        <p>
+          We are gearing up for our next big release, here's our <a
+            href="/roadmap">roadmap</a
+          >.
+        </p>
+      </div>
+    </div>
+    <div class="column is-5">
+      <div class="is-hidden-mobile" style="padding: 2em 0;"></div>
+      <YouTube id="1hGwZ-IeN6M" poster="/img/hero-video.png" />
+      <div class="is-hidden-tablet" style="padding: 2em 0;"></div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,17 @@
+---
+import Layout from "../layouts/Layout.astro";
+import BenchmarkContent from "../data/benchmarks.mdx";
+
+const title = "DiceDB Benchmarks";
+const description = "";
+---
+
+<Layout {title} {description}>
+  <div class="columns is-centered">
+    <div class="column is-8">
+      <div class="content">
+        <BenchmarkContent />
+      </div>
+    </div>
+  </div>
+</Layout>

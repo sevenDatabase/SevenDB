@@ -1,0 +1,212 @@
+---
+title: HTTP
+description: DiceDB supports HTTP protocol for clients to connect to the database. This document explains the request and response format.
+sidebar:
+  order: 1
+---
+
+import { Tabs, TabItem } from "@astrojs/starlight/components";
+
+## Table of Contents
+
+1. [Introduction](#introduction)
+2. [API Endpoint](#api-endpoint)
+3. [General Request Structure](#general-request-structure)
+4. [Supported Commands](#supported-commands)
+5. [Examples](#examples)
+
+## Introduction
+
+DiceDB supports HTTP protocol for clients to connect to the database. This allows clients to connect to DiceDB over the web stack, enabling frontends to have direct access to DiceDB.
+
+[//]: # "All commands except `QWATCH` are synchronous and will return the result of the command immediately. For `QWATCH`, we use [SSE](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events) to be able to respond with changes to the result set of the queries."
+
+## API Endpoint
+
+All requests should be sent to the base URL of your server, followed by the command name:
+
+```
+http://your-server-address:port/<command>
+```
+
+## General Request Structure
+
+- **HTTP Method**: POST for all operations
+- **Path**: The DiceDB command name (e.g., `/GET`, `/SET`, `/HGET`)
+- **Headers**:
+  - `Content-Type: application/json`
+- **Body**: JSON object containing command arguments
+
+### Query Parameters
+
+Certain commands may require additional query parameters. For example:
+
+- `key_prefix`: Used for the `JSON.INGEST` command to specify a key prefix
+
+These will be specified in the command documentation.
+
+## Supported Commands
+
+Our HTTP API supports all DiceDB commands. Please refer to our comprehensive command reference for each command, commands which lack support will be flagged as such.
+
+## Examples
+
+### Setting a Key-Value Pair
+
+**Request:**
+
+<Tabs syncKey="http-request-format">
+  <TabItem label="HTTP Request">
+  ```http
+  POST /SET HTTP/1.1
+  Host: your-server-address
+  Content-Type: application/json
+
+{
+"key": "mykey",
+"value": "Hello, World!"
+}
+
+````
+</TabItem>
+<TabItem label="cURL">
+```bash
+curl --location 'http://your-server-address:PORT/SET' \
+--header 'Content-Type: application/json' \
+--data '{
+  "key": "mykey",
+  "value": "Hello, World!"
+}'
+````
+
+  </TabItem>
+</Tabs>
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": "OK"
+}
+```
+
+### Getting a Value
+
+**Request:**
+
+<Tabs syncKey="http-request-format">
+  <TabItem label="HTTP Request">
+  ```http
+  POST /GET HTTP/1.1
+  Host: your-server-address
+  Content-Type: application/json
+
+{
+"key": "mykey"
+}
+
+````
+</TabItem>
+<TabItem label="cURL">
+```bash
+curl --location 'http://your-server-address:PORT/GET' \
+--header 'Content-Type: application/json' \
+--data '{
+  "key": "mykey"
+}'
+````
+
+  </TabItem>
+</Tabs>
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": "Hello, World!"
+}
+```
+
+### Setting a field in Hash
+
+**Request:**
+
+<Tabs syncKey="http-request-format">
+  <TabItem label="HTTP Request">
+  ```http
+POST /HSET HTTP/1.1
+Host: your-server-address
+Content-Type: application/json
+
+{
+"key": "test",
+"field": "test",
+"value": "test"
+}
+
+````
+</TabItem>
+  <TabItem label="cURL">
+  ```bash
+  curl --location 'http://your-server-address:PORT/HSET' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "key": "test",
+    "field": "test",
+    "value": "test"
+  }'
+````
+
+  </TabItem>
+</Tabs>
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": 1
+}
+```
+
+### Getting a field in a HashSet
+
+**Request:**
+
+<Tabs syncKey="http-request-format">
+  <TabItem label="HTTP Request">
+```http
+POST /HGET HTTP/1.1
+Host: your-server-address
+Content-Type: application/json
+
+{
+"key": "test",
+"field": "test"
+}
+
+````
+</TabItem>
+  <TabItem label="cURL">
+ ```bash
+curl --location 'http://your-server-address:PORT/HGET' \
+--header 'Content-Type: application/json' \
+--data '{
+  "key": "test",
+  "field": "test"
+}'
+````
+
+  </TabItem>
+</Tabs>
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": "test"
+}
+```

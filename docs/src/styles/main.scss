@@ -1,0 +1,159 @@
+@import url("https://fonts.googleapis.com/css2?family=Spline+Sans+Mono:ital,wght@0,300..700;1,300..700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Merriweather:ital,wght@0,300;0,400;0,700;0,900;1,300;1,400;1,700;1,900&display=swap");
+
+$family-serif: "Spline Sans Mono", monospace;
+$family-primary: $family-serif;
+$family-secondary: "Merriweather", serif;
+
+// Dark theme colors
+$body-size: 1em;
+$text: #e4e4e4;
+$white: #fff;
+$primary: #ff4444;
+$link: #66b3ff;
+$link-hover: lighten($link, 10%);
+$info: #66b3ff;
+$warning: #ff4444;
+
+$title-color: $white;
+$subtitle-color: darken($white, 20%);
+$label-color: $primary;
+$label-weight: normal;
+$weight-bold: 600;
+
+// Dark theme background colors
+$body-background-color: #1a1a1a;
+$navbar-background-color: #242424;
+$navbar-box-shadow-size: 0 2px 0 0;
+$navbar-item-hover-background-color: #333333;
+$navbar-item-active-background-color: #333333;
+$navbar-item-active-color: $text;
+$navbar-box-shadow-color: $primary;
+$navbar-fixed-z: 1000;
+$navbar-item-hover-color: $white;
+$navbar-item-color: $text;
+
+th {
+  color: $subtitle-color !important;
+}
+
+$title-color: $white;
+$subtitle-color: darken($white, 20%);
+$label-color: $primary;
+$label-weight: normal;
+$weight-bold: 600;
+
+$dimensions: 16 24 32 48 64 96 128 256 320 512;
+$button-border-color: #444;
+$button-hover-border-color: $link;
+$button-background-color: #333;
+$button-color: $text;
+$button-hover-color: $white;
+$button-active-color: $white;
+$button-focus-color: $text;
+
+blockquote {
+  background-color: transparent !important;
+}
+
+pre {
+  border-radius: 1em !important;
+}
+
+// Box modifications for dark theme
+.box {
+  background-color: #242424 !important;
+  border: 1px solid #444;
+  color: $text;
+  box-shadow: 2px 2px 10px 3px rgba(0, 0, 0, 0.3);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: $white !important;
+}
+
+pre {
+  background-color: #111 !important;
+  color: #e4e4e4 !important;
+}
+
+// Navbar modifications
+.navbar {
+  border: 0px solid #444;
+  padding: 0.5em;
+  border-radius: 0 0 1em 1em;
+  color: $text;
+}
+
+.navbar-item {
+  color: $text;
+  border-radius: 1em;
+  &:hover {
+    color: $white;
+  }
+}
+
+// // Button modifications
+// .button {
+//   background-color: $button-background-color;
+//   color: $button-color;
+//   &:hover {
+//     color: $button-hover-color;
+//   }
+// }
+
+// Topic image modifications for dark theme
+.topic-image:hover,
+.topic-image:active {
+  box-shadow:
+    0 4px 8px 0 rgba(0, 0, 0, 0.4),
+    0 6px 20px 0 rgba(0, 0, 0, 0.3);
+}
+
+// Clickable div modifications
+div.clickable {
+  &.is-active {
+    background-color: #333;
+    border: 1px solid #444;
+  }
+
+  &:hover {
+    border: 1px solid #444;
+    background-color: #2a2a2a;
+  }
+}
+
+// Banner modifications
+.banner {
+  background-color: darken($primary, 15%);
+  color: $white;
+}
+
+// Horizontal rule modifications
+hr {
+  border-bottom: 1px solid #444 !important;
+}
+
+.foot {
+  border-radius: 1em 1em 0 0;
+  line-height: 1.75em;
+}
+
+.foot a {
+  color: $text;
+}
+
+code {
+  background-color: black !important;
+  color: $text !important;
+  padding: 0.5em !important;
+}
+
+// ... existing code ...
+
+@import "../../node_modules/bulma/bulma.sass";

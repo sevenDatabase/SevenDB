@@ -1,0 +1,11 @@
+[[redirects]]
+  from = "https://dicedb-docs.netlify.app/"
+  to = "https://dicedb.io"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "/docs"
+  to = "/get-started/installation/"
+  status = 301
+  force = true
