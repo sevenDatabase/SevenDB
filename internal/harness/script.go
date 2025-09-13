@@ -29,6 +29,8 @@ func (s Script) Run(h *Harness) {
 	for _, a := range actions {
 		if a.At > now {
 			h.Clock.Advance(a.At - now)
+			// allow nodes to react to time advancing deterministically
+			onTick(h)
 			now = a.At
 		}
 		if a.Fn != nil {
@@ -81,7 +83,10 @@ func CrashNode(id hnet.NodeID) TimedActionBuilder {
 // AdvanceBy advances the clock by delta at the given At time (useful for explicit waits).
 func AdvanceBy(delta time.Duration) TimedActionBuilder {
 	return func(at time.Duration) TimedAction {
-		return TimedAction{At: at, Fn: func(h *Harness) { h.Clock.Advance(delta) }}
+		return TimedAction{At: at, Fn: func(h *Harness) {
+			h.Clock.Advance(delta)
+			onTick(h)
+		}}
 	}
 }
 
@@ -108,4 +113,17 @@ type TimedActionBuilder func(at time.Duration) TimedAction
 //     VerifyEqual("B", "C")(25 * time.Millisecond),
 // }}
 // script.Run(h)
+
+// tickable allows nodes to process time-driven events deterministically.
+// Nodes used in tests may implement this (optional).
+type tickable interface { OnTick() }
+
+// onTick invokes OnTick on all registered nodes that support it.
+func onTick(h *Harness) {
+	for _, n := range h.Nodes {
+		if t, ok := n.(tickable); ok {
+			t.OnTick()
+		}
+	}
+}
 
