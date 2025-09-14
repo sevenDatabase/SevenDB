@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	dstore "github.com/dicedb/dice/internal/store"
+	dstore "github.com/sevenDatabase/SevenDB/internal/store"
 )
 
 func TestMain(m *testing.M) {

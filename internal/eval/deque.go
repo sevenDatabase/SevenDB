@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/dicedb/dice/internal/dencoding"
+	"github.com/sevenDatabase/SevenDB/internal/dencoding"
 )
 
 var ErrDequeEmpty = errors.New("deque is empty")

@@ -18,10 +18,10 @@ import (
 	"syscall"
 
 	"github.com/dicedb/dicedb-go/wire"
+	"github.com/sevenDatabase/SevenDB/internal/auth"
 	"github.com/sevenDatabase/SevenDB/internal/cmd"
 	"github.com/sevenDatabase/SevenDB/internal/server/ironhawk"
 	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
-	"github.com/sevenDatabase/SevenDB/internal/auth"
 
 	"github.com/sevenDatabase/SevenDB/internal/wal"
 

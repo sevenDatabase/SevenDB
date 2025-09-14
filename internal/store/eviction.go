@@ -6,7 +6,7 @@ package store
 import (
 	"time"
 
-	"github.com/dicedb/dice/internal/object"
+	"github.com/sevenDatabase/SevenDB/internal/object"
 )
 
 // EvictionStats tracks common statistics for all eviction strategies

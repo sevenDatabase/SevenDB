@@ -10,8 +10,8 @@ import (
 	"errors"
 	"hash/crc64"
 
-	"github.com/sevenDatabase/SevenDB/internal/object"
 	"github.com/sevenDatabase/SevenDB/internal/eval/sortedset"
+	"github.com/sevenDatabase/SevenDB/internal/object"
 )
 
 func rdbDeserialize(data []byte) (*object.Obj, error) {

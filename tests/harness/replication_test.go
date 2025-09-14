@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
+	h "github.com/sevenDatabase/SevenDB/internal/harness"
 	hclock "github.com/sevenDatabase/SevenDB/internal/harness/clock"
 	hnet "github.com/sevenDatabase/SevenDB/internal/harness/network"
 	hsched "github.com/sevenDatabase/SevenDB/internal/harness/scheduler"
-	h "github.com/sevenDatabase/SevenDB/internal/harness"
 )
 
 func TestReplicationHappyPath(t *testing.T) {

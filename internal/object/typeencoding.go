@@ -6,7 +6,7 @@ package object
 import (
 	"errors"
 
-	diceerrors "github.com/dicedb/dice/internal/errors"
+	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
 )
 
 func AssertTypeWithError(te, t ObjectType) error {

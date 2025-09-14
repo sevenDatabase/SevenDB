@@ -8,8 +8,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/sevenDatabase/SevenDB/testutils"
 	"github.com/sevenDatabase/SevenDB/internal/dencoding"
+	"github.com/sevenDatabase/SevenDB/testutils"
 	"github.com/stretchr/testify/assert"
 )
 

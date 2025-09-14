@@ -6,7 +6,7 @@ package regex
 import (
 	"testing"
 
-	"github.com/dicedb/dice/internal/server/utils"
+	"github.com/sevenDatabase/SevenDB/internal/server/utils"
 )
 
 func TestWildCardMatch(t *testing.T) {

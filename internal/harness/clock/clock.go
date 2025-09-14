@@ -18,8 +18,8 @@ type Clock interface {
 // SimulatedClock is a deterministic, manual-advance clock backed by a counter.
 // It starts at startTime and only moves when Advance is called.
 type SimulatedClock struct {
-	mu        sync.Mutex
-	current   time.Time
+	mu      sync.Mutex
+	current time.Time
 }
 
 // NewSimulatedClock creates a new simulated clock starting at the given time.
@@ -43,4 +43,3 @@ func (c *SimulatedClock) Advance(d time.Duration) {
 	c.current = c.current.Add(d)
 	c.mu.Unlock()
 }
-

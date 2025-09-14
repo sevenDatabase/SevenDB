@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	diceerrors "github.com/dicedb/dice/internal/errors"
+	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
 )
 
 type BitFieldOp struct {

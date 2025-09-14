@@ -22,7 +22,7 @@ type Network interface {
 
 // SimulatedNetwork is an in-memory FIFO, reliable message bus.
 type SimulatedNetwork struct {
-	mu       sync.Mutex
+	mu        sync.Mutex
 	mailboxes map[NodeID][]queued
 }
 
@@ -67,4 +67,3 @@ func (n *SimulatedNetwork) DropAll(dst NodeID) {
 	delete(n.mailboxes, dst)
 	n.mu.Unlock()
 }
-

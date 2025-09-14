@@ -6,11 +6,11 @@ package eval
 import (
 	"strings"
 
+	"github.com/sevenDatabase/SevenDB/internal/auth"
 	"github.com/sevenDatabase/SevenDB/internal/cmd"
 	"github.com/sevenDatabase/SevenDB/internal/comm"
 	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
 	dstore "github.com/sevenDatabase/SevenDB/internal/store"
-	"github.com/sevenDatabase/SevenDB/internal/auth"
 )
 
 type Eval struct {

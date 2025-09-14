@@ -6,8 +6,8 @@ package eval
 import (
 	"strings"
 
-	dstore "github.com/sevenDatabase/SevenDB/internal/store"
 	"github.com/sevenDatabase/SevenDB/internal/cmd"
+	dstore "github.com/sevenDatabase/SevenDB/internal/store"
 )
 
 type DiceCmdMeta struct {

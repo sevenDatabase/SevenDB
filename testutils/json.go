@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
-	"github.com/dicedb/dice/internal/server/utils"
+	"github.com/sevenDatabase/SevenDB/internal/server/utils"
 	"gotest.tools/v3/assert"
 )
 

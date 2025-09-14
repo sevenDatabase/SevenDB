@@ -8,7 +8,7 @@ import (
 	"os"
 	"text/template"
 
-	"github.com/dicedb/dice/internal/cmd"
+	"github.com/sevenDatabase/SevenDB/internal/cmd"
 )
 
 const DocsCommandsDirectory = "docs/src/content/docs/commands"

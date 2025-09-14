@@ -10,8 +10,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
 	"github.com/sevenDatabase/SevenDB/internal/cmd"
+	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
 )
 
 type WatchManager struct {

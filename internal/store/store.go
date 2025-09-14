@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sevenDatabase/SevenDB/internal/object"
 	"github.com/sevenDatabase/SevenDB/internal/common"
+	"github.com/sevenDatabase/SevenDB/internal/object"
 )
 
 func NewStoreRegMap() common.ITable[string, *object.Obj] {

@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/dicedb/dice/internal/cmd"
 	"github.com/dicedb/dicedb-go"
 	"github.com/dicedb/dicedb-go/wire"
+	"github.com/sevenDatabase/SevenDB/internal/cmd"
 )
 
 func main() {

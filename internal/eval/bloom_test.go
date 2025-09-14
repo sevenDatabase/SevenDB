@@ -10,7 +10,7 @@ import (
 	"reflect"
 	"testing"
 
-	dstore "github.com/dicedb/dice/internal/store"
+	dstore "github.com/sevenDatabase/SevenDB/internal/store"
 	"github.com/stretchr/testify/assert"
 )
 

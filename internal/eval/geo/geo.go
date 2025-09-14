@@ -6,8 +6,8 @@ package geo
 import (
 	"math"
 
-	"github.com/dicedb/dice/internal/errors"
 	"github.com/mmcloughlin/geohash"
+	"github.com/sevenDatabase/SevenDB/internal/errors"
 )
 
 // Earth's radius in meters

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dicedb/dice/internal/eval"
+	"github.com/sevenDatabase/SevenDB/internal/eval"
 	"github.com/stretchr/testify/assert"
 )
 

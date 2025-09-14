@@ -4,9 +4,9 @@
 package ops
 
 import (
+	"github.com/sevenDatabase/SevenDB/internal/cmd"
 	"github.com/sevenDatabase/SevenDB/internal/comm"
 	"github.com/sevenDatabase/SevenDB/internal/eval"
-	"github.com/sevenDatabase/SevenDB/internal/cmd"
 )
 
 type StoreOp struct {

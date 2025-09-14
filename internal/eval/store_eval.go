@@ -23,13 +23,13 @@ import (
 	"github.com/gobwas/glob"
 	"github.com/ohler55/ojg/jp"
 	"github.com/rs/xid"
+	"github.com/sevenDatabase/SevenDB/internal/cmd"
 	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
 	"github.com/sevenDatabase/SevenDB/internal/eval/geo"
 	"github.com/sevenDatabase/SevenDB/internal/eval/sortedset"
 	"github.com/sevenDatabase/SevenDB/internal/object"
 	"github.com/sevenDatabase/SevenDB/internal/server/utils"
 	dstore "github.com/sevenDatabase/SevenDB/internal/store"
-	"github.com/sevenDatabase/SevenDB/internal/cmd"
 )
 
 // evalHEXISTS returns if field is an existing field in the hash stored at key.

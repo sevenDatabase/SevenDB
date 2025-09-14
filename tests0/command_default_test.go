@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/dicedb/dice/internal/eval"
 	"github.com/dicedb/dicedb-go"
+	"github.com/sevenDatabase/SevenDB/internal/eval"
 	"github.com/stretchr/testify/assert"
 )
 

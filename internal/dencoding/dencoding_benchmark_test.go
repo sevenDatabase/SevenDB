@@ -7,7 +7,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/dicedb/dice/internal/dencoding"
+	"github.com/sevenDatabase/SevenDB/internal/dencoding"
 	"github.com/stretchr/testify/assert"
 )
 

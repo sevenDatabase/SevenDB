@@ -24,7 +24,9 @@ func NewSerial() *SerialScheduler {
 
 // Enqueue adds a task to the queue.
 func (s *SerialScheduler) Enqueue(t Task) {
-	if t == nil { return }
+	if t == nil {
+		return
+	}
 	s.mu.Lock()
 	s.queue = append(s.queue, t)
 	s.mu.Unlock()
@@ -47,4 +49,3 @@ func (s *SerialScheduler) RunAll() {
 		t()
 	}
 }
-

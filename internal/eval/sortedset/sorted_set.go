@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/google/btree"
-	"github.com/sevenDatabase/SevenDB/internal/object"
 	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
+	"github.com/sevenDatabase/SevenDB/internal/object"
 )
 
 // Item represents a member of a sorted set. It includes a score and a member.

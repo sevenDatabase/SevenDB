@@ -3,7 +3,7 @@
 
 package shard
 
-import "github.com/dicedb/dice/internal/shardthread"
+import "github.com/sevenDatabase/SevenDB/internal/shardthread"
 
 type Shard struct {
 	ID     int

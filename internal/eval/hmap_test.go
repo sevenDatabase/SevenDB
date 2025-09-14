@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sevenDatabase/SevenDB/internal/errors"
 	"github.com/sevenDatabase/SevenDB/internal/object"
 	"github.com/sevenDatabase/SevenDB/internal/store"
-	"github.com/sevenDatabase/SevenDB/internal/errors"
 	"github.com/stretchr/testify/assert"
 )
 

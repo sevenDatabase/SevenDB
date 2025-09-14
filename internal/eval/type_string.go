@@ -6,8 +6,8 @@ package eval
 import (
 	"strconv"
 
-	"github.com/sevenDatabase/SevenDB/internal/object"
 	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
+	"github.com/sevenDatabase/SevenDB/internal/object"
 )
 
 type String struct {
