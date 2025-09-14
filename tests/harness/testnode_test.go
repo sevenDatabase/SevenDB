@@ -1,5 +1,8 @@
 package harness_test
 
+
+// avoid t.parallel() in tests using shared cluster state
+
 import (
     "crypto/sha256"
     "sort"
