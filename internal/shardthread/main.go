@@ -7,8 +7,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/dicedb/dice/config"
-	dstore "github.com/dicedb/dice/internal/store"
+	"github.com/sevenDatabase/SevenDB/config"
+	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/store"
 )
 
 type ShardThread struct {

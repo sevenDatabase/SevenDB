@@ -20,16 +20,16 @@ import (
 
 	"github.com/axiomhq/hyperloglog"
 	"github.com/bytedance/sonic"
-	"github.com/dicedb/dice/internal/cmd"
-	diceerrors "github.com/dicedb/dice/internal/errors"
-	"github.com/dicedb/dice/internal/eval/geo"
-	"github.com/dicedb/dice/internal/eval/sortedset"
-	"github.com/dicedb/dice/internal/object"
-	"github.com/dicedb/dice/internal/server/utils"
-	dstore "github.com/dicedb/dice/internal/store"
 	"github.com/gobwas/glob"
 	"github.com/ohler55/ojg/jp"
 	"github.com/rs/xid"
+	diceerrors "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/errors"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/eval/geo"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/eval/sortedset"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/object"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/server/utils"
+	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/store"
+	"github.com/sevenDatabase/SevenDB/internal/cmd"
 )
 
 // evalHEXISTS returns if field is an existing field in the hash stored at key.

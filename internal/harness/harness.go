@@ -7,9 +7,9 @@ import (
 	"sort"
 	"time"
 
-	hclock "github.com/dicedb/dice/internal/harness/clock"
-	hnet "github.com/dicedb/dice/internal/harness/network"
-	hsched "github.com/dicedb/dice/internal/harness/scheduler"
+	hclock "github.com/sevendatabase/sevendb/internal/harness/clock"
+	hnet "github.com/sevendatabase/sevendb/internal/harness/network"
+	hsched "github.com/sevendatabase/sevendb/internal/harness/scheduler"
 )
 
 // Node abstracts the minimal hooks the harness needs from a replica.

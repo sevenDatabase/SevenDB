@@ -15,7 +15,7 @@ export default defineConfig({
       // useStarlightDarkModeSwitch: false,
       favicon: "/favicon.png",
       editLink: {
-        baseUrl: "https://github.com/DiceDB/dice/edit/master/docs/",
+        baseUrl: "https://github.com/sevenDatabase/SevenDB/edit/master/docs/",
       },
       lastUpdated: true,
       expressiveCode: {
@@ -42,11 +42,11 @@ export default defineConfig({
           items: [
             {
               label: "Leaderboard",
-              link: "https://github.com/DiceDB/dice/tree/master/examples/leaderboard-go",
+              link: "https://github.com/sevenDatabase/SevenDB/tree/master/examples/leaderboard-go",
             },
             {
               label: "CLI Chatroom",
-              link: "https://github.com/DiceDB/dice/tree/master/examples/chatroom-go",
+              link: "https://github.com/sevenDatabase/SevenDB/tree/master/examples/chatroom-go",
             },
           ],
         },

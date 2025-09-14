@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/dicedb/dice/internal/object"
+	"github.com/sevenDatabase/SevenDB/internal/object"
 
-	dstore "github.com/dicedb/dice/internal/store"
+	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/store"
 )
 
 type ByteArray struct {

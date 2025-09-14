@@ -17,16 +17,16 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/dicedb/dice/internal/auth"
-	"github.com/dicedb/dice/internal/cmd"
-	"github.com/dicedb/dice/internal/server/ironhawk"
-	"github.com/dicedb/dice/internal/shardmanager"
 	"github.com/dicedb/dicedb-go/wire"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/cmd"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/server/ironhawk"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/shardmanager"
+	"github.com/sevenDatabase/SevenDB/internal/auth"
 
-	"github.com/dicedb/dice/internal/wal"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/wal"
 
-	"github.com/dicedb/dice/config"
-	diceerrors "github.com/dicedb/dice/internal/errors"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/config"
+	diceerrors "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/errors"
 )
 
 func printConfiguration() {
@@ -71,8 +71,6 @@ func printBanner() {
 ███████║╚██████╔╝███████╗██║ ╚████║
 ╚══════╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝
 */
-
-
 
 const EngineRESP = "resp"
 const EngineIRONHAWK = "ironhawk"

@@ -11,10 +11,10 @@ import (
 	"syscall"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/dicedb/dice/config"
-	"github.com/dicedb/dice/internal/shard"
-	"github.com/dicedb/dice/internal/shardthread"
-	"github.com/dicedb/dice/internal/store"
+	"github.com/sevenDatabase/SevenDB/config"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/shard"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/shardthread"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/store"
 )
 
 type ShardManager struct {

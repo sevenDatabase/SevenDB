@@ -33,4 +33,4 @@ func (c *Config) MarshalText() (string, error)  // okay
 
 ## Formatting and Linting
 
-Please complete the [development setup](https://github.com/DiceDB/dice/blob/master/CONTRIBUTING/development-setup.md) and run `make lint`. This command lints the code and formats it according to best practices.
+Please complete the [development setup](https://github.com/sevenDatabase/SevenDB/blob/master/CONTRIBUTING/development-setup.md) and run `make lint`. This command lints the code and formats it according to best practices.

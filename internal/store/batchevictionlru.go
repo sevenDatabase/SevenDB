@@ -7,8 +7,8 @@ import (
 	"container/heap"
 	"math"
 
-	"github.com/dicedb/dice/config"
-	"github.com/dicedb/dice/internal/object"
+	"github.com/sevenDatabase/SevenDB/config"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/object"
 )
 
 // evictionItemHeap is a max-heap of evictionItems based on lastAccessed.

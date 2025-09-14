@@ -1,4 +1,4 @@
-module github.com/dicedb/dice
+module github.com/sevenDatabase/SevenDB
 
 go 1.24.1
 

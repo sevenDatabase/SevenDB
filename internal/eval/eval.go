@@ -8,10 +8,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/dicedb/dice/config"
-	"github.com/dicedb/dice/internal/comm"
-	diceerrors "github.com/dicedb/dice/internal/errors"
-	dstore "github.com/dicedb/dice/internal/store"
+	"github.com/sevenDatabase/SevenDB/config"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/comm"
+	diceerrors "github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/errors"
+	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/store"
 )
 
 type exDurationState int

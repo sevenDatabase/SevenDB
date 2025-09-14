@@ -10,12 +10,12 @@ import (
 
 	"github.com/dicedb/dicedb-go"
 
-	"github.com/dicedb/dice/config"
-	"github.com/dicedb/dice/internal/auth"
-	"github.com/dicedb/dice/internal/cmd"
-	"github.com/dicedb/dice/internal/shardmanager"
-	"github.com/dicedb/dice/internal/wal"
 	"github.com/dicedb/dicedb-go/wire"
+	"github.com/sevenDatabase/SevenDB/config"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/auth"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/cmd"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/shardmanager"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/wal"
 )
 
 type IOThread struct {

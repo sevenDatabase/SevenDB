@@ -17,14 +17,14 @@ import (
 
 	"github.com/axiomhq/hyperloglog"
 	"github.com/bytedance/sonic"
-	"github.com/dicedb/dice/config"
-	"github.com/dicedb/dice/internal/cmd"
-	diceerrors "github.com/dicedb/dice/internal/errors"
-	"github.com/dicedb/dice/internal/eval/sortedset"
-	"github.com/dicedb/dice/internal/object"
-	"github.com/dicedb/dice/internal/server/utils"
-	dstore "github.com/dicedb/dice/internal/store"
 	"github.com/ohler55/ojg/jp"
+	"github.com/sevenDatabase/SevenDB/config"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/cmd"
+	diceerrors "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/errors"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/eval/sortedset"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/object"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/server/utils"
+	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/store"
 	"github.com/stretchr/testify/assert"
 )
 

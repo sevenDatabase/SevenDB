@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dicedb/dice/internal/cmd"
-	dstore "github.com/dicedb/dice/internal/store"
+	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/store"
+	"github.com/sevenDatabase/SevenDB/internal/cmd"
 )
 
 type (

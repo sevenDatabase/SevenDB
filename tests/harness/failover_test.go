@@ -4,10 +4,10 @@ import (
     "testing"
     "time"
 
-    h "github.com/dicedb/dice/internal/harness"
-    hclock "github.com/dicedb/dice/internal/harness/clock"
-    hnet "github.com/dicedb/dice/internal/harness/network"
-    hsched "github.com/dicedb/dice/internal/harness/scheduler"
+    h "github.com/sevendatabase/sevendb/internal/harness"
+    hclock "github.com/sevendatabase/sevendb/internal/harness/clock"
+    hnet "github.com/sevendatabase/sevendb/internal/harness/network"
+    hsched "github.com/sevendatabase/sevendb/internal/harness/scheduler"
 )
 
 func TestFailoverChaos(t *testing.T) {

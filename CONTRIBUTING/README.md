@@ -10,11 +10,11 @@ We have multiple repositories where you can contribute. So, as per your interest
 
 ## Important Resources
 
-- [Development Setup](https://github.com/dicedb/dice/blob/master/CONTRIBUTING/development-setup.md)
-- [Development Setup for Docs](https://github.com/dicedb/dice/blob/master/CONTRIBUTING/docs.md)
-- [Git Best Practices](https://github.com/dicedb/dice/blob/master/CONTRIBUTING/git.md)
-- [Go Best Practices](https://github.com/dicedb/dice/blob/master/CONTRIBUTING/go.md)
-- [Logging Best Practices](https://github.com/dicedb/dice/blob/master/CONTRIBUTING/logging.md)
+- [Development Setup](https://github.com/sevenDatabase/SevenDB/blob/master/CONTRIBUTING/development-setup.md)
+- [Development Setup for Docs](https://github.com/sevenDatabase/SevenDB/blob/master/CONTRIBUTING/docs.md)
+- [Git Best Practices](https://github.com/sevenDatabase/SevenDB/blob/master/CONTRIBUTING/git.md)
+- [Go Best Practices](https://github.com/sevenDatabase/SevenDB/blob/master/CONTRIBUTING/go.md)
+- [Logging Best Practices](https://github.com/sevenDatabase/SevenDB/blob/master/CONTRIBUTING/logging.md)
 
 ## Timeline for working on Issues
 
@@ -36,8 +36,8 @@ We have multiple repositories where you can contribute. So, as per your interest
 
 To maintain the project's quality and consistency, please follow these guidelines:
 
-- Keep the code consistent: Use the same coding style and conventions throughout the project. 
-- Keep the git repository consistent: Follow proper git practices to avoid conflicts and ensure a clean history. 
+- Keep the code consistent: Use the same coding style and conventions throughout the project.
+- Keep the git repository consistent: Follow proper git practices to avoid conflicts and ensure a clean history.
 
 ### Contributor License Agreement (CLA)
 

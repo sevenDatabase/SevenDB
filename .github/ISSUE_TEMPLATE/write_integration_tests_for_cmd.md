@@ -1,9 +1,9 @@
 ---
 name: Fix integration tests for a command
 about: This template is supposed to be used by maintainers tracking the port of a integration test to IronHawk
-title: 'IronHawk Integration Tests: '
-labels: ''
-assignees: ''
+title: "IronHawk Integration Tests: "
+labels: ""
+assignees: ""
 ---
 
 We reimplemented the core of the DiceDB engine and re-wrote - the wire protocol, execution engine, and config management. This rewrite helped us gain 32% throughput over our existing benchmark.
@@ -15,7 +15,7 @@ Here are the pre-requisite
 
 1. setup DiceDB server locally from the source - [instructions](https://github.com/dicedb/dice)
 2. setup DiceDB Go SDK locally from the source - [instructions](https://github.com/dicedb/dicedb-go)
-3. refer to the `Pointing to local checked-out `dicedb-go` section in `README`.
+3. refer to the `Pointing to local checked-out `dicedb-go`section in`README`.
 
 ### Start the DiceDB server with IronHawk engine
 
@@ -55,14 +55,14 @@ prove that DiceDB is stable and production-ready.
 If you find any other bug while you are implementing it, you can either
 
 1. fix it yourself and submit it in a new PR
-2. raise a [GitHub issue](https://github.com/DiceDB/dice/issues)
+2. raise a [GitHub issue](https://github.com/sevenDatabase/SevenDB/issues)
 
 ## Follow the contribution guidelines
 
 These are general guidelines to follow before you submit a patch. Please mark them as done
 once you complete them
 
-- [ ] please go through the [CONTRIBUTING](https://github.com/DiceDB/dice/tree/master/CONTRIBUTING) guide
-- [ ] follow [LOGGING best practices](https://github.com/DiceDB/dice/blob/master/CONTRIBUTING/logging.md)
-- [ ] follow [Golang best practices](https://github.com/DiceDB/dice/blob/master/CONTRIBUTING/go.md)
+- [ ] please go through the [CONTRIBUTING](https://github.com/sevenDatabase/SevenDB/tree/master/CONTRIBUTING) guide
+- [ ] follow [LOGGING best practices](https://github.com/sevenDatabase/SevenDB/blob/master/CONTRIBUTING/logging.md)
+- [ ] follow [Golang best practices](https://github.com/sevenDatabase/SevenDB/blob/master/CONTRIBUTING/go.md)
 - [ ] run `make lint` on your local copy of the codebase

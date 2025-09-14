@@ -16,10 +16,10 @@ author: arpit
 
 If you like the vision and mission, you can also chime in. We are in the early stages of development, and the community plays a critical role in shaping its future. Here are a few ways you can get involved:
 
-- [fix a bug](https://github.com/DiceDB/dice/issues?q=is%3Aissue+is%3Aopen+label%3Abug+)
-- [submit a feature patch](https://github.com/DiceDB/dice/issues)
-- [suggest a feature](https://github.com/DiceDB/dice/discussions/new?category=ideas)
-- [write a tutorial](https://github.com/DiceDB/dice/issues?q=is%3Aissue+is%3Aopen+label%3Adocumentation)
+- [fix a bug](https://github.com/sevenDatabase/SevenDB/issues?q=is%3Aissue+is%3Aopen+label%3Abug+)
+- [submit a feature patch](https://github.com/sevenDatabase/SevenDB/issues)
+- [suggest a feature](https://github.com/sevenDatabase/SevenDB/discussions/new?category=ideas)
+- [write a tutorial](https://github.com/sevenDatabase/SevenDB/issues?q=is%3Aissue+is%3Aopen+label%3Adocumentation)
 
 You can always support the project by [starring the repository](https://github.com/dicedb/dice) and help us gain visibility in the developer community.
 

@@ -7,8 +7,8 @@ import (
 	"io"
 	"syscall"
 
-	"github.com/dicedb/dice/internal/auth"
-	"github.com/dicedb/dice/internal/cmd"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/cmd"
+	"github.com/sevenDatabase/SevenDB/internal/auth"
 )
 
 type CmdWatchResponse struct {

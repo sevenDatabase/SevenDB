@@ -6,8 +6,8 @@ package eval
 import (
 	"testing"
 
-	diceerrors "github.com/dicedb/dice/internal/errors"
-	dstore "github.com/dicedb/dice/internal/store"
+	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/store"
+	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
 )
 
 func TestCountMinSketch(t *testing.T) {

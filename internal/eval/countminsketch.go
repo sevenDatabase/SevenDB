@@ -15,9 +15,9 @@ import (
 	"strconv"
 	"strings"
 
-	diceerrors "github.com/dicedb/dice/internal/errors"
-	"github.com/dicedb/dice/internal/object"
-	dstore "github.com/dicedb/dice/internal/store"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/object"
+	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/store"
+	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
 )
 
 type CountMinSketchOpts struct {

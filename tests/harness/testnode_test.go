@@ -5,8 +5,8 @@ import (
     "sort"
     "strings"
 
-    h "github.com/dicedb/dice/internal/harness"
-    hnet "github.com/dicedb/dice/internal/harness/network"
+    h "github.com/sevendatabase/sevendb/internal/harness"
+    hnet "github.com/sevendatabase/sevendb/internal/harness/network"
 )
 
 // testCluster provides shared state for the fake nodes across tests.

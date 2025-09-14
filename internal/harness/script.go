@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	hnet "github.com/dicedb/dice/internal/harness/network"
+	hnet "github.com/sevendatabase/sevendb/internal/harness/network"
 )
 
 // TimedAction represents an action executed when the simulated clock reaches At.

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dicedb/dice/internal/cmd"
-	"github.com/dicedb/dice/internal/shardmanager"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/shardmanager"
+	"github.com/sevenDatabase/SevenDB/internal/cmd"
 )
 
 type WatchManager struct {

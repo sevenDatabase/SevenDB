@@ -1,9 +1,9 @@
 ---
 name: Port command to IronHawk engine
 about: This template is supposed to be used by maintainers tracking the port of a command to IronHawk
-title: 'IronHawk Port: '
-labels: ''
-assignees: ''
+title: "IronHawk Port: "
+labels: ""
+assignees: ""
 ---
 
 We reimplemented the core of the DiceDB engine and re-wrote - the wire protocol, execution engine, and config management. This rewrite helped us gain 32% throughput over our existing benchmark. One of the core principles we focussed on was to make code easy to extend and debug. As an effort, we need to migrate the command from the old engine to IronHawk.
@@ -38,19 +38,19 @@ $ go run main.go --engine ironhawk
 7. Cover all possible cases for the command implementation
 8. Do not delete the old implementation of the `eval` function
 
-*No need* to write test cases for this new implementation. We will take care of this in one shot later. If the test fails, it is okay.
+_No need_ to write test cases for this new implementation. We will take care of this in one shot later. If the test fails, it is okay.
 
 If you find any other bug while you are implementing it, you can either
 
 1. fix it yourself and submit it in a new PR
-2. raise a [GitHub issue](https://github.com/DiceDB/dice/issues)
+2. raise a [GitHub issue](https://github.com/sevenDatabase/SevenDB/issues)
 
 ## Follow the contribution guidelines
 
 These are general guidelines to follow before you submit a patch. Please mark them as done
 once you complete them
 
-- [ ] please go through the [CONTRIBUTING](https://github.com/DiceDB/dice/tree/master/CONTRIBUTING) guide
-- [ ] follow [LOGGING best practices](https://github.com/DiceDB/dice/blob/master/CONTRIBUTING/logging.md)
-- [ ] follow [Golang best practices](https://github.com/DiceDB/dice/blob/master/CONTRIBUTING/go.md)
+- [ ] please go through the [CONTRIBUTING](https://github.com/sevenDatabase/SevenDB/tree/master/CONTRIBUTING) guide
+- [ ] follow [LOGGING best practices](https://github.com/sevenDatabase/SevenDB/blob/master/CONTRIBUTING/logging.md)
+- [ ] follow [Golang best practices](https://github.com/sevenDatabase/SevenDB/blob/master/CONTRIBUTING/go.md)
 - [ ] run `make lint` on your local copy of the codebase

@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dicedb/dice/internal/server/utils"
+	"github.com/sevenDatabase/SevenDB/internal/server/utils"
 
-	"github.com/dicedb/dice/config"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/config"
 	"golang.org/x/crypto/bcrypt"
 )
 

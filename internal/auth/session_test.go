@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dicedb/dice/config"
-	"github.com/dicedb/dice/internal/server/utils"
+	"github.com/sevenDatabase/SevenDB/config"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/server/utils"
 )
 
 func TestNewUsers(t *testing.T) {

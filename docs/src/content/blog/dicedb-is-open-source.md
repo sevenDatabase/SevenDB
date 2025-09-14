@@ -9,7 +9,7 @@ author: arpit
 
 Since the inception of DiceDB, [our](/team) vision has always been rooted in
 building a high-performance caching backbone for modern architecture. Today, we are thrilled to announce that DiceDB
-is now open source under the [BSD 3-Clause License](https://github.com/DiceDB/dice/blob/master/LICENSE).
+is now open source under the [BSD 3-Clause License](https://github.com/sevenDatabase/SevenDB/blob/master/LICENSE).
 This marks a significant milestone in our journey - one that reflects both our technical clarity and our commitment to the open source ethos.
 
 ## Why we switched

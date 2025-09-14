@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	diceerrors "github.com/dicedb/dice/internal/errors"
-	"github.com/dicedb/dice/internal/store"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/store"
+	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
 )
 
 type RespType int

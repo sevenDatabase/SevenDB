@@ -6,12 +6,12 @@ package cmd
 import (
 	"strconv"
 
-	"github.com/dicedb/dice/internal/errors"
-	"github.com/dicedb/dice/internal/object"
-	"github.com/dicedb/dice/internal/shardmanager"
-	dstore "github.com/dicedb/dice/internal/store"
-	"github.com/dicedb/dice/internal/types"
 	"github.com/dicedb/dicedb-go/wire"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/object"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/shardmanager"
+	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/store"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/types"
+	"github.com/sevenDatabase/SevenDB/internal/errors"
 )
 
 var cZPOPMAX = &CommandMeta{

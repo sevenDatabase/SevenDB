@@ -6,9 +6,9 @@ package eval
 import (
 	"testing"
 
-	"github.com/dicedb/dice/internal/object"
+	"github.com/sevenDatabase/SevenDB/internal/object"
 
-	"github.com/dicedb/dice/internal/server/utils"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/server/utils"
 )
 
 // TestDeduceType tests the deduceType function using table-driven tests.

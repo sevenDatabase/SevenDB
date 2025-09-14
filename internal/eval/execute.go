@@ -6,11 +6,11 @@ package eval
 import (
 	"strings"
 
-	"github.com/dicedb/dice/internal/auth"
-	"github.com/dicedb/dice/internal/cmd"
-	"github.com/dicedb/dice/internal/comm"
-	diceerrors "github.com/dicedb/dice/internal/errors"
-	dstore "github.com/dicedb/dice/internal/store"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/cmd"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/comm"
+	diceerrors "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/errors"
+	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/store"
+	"github.com/sevenDatabase/SevenDB/internal/auth"
 )
 
 type Eval struct {

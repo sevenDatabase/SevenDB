@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dicedb/dice/internal/errors"
-	"github.com/dicedb/dice/internal/object"
-	"github.com/dicedb/dice/internal/store"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/object"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/store"
+	"github.com/sevenDatabase/SevenDB/internal/errors"
 	"github.com/stretchr/testify/assert"
 )
 

@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 
-	diceerrors "github.com/dicedb/dice/internal/errors"
-	"github.com/dicedb/dice/internal/object"
 	"github.com/google/btree"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/object"
+	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
 )
 
 // Item represents a member of a sorted set. It includes a score and a member.

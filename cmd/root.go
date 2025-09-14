@@ -10,9 +10,9 @@ import (
 	"reflect"
 	"strconv"
 
-	"github.com/dicedb/dice/config"
-	"github.com/dicedb/dice/internal/logger"
-	"github.com/dicedb/dice/server"
+	"github.com/sevenDatabase/SevenDB/config"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/logger"
+	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/server"
 	"github.com/spf13/cobra"
 )
 
