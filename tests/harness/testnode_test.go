@@ -58,15 +58,15 @@ func (n *fakeNode) ClientSet(key, value string) {
     if !n.started { return }
     // Replicate state via network
     payload := hnet.Message([]byte("SET|"+key+"|"+value))
-    for dst := range cluster.nodes {
+    for _, dst := range sortedNodeIDs(cluster.nodes) {
         cluster.network.Send(n.id, dst, payload)
     }
     // Replicate outbox entry to all nodes with the same sequence
     seq := cluster.nextSeq
     cluster.nextSeq++
     event := key + "=" + value
-    for _, node := range cluster.nodes {
-        node.outbox[seq] = event
+    for _, id := range sortedNodeIDs(cluster.nodes) {
+        cluster.nodes[id].outbox[seq] = event
     }
 }
 
@@ -133,4 +133,12 @@ func setupCluster(harn *h.Harness, ids ...hnet.NodeID) {
         cluster.nodes[id] = n
         harn.RegisterNode(n)
     }
+}
+
+// sortedNodeIDs returns the node IDs in deterministic lexicographic order.
+func sortedNodeIDs(m map[hnet.NodeID]*fakeNode) []hnet.NodeID {
+    ids := make([]hnet.NodeID, 0, len(m))
+    for id := range m { ids = append(ids, id) }
+    sort.Slice(ids, func(i, j int) bool { return string(ids[i]) < string(ids[j]) })
+    return ids
 }
