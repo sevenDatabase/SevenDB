@@ -94,8 +94,12 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 			res.Rs.Message = "OK"
 		}
 
-		// Log command to WAL if enabled and not a replay
-		if wal.DefaultWAL != nil && !_c.IsReplay {
+		// Determine if this is a watch/unwatch command
+		isWatchCmd := strings.HasSuffix(c.Cmd, "WATCH")
+
+		// Log command to WAL if enabled and not a replay and not a watch/unwatch op
+		// Watch/Unwatch are logged via WatchManager as SUBSCRIBE/UNSUBSCRIBE and must be atomic with ack
+		if wal.DefaultWAL != nil && !_c.IsReplay && !isWatchCmd && c.Cmd != "UNWATCH" {
 			if err := wal.DefaultWAL.LogCommand(_c.C); err != nil {
 				slog.Error("failed to log command to WAL", slog.Any("error", err))
 			}
@@ -121,12 +125,25 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 			t.Mode = _c.C.Args[1]
 		}
 
-		isWatchCmd := strings.HasSuffix(c.Cmd, "WATCH")
-
+		var watchRegistered bool
 		if isWatchCmd {
-			watchManager.HandleWatch(_c, t)
+			if err := watchManager.HandleWatch(_c, t); err != nil {
+				// WAL write (inside HandleWatch) failed; send error and continue
+				errRes := &wire.Result{Status: wire.Status_ERR, Message: err.Error()}
+				if sendErr := t.serverWire.Send(ctx, errRes); sendErr != nil {
+					return sendErr.Unwrap()
+				}
+				continue
+			}
+			watchRegistered = true
 		} else if strings.HasSuffix(c.Cmd, "UNWATCH") {
-			watchManager.HandleUnwatch(_c, t)
+			if err := watchManager.HandleUnwatch(_c, t); err != nil {
+				errRes := &wire.Result{Status: wire.Status_ERR, Message: err.Error()}
+				if sendErr := t.serverWire.Send(ctx, errRes); sendErr != nil {
+					return sendErr.Unwrap()
+				}
+				continue
+			}
 		}
 
 		watchManager.RegisterThread(t)
@@ -142,7 +159,10 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 		// TODO: Streamline this because we need ordering of updates
 		// that are being sent to watchers.
 		if err == nil {
-			watchManager.NotifyWatchers(_c, shardManager, t)
+			// Only notify watchers (which also sends the initial watch response) after successful registration
+			if !isWatchCmd || (isWatchCmd && watchRegistered) {
+				watchManager.NotifyWatchers(_c, shardManager, t)
+			}
 		}
 	}
 }

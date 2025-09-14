@@ -10,8 +10,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/dicedb/dicedb-go/wire"
 	"github.com/sevenDatabase/SevenDB/internal/cmd"
 	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
+	"github.com/sevenDatabase/SevenDB/internal/wal"
 )
 
 type WatchManager struct {
@@ -42,10 +44,7 @@ func (w *WatchManager) RegisterThread(t *IOThread) {
 	}
 }
 
-func (w *WatchManager) HandleWatch(c *cmd.Cmd, t *IOThread) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
+func (w *WatchManager) HandleWatch(c *cmd.Cmd, t *IOThread) error {
 	fp, key := c.Fingerprint(), c.Key()
 	slog.Debug("creating a new subscription",
 		slog.String("key", key),
@@ -53,62 +52,117 @@ func (w *WatchManager) HandleWatch(c *cmd.Cmd, t *IOThread) {
 		slog.Any("fingerprint", fp),
 		slog.String("client_id", t.ClientID))
 
-	// For the key that will be watched through any .WATCH command
-	// Create an entry in the map that holds, key <--> [command fingerprint] as map
+	// First, log SUBSCRIBE event to WAL; only proceed on success
+	if wal.DefaultWAL != nil && !c.IsReplay {
+		subCmd := &wire.Command{
+			Cmd:  "SUBSCRIBE",
+			Args: []string{t.ClientID, c.String(), strconv.FormatUint(fp, 10)},
+		}
+		if err := wal.DefaultWAL.LogCommand(subCmd); err != nil {
+			return err
+		}
+	}
+
+	// Now update in-memory subscription state atomically
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	if _, ok := w.keyFPMap[key]; !ok {
 		w.keyFPMap[key] = make(map[uint64]bool)
 	}
 	w.keyFPMap[key][fp] = true
 
-	// For the fingerprint
-	// Create an entry in the map that holds, fingerprint <--> [client id] as map
-	// This tells us which clients are subscribed to a particular fingerprint
 	if _, ok := w.fpClientMap[fp]; !ok {
 		w.fpClientMap[fp] = make(map[string]bool)
 	}
 	w.fpClientMap[fp][t.ClientID] = true
 
-	// Store the fingerprint <--> command mapping
-	// so that we understand what should we execute when the data changes
 	w.fpCmdMap[fp] = c
-
 	w.clientWatchThreadMap[t.ClientID] = t
+	return nil
 }
 
-func (w *WatchManager) HandleUnwatch(c *cmd.Cmd, t *IOThread) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
+func (w *WatchManager) HandleUnwatch(c *cmd.Cmd, t *IOThread) error {
 	if len(c.C.Args) != 1 {
-		return
+		return nil
 	}
 
 	// Parse the fingerprint from the command
 	fp, err := strconv.ParseUint(c.C.Args[0], 10, 64)
 	if err != nil {
-		return
+		return err
 	}
 
-	// Multiple clients can unsubscribe from the same fingerprint
-	// So, we need to delete the one that is unsubscribing
-	delete(w.fpClientMap[fp], t.ClientID)
+	// First, log UNSUBSCRIBE to WAL; only proceed on success
+	if wal.DefaultWAL != nil && !c.IsReplay {
+		unsubCmd := &wire.Command{
+			Cmd:  "UNSUBSCRIBE",
+			Args: []string{t.ClientID, strconv.FormatUint(fp, 10)},
+		}
+		if err := wal.DefaultWAL.LogCommand(unsubCmd); err != nil {
+			return err
+		}
+	}
 
-	// If a fingerprint has no clients subscribed to it, delete the fingerprint from the map.
+	// Update in-memory state
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	delete(w.fpClientMap[fp], t.ClientID)
 	if len(w.fpClientMap[fp]) == 0 {
 		delete(w.fpClientMap, fp)
-
-		// If we have deleted the fingerprint, delete the command from the map
 		delete(w.fpCmdMap, fp)
+		// Note: keyFPMap cleanup is lazy
 	}
 
-	// Delete the mapping where we have the key <--> [command fingerprint]
-	// This seems to be an O(n) operation.
-	// Downside of keeping this entry laying around is that
-	// If key k changes, then we may be iterating through the fingerprint that does not have any active watcher
-	// Hence we should do a lazy deletion.
+	return nil
+}
 
-	// TODO: If the key gets deleted from the database
-	// delete the subscriptions against that key from all the places.
+// RestoreSubscription rebuilds an in-memory subscription from WAL replay.
+// It does not attempt to send any messages; it only updates state so future updates can notify.
+func (w *WatchManager) RestoreSubscription(clientID, commandStr string, fp uint64) error {
+	parts := strings.Fields(commandStr)
+	if len(parts) == 0 {
+		return nil
+	}
+
+	wc := &wire.Command{Cmd: parts[0]}
+	if len(parts) > 1 {
+		wc.Args = parts[1:]
+	}
+	c := &cmd.Cmd{C: wc, IsReplay: true}
+
+	key := c.Key()
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if _, ok := w.keyFPMap[key]; !ok {
+		w.keyFPMap[key] = make(map[uint64]bool)
+	}
+	w.keyFPMap[key][fp] = true
+
+	if _, ok := w.fpClientMap[fp]; !ok {
+		w.fpClientMap[fp] = make(map[string]bool)
+	}
+	w.fpClientMap[fp][clientID] = true
+
+	w.fpCmdMap[fp] = c
+	return nil
+}
+
+// RemoveSubscription removes a subscription mapping during WAL replay.
+func (w *WatchManager) RemoveSubscription(clientID string, fp uint64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	delete(w.fpClientMap[fp], clientID)
+	if len(w.fpClientMap[fp]) == 0 {
+		delete(w.fpClientMap, fp)
+		delete(w.fpCmdMap, fp)
+		// keyFPMap cleanup remains lazy
+	}
+	return nil
 }
 
 func (w *WatchManager) CleanupThreadWatchSubscriptions(t *IOThread) {

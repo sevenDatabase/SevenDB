@@ -16,6 +16,7 @@ import (
 	"runtime/trace"
 	"sync"
 	"syscall"
+	"strconv"
 
 	"github.com/dicedb/dicedb-go/wire"
 	"github.com/sevenDatabase/SevenDB/internal/auth"
@@ -132,15 +133,41 @@ func Start() {
 	if config.Config.EnableWAL {
 		slog.Info("restoring database from WAL")
 		callback := func(cd *wire.Command) error {
-			cmdTemp := cmd.Cmd{
-				C:        cd,
-				IsReplay: true,
+			switch cd.Cmd {
+			case "SUBSCRIBE":
+				if len(cd.Args) < 3 {
+					return nil
+				}
+				clientID := cd.Args[0]
+				commandStr := cd.Args[1]
+				fpStr := cd.Args[2]
+				fp, err := strconv.ParseUint(fpStr, 10, 64)
+				if err != nil {
+					return nil
+				}
+				return watchManager.RestoreSubscription(clientID, commandStr, fp)
+			case "UNSUBSCRIBE":
+				if len(cd.Args) < 2 {
+					return nil
+				}
+				clientID := cd.Args[0]
+				fpStr := cd.Args[1]
+				fp, err := strconv.ParseUint(fpStr, 10, 64)
+				if err != nil {
+					return nil
+				}
+				return watchManager.RemoveSubscription(clientID, fp)
+			default:
+				cmdTemp := cmd.Cmd{
+					C:        cd,
+					IsReplay: true,
+				}
+				_, err := cmdTemp.Execute(shardManager)
+				if err != nil {
+					return fmt.Errorf("error handling WAL replay: %w", err)
+				}
+				return nil
 			}
-			_, err := cmdTemp.Execute(shardManager)
-			if err != nil {
-				return fmt.Errorf("error handling WAL replay: %w", err)
-			}
-			return nil
 		}
 		if err := wal.DefaultWAL.ReplayCommand(callback); err != nil {
 			slog.Error("error restoring from WAL", slog.Any("error", err))
