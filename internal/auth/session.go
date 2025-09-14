@@ -11,7 +11,7 @@ import (
 
 	"github.com/sevenDatabase/SevenDB/internal/server/utils"
 
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/config"
+	"github.com/sevenDatabase/SevenDB/config"
 	"golang.org/x/crypto/bcrypt"
 )
 

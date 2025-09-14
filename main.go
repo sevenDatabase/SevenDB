@@ -3,7 +3,7 @@
 
 package main
 
-import "github.com/dicedb/dice/cmd"
+import "github.com/sevenDatabase/SevenDB/cmd"
 
 func main() {
 	cmd.Execute()

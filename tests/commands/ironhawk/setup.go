@@ -13,13 +13,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/shardmanager"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/wal"
+	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
+	"github.com/sevenDatabase/SevenDB/internal/wal"
 	"github.com/sevenDatabase/SevenDB/internal/server/ironhawk"
 
 	"github.com/dicedb/dicedb-go"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/config"
-	derrors "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/errors"
+	"github.com/sevenDatabase/SevenDB/config"
+	derrors "github.com/sevenDatabase/SevenDB/internal/errors"
 )
 
 //nolint:unused

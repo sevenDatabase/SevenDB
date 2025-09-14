@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/sevenDatabase/SevenDB/config"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/comm"
-	diceerrors "github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/errors"
-	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/store"
+	"github.com/sevenDatabase/SevenDB/internal/comm"
+	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
+	dstore "github.com/sevenDatabase/SevenDB/internal/store"
 )
 
 type exDurationState int

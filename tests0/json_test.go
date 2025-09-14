@@ -92,7 +92,7 @@ func TestJSONOperations(t *testing.T) {
 	// - Cases where the possible order of the result is a single permutation
 	// 		- JSON Arrays fetched without any JSONPath
 	// 		- JSON Objects (key ordering is taken care of)
-	// ref: https://github.com/sevenDatabase/SevenDB/e/SevenDB/pull/365
+	// ref: https://github.com/sevenDatabase/SevenDB/pull/365
 	singleOrderedTestCases := []struct {
 		name     string
 		setCmd   string
@@ -215,7 +215,7 @@ func TestJSONOperations(t *testing.T) {
 	// Which then means, the overall order of elements in the resultant array is not fixed, although each sub-array within it is guaranteed to be ordered.
 	// What goes here:
 	// - Cases where the possible order of the resultant array is multiple permutations
-	// ref: https://github.com/sevenDatabase/SevenDB/e/SevenDB/pull/365
+	// ref: https://github.com/sevenDatabase/SevenDB/pull/365
 	multipleOrderedTestCases := []struct {
 		name     string
 		setCmd   string

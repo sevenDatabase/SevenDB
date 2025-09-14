@@ -7,7 +7,7 @@ import (
 	"io"
 	"syscall"
 
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/cmd"
+	"github.com/sevenDatabase/SevenDB/internal/cmd"
 	"github.com/sevenDatabase/SevenDB/internal/auth"
 )
 

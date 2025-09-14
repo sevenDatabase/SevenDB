@@ -6,7 +6,7 @@ package eval
 import (
 	"strconv"
 
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/object"
+	"github.com/sevenDatabase/SevenDB/internal/object"
 	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
 )
 

@@ -10,7 +10,7 @@ import (
 
 	"github.com/sevenDatabase/SevenDB/internal/object"
 
-	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/store"
+	dstore "github.com/sevenDatabase/SevenDB/internal/store"
 )
 
 type ByteArray struct {

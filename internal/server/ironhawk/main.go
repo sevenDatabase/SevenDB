@@ -14,7 +14,7 @@ import (
 	"syscall"
 
 	"github.com/sevenDatabase/SevenDB/config"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/shardmanager"
+	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
 )
 
 type Server struct {

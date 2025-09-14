@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/object"
+	"github.com/sevenDatabase/SevenDB/internal/object"
 	"github.com/sevenDatabase/SevenDB/internal/common"
 )
 

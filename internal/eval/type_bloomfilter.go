@@ -15,9 +15,9 @@ import (
 
 	"github.com/sevenDatabase/SevenDB/internal/object"
 
-	diceerrors "github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/errors"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/server/utils"
-	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/store"
+	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
+	"github.com/sevenDatabase/SevenDB/internal/server/utils"
+	dstore "github.com/sevenDatabase/SevenDB/internal/store"
 	"github.com/twmb/murmur3"
 )
 

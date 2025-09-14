@@ -11,8 +11,8 @@ import (
 	"strconv"
 
 	"github.com/sevenDatabase/SevenDB/config"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/logger"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/server"
+	"github.com/sevenDatabase/SevenDB/internal/logger"
+	"github.com/sevenDatabase/SevenDB/server"
 	"github.com/spf13/cobra"
 )
 

@@ -6,7 +6,7 @@ package eval
 import (
 	"strings"
 
-	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/store"
+	dstore "github.com/sevenDatabase/SevenDB/internal/store"
 	"github.com/sevenDatabase/SevenDB/internal/cmd"
 )
 

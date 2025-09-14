@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/dicedb/dicedb-go/wire"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/object"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/shardmanager"
-	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/store"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/types"
+	"github.com/sevenDatabase/SevenDB/internal/object"
+	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
+	dstore "github.com/sevenDatabase/SevenDB/internal/store"
+	"github.com/sevenDatabase/SevenDB/internal/types"
 	"github.com/sevenDatabase/SevenDB/internal/errors"
 )
 

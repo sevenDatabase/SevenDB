@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	hclock "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/harness/clock"
-	hnet "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/harness/network"
-	hsched "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/harness/scheduler"
+	hclock "github.com/sevenDatabase/SevenDB/internal/harness/clock"
+	hnet "github.com/sevenDatabase/SevenDB/internal/harness/network"
+	hsched "github.com/sevenDatabase/SevenDB/internal/harness/scheduler"
 	h "github.com/sevenDatabase/SevenDB/internal/harness"
 )
 

@@ -8,7 +8,7 @@ import (
 	"math"
 
 	"github.com/sevenDatabase/SevenDB/config"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/object"
+	"github.com/sevenDatabase/SevenDB/internal/object"
 )
 
 // evictionItemHeap is a max-heap of evictionItems based on lastAccessed.

@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/store"
+	"github.com/sevenDatabase/SevenDB/internal/store"
 	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
 )
 

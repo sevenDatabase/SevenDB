@@ -6,7 +6,7 @@ package eval
 import (
 	"testing"
 
-	dstore "github.com/sevenDatabase/SevenDB/e/SevenDB/internal/store"
+	dstore "github.com/sevenDatabase/SevenDB/internal/store"
 	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
 )
 

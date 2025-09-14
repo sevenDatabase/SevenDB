@@ -12,9 +12,9 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/sevenDatabase/SevenDB/config"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/shard"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/shardthread"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/store"
+	"github.com/sevenDatabase/SevenDB/internal/shard"
+	"github.com/sevenDatabase/SevenDB/internal/shardthread"
+	"github.com/sevenDatabase/SevenDB/internal/store"
 )
 
 type ShardManager struct {

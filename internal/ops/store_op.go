@@ -4,8 +4,8 @@
 package ops
 
 import (
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/comm"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/internal/eval"
+	"github.com/sevenDatabase/SevenDB/internal/comm"
+	"github.com/sevenDatabase/SevenDB/internal/eval"
 	"github.com/sevenDatabase/SevenDB/internal/cmd"
 )
 

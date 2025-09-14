@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/sevenDatabase/SevenDB/config"
-	"github.com/sevenDatabase/SevenDB/e/SevenDB/e/SevenDB/internal/server/utils"
+	"github.com/sevenDatabase/SevenDB/internal/server/utils"
 )
 
 func TestNewUsers(t *testing.T) {
