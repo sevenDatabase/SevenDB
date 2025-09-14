@@ -19,6 +19,8 @@ type WAL interface {
 	Stop()
 	// LogCommand logs a command to the WAL.
 	LogCommand(c *wire.Command) error
+	// Sync flushes any buffered WAL data to disk (durable before ack).
+	Sync() error
 	// Replay replays the command from the WAL.
 	ReplayCommand(cb func(c *wire.Command) error) error
 }

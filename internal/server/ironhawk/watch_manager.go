@@ -53,12 +53,18 @@ func (w *WatchManager) HandleWatch(c *cmd.Cmd, t *IOThread) error {
 		slog.String("client_id", t.ClientID))
 
 	// First, log SUBSCRIBE event to WAL; only proceed on success
+	// Log SUBSCRIBE event to WAL and force durability before ack/registration
 	if wal.DefaultWAL != nil && !c.IsReplay {
 		subCmd := &wire.Command{
 			Cmd:  "SUBSCRIBE",
 			Args: []string{t.ClientID, c.String(), strconv.FormatUint(fp, 10)},
 		}
 		if err := wal.DefaultWAL.LogCommand(subCmd); err != nil {
+			slog.Error("failed to log SUBSCRIBE to WAL", slog.Any("error", err))
+			return err // do not register subscription if not durably logged
+		}
+		if err := wal.DefaultWAL.Sync(); err != nil {
+			slog.Error("failed to sync SUBSCRIBE WAL entry", slog.Any("error", err))
 			return err
 		}
 	}
@@ -94,12 +100,18 @@ func (w *WatchManager) HandleUnwatch(c *cmd.Cmd, t *IOThread) error {
 	}
 
 	// First, log UNSUBSCRIBE to WAL; only proceed on success
+	// Log UNSUBSCRIBE event to WAL and force durability before removing
 	if wal.DefaultWAL != nil && !c.IsReplay {
 		unsubCmd := &wire.Command{
 			Cmd:  "UNSUBSCRIBE",
 			Args: []string{t.ClientID, strconv.FormatUint(fp, 10)},
 		}
 		if err := wal.DefaultWAL.LogCommand(unsubCmd); err != nil {
+			slog.Error("failed to log UNSUBSCRIBE to WAL", slog.Any("error", err))
+			return err
+		}
+		if err := wal.DefaultWAL.Sync(); err != nil {
+			slog.Error("failed to sync UNSUBSCRIBE WAL entry", slog.Any("error", err))
 			return err
 		}
 	}

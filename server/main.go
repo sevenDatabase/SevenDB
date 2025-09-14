@@ -136,6 +136,7 @@ func Start() {
 			switch cd.Cmd {
 			case "SUBSCRIBE":
 				if len(cd.Args) < 3 {
+					slog.Warn("skipping malformed SUBSCRIBE entry during WAL replay", slog.Int("args_count", len(cd.Args)))
 					return nil
 				}
 				clientID := cd.Args[0]
@@ -143,17 +144,20 @@ func Start() {
 				fpStr := cd.Args[2]
 				fp, err := strconv.ParseUint(fpStr, 10, 64)
 				if err != nil {
+					slog.Warn("skipping SUBSCRIBE entry with invalid fingerprint", slog.String("fingerprint", fpStr), slog.Any("error", err))
 					return nil
 				}
 				return watchManager.RestoreSubscription(clientID, commandStr, fp)
 			case "UNSUBSCRIBE":
 				if len(cd.Args) < 2 {
+					slog.Warn("skipping malformed UNSUBSCRIBE entry during WAL replay", slog.Int("args_count", len(cd.Args)))
 					return nil
 				}
 				clientID := cd.Args[0]
 				fpStr := cd.Args[1]
 				fp, err := strconv.ParseUint(fpStr, 10, 64)
 				if err != nil {
+					slog.Warn("skipping UNSUBSCRIBE entry with invalid fingerprint", slog.String("fingerprint", fpStr), slog.Any("error", err))
 					return nil
 				}
 				return watchManager.RemoveSubscription(clientID, fp)

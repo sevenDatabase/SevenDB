@@ -415,3 +415,10 @@ func (wl *walForge) Stop() {
 
 	// TODO: See if we are missing any other cleanup operations.
 }
+
+// Sync flushes the WAL buffer and fsyncs the current segment to ensure durability.
+func (wl *walForge) Sync() error {
+	wl.mu.Lock()
+	defer wl.mu.Unlock()
+	return wl.sync()
+}
