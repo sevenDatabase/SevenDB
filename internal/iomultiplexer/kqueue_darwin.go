@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dicedb/dice/config"
+	"github.com/sevenDatabase/SevenDB/config"
 )
 
 // KQueue implements the IOMultiplexer interface for Darwin-based systems

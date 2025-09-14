@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dicedb/dice/config"
+	"github.com/sevenDatabase/SevenDB/config"
 	"google.golang.org/protobuf/proto"
 
 	w "github.com/dicedb/dicedb-go/wal"

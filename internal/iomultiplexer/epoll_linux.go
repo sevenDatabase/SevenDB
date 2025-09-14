@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dicedb/dice/config"
+	"github.com/sevenDatabase/SevenDB/config"
 )
 
 // Epoll implements the IOMultiplexer interface for Linux-based systems

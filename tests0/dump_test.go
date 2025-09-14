@@ -6,7 +6,7 @@ package ironhawk
 import (
 	"testing"
 
-	"github.com/dicedb/dice/testutils"
+	"github.com/sevenDatabase/SevenDB/testutils"
 	"github.com/stretchr/testify/assert"
 )
 

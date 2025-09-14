@@ -6,7 +6,7 @@ package wal
 import (
 	"log/slog"
 
-	"github.com/dicedb/dice/config"
+	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/dicedb/dicedb-go/wire"
 )
 

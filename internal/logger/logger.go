@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/dicedb/dice/config"
+	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/rs/zerolog"
 )
 

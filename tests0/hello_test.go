@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/dicedb/dice/config"
+	"github.com/sevenDatabase/SevenDB/config"
 )
 
 func TestHello(t *testing.T) {

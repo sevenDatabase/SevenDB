@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dicedb/dice/testutils"
+	"github.com/sevenDatabase/SevenDB/testutils"
 	"github.com/dicedb/dicedb-go/wire"
 	"github.com/stretchr/testify/assert"
 )

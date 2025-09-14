@@ -4,7 +4,7 @@
 package cmd
 
 import (
-	"github.com/dicedb/dice/config"
+	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/spf13/cobra"
 )
 
