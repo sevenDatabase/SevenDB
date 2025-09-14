@@ -62,9 +62,13 @@ func (h *Harness) RegisterNode(n Node) {
 // DeliverNext delivers one message (if available) to dst node via scheduler.
 func (h *Harness) DeliverNext(dst hnet.NodeID) bool {
 	from, msg, ok := h.Network.Recv(dst)
-	if !ok { return false }
+	if !ok {
+		return false
+	}
 	node, exists := h.Nodes[dst]
-	if !exists { return false }
+	if !exists {
+		return false
+	}
 	h.Scheduler.Enqueue(func() { node.HandleMessage(from, msg) })
 	return true
 }
@@ -74,8 +78,17 @@ func (h *Harness) DrainAll() {
 	// Keep trying until no mailbox has messages and queue drains.
 	for {
 		progressed := false
+		// iterate deterministically over sorted node IDs
+		ids := make([]string, 0, len(h.Nodes))
 		for id := range h.Nodes {
-			if h.DeliverNext(id) { progressed = true }
+			ids = append(ids, string(id))
+		}
+		sort.Strings(ids)
+		for _, sid := range ids {
+			id := hnet.NodeID(sid)
+			if h.DeliverNext(id) {
+				progressed = true
+			}
 		}
 		h.Scheduler.RunAll()
 		if !progressed {
@@ -88,7 +101,9 @@ func (h *Harness) DrainAll() {
 func (h *Harness) ComputeClusterHash() string {
 	// Sort ids for determinism
 	ids := make([]string, 0, len(h.Nodes))
-	for id := range h.Nodes { ids = append(ids, string(id)) }
+	for id := range h.Nodes {
+		ids = append(ids, string(id))
+	}
 	sort.Strings(ids)
 	hasher := sha256.New()
 	for _, sid := range ids {
@@ -100,7 +115,9 @@ func (h *Harness) ComputeClusterHash() string {
 
 // MustEqualHashes panics if the provided node IDs do not share equal state hashes.
 func (h *Harness) MustEqualHashes(ids ...hnet.NodeID) {
-	if len(ids) <= 1 { return }
+	if len(ids) <= 1 {
+		return
+	}
 	base := h.Nodes[ids[0]].StateHash()
 	for _, id := range ids[1:] {
 		other := h.Nodes[id].StateHash()
@@ -109,4 +126,3 @@ func (h *Harness) MustEqualHashes(ids ...hnet.NodeID) {
 		}
 	}
 }
-

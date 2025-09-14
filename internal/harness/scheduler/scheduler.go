@@ -29,7 +29,9 @@ func NewSerial() *SerialScheduler {
 
 // Enqueue adds a task to the queue.
 func (s *SerialScheduler) Enqueue(t Task) {
-	if t == nil { return }
+	if t == nil {
+		return
+	}
 	s.mu.Lock()
 	s.queue = append(s.queue, t)
 	s.mu.Unlock()
@@ -58,14 +60,17 @@ func (s *SerialScheduler) pop() Task {
 // RunOne executes exactly one queued task if present.
 func (s *SerialScheduler) RunOne() bool {
 	t := s.pop()
-	if t == nil { return false }
+	if t == nil {
+		return false
+	}
 	t()
 	return true
 }
 
 // RunAll runs tasks in insertion order until the queue is empty.
 func (s *SerialScheduler) RunAll() {
-	for s.RunOne() {}
+	for s.RunOne() {
+	}
 }
 
 // Len returns the number of queued tasks.
@@ -73,7 +78,8 @@ func (s *SerialScheduler) Len() int {
 	s.mu.Lock()
 	l := len(s.queue) - s.head
 	s.mu.Unlock()
-	if l < 0 { return 0 }
+	if l < 0 {
+		return 0
+	}
 	return l
 }
-

@@ -46,7 +46,9 @@ func (s Script) Run(h *Harness) {
 func StartNode(id hnet.NodeID) TimedActionBuilder {
 	return func(at time.Duration) TimedAction {
 		return TimedAction{At: at, Fn: func(h *Harness) {
-			if n, ok := h.Nodes[id]; ok { n.Start() }
+			if n, ok := h.Nodes[id]; ok {
+				n.Start()
+			}
 		}}
 	}
 }
@@ -54,7 +56,10 @@ func StartNode(id hnet.NodeID) TimedActionBuilder {
 func StopNode(id hnet.NodeID) TimedActionBuilder {
 	return func(at time.Duration) TimedAction {
 		return TimedAction{At: at, Fn: func(h *Harness) {
-			if n, ok := h.Nodes[id]; ok { n.Stop(); h.Network.DropAll(id) }
+			if n, ok := h.Nodes[id]; ok {
+				n.Stop()
+				h.Network.DropAll(id)
+			}
 		}}
 	}
 }
@@ -62,7 +67,9 @@ func StopNode(id hnet.NodeID) TimedActionBuilder {
 func ClientSet(id hnet.NodeID, key, value string) TimedActionBuilder {
 	return func(at time.Duration) TimedAction {
 		return TimedAction{At: at, Fn: func(h *Harness) {
-			if n, ok := h.Nodes[id]; ok { n.ClientSet(key, value) }
+			if n, ok := h.Nodes[id]; ok {
+				n.ClientSet(key, value)
+			}
 		}}
 	}
 }
@@ -70,7 +77,9 @@ func ClientSet(id hnet.NodeID, key, value string) TimedActionBuilder {
 func ClientSubscribe(id hnet.NodeID, key string) TimedActionBuilder {
 	return func(at time.Duration) TimedAction {
 		return TimedAction{At: at, Fn: func(h *Harness) {
-			if n, ok := h.Nodes[id]; ok { n.ClientSubscribe(key) }
+			if n, ok := h.Nodes[id]; ok {
+				n.ClientSubscribe(key)
+			}
 		}}
 	}
 }
@@ -116,14 +125,21 @@ type TimedActionBuilder func(at time.Duration) TimedAction
 
 // tickable allows nodes to process time-driven events deterministically.
 // Nodes used in tests may implement this (optional).
-type tickable interface { OnTick() }
+type tickable interface{ OnTick() }
 
 // onTick invokes OnTick on all registered nodes that support it.
 func onTick(h *Harness) {
-	for _, n := range h.Nodes {
-		if t, ok := n.(tickable); ok {
-			t.OnTick()
+	// Iterate in deterministic order
+	ids := make([]string, 0, len(h.Nodes))
+	for id := range h.Nodes {
+		ids = append(ids, string(id))
+	}
+	sort.Strings(ids)
+	for _, sid := range ids {
+		if n, ok := h.Nodes[hnet.NodeID(sid)]; ok {
+			if t, ok := n.(tickable); ok {
+				t.OnTick()
+			}
 		}
 	}
 }
-

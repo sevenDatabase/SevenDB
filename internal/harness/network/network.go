@@ -30,9 +30,9 @@ type Network interface {
 
 // SimulatedNetwork is an in-memory FIFO, reliable message bus.
 type SimulatedNetwork struct {
-	mu       sync.Mutex
+	mu        sync.Mutex
 	mailboxes map[NodeID][]queued
-	blocked  map[[2]NodeID]bool // blocked[src,dst] == true means drop on send
+	blocked   map[[2]NodeID]bool // blocked[src,dst] == true means drop on send
 }
 
 type queued struct {
@@ -86,7 +86,9 @@ func (n *SimulatedNetwork) DeliverOne(dst NodeID) (NodeID, Message, bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	q := n.mailboxes[dst]
-	if len(q) == 0 { return "", nil, false }
+	if len(q) == 0 {
+		return "", nil, false
+	}
 	head := q[0]
 	if len(q) == 1 {
 		delete(n.mailboxes, dst)
@@ -117,4 +119,3 @@ func (n *SimulatedNetwork) Unblock(src, dst NodeID) {
 	delete(n.blocked, [2]NodeID{src, dst})
 	n.mu.Unlock()
 }
-
