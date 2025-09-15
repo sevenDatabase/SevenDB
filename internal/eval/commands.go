@@ -1237,7 +1237,7 @@ func init() {
 
 // Function to convert DiceCmdMeta to []interface{}
 func convertCmdMetaToSlice(cmdMeta *DiceCmdMeta) []interface{} {
-	var result []interface{} = []interface{}{strings.ToLower(cmdMeta.Name), cmdMeta.Arity, cmdMeta.KeySpecs.BeginIndex, cmdMeta.KeySpecs.LastKey, cmdMeta.KeySpecs.Step}
+	var result = []interface{}{strings.ToLower(cmdMeta.Name), cmdMeta.Arity, cmdMeta.BeginIndex, cmdMeta.LastKey, cmdMeta.Step}
 	var subCommandsList []interface{}
 	for _, subCommand := range cmdMeta.SubCommands {
 		key := cmdMeta.Name + "|" + subCommand
@@ -1260,8 +1260,8 @@ func convertDiceCmdsMapToSlice() []interface{} {
 }
 
 func convertCmdMetaToDocs(cmdMeta *DiceCmdMeta) []interface{} {
-	var result []interface{} = []interface{}{"summary", cmdMeta.Info, "arity", cmdMeta.Arity, "beginIndex", cmdMeta.KeySpecs.BeginIndex,
-		"lastIndex", cmdMeta.KeySpecs.LastKey, "step", cmdMeta.KeySpecs.Step}
+	var result = []interface{}{"summary", cmdMeta.Info, "arity", cmdMeta.Arity, "beginIndex", cmdMeta.BeginIndex,
+		"lastIndex", cmdMeta.LastKey, "step", cmdMeta.Step}
 	var subCommandsList []interface{}
 	for _, subCommand := range cmdMeta.SubCommands {
 		key := cmdMeta.Name + "|" + subCommand

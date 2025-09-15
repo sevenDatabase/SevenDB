@@ -6,8 +6,8 @@ package wal
 import (
 	"log/slog"
 
-	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/dicedb/dicedb-go/wire"
+	"github.com/sevenDatabase/SevenDB/config"
 )
 
 type WAL interface {

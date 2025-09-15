@@ -1,3 +1,4 @@
+
 name: linter
 
 on:
@@ -21,10 +22,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version: '1.24.1'   # explicitly set your target Go version
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.64.6
+          version: latest        # always pulls the latest golangci-lint
+

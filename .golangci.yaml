@@ -1,23 +1,17 @@
+version: 2  # mandatory for v1.64+
+
 run:
   concurrency: 8
-
   timeout: 5m
-
   issues-exit-code: 1
-
   tests: false
-
   modules-download-mode: readonly
-
   allow-parallel-runners: false
-
-  go: "" # keep this empty to use the Go version from the go.mod file.
+  go: ""  # use Go version from go.mod
 
 linters:
-  fast: false # set to true runs only fast linters.
-
+  fast: false
   disable-all: true
-
   enable:
     - bodyclose
     - dogsled
@@ -27,11 +21,8 @@ linters:
     - funlen
     - goconst
     - gocritic
-    - gofmt
-    - goimports
     - goprintffuncname
     - gosec
-    - gosimple
     - revive
     - govet
     - ineffassign
@@ -41,8 +32,6 @@ linters:
     - noctx
     - nolintlint
     - staticcheck
-    - stylecheck
-    - typecheck
     - unconvert
     - unparam
     - unused
@@ -61,7 +50,6 @@ linters-settings:
     min-occurrences: 10
 
   gocognit:
-    # minimal code complexity to report, 30 by default (but we recommend 10-20)
     min-complexity: 10
 
   gocyclo:
@@ -75,9 +63,9 @@ linters-settings:
     locale: US
 
   nolintlint:
-    allow-unused: false # report any unused nolint directives
-    require-explanation: false # don't require an explanation for nolint directives
-    require-specific: false # don't require nolint directives to be specific about which linter is being skipped
+    allow-unused: false
+    require-explanation: false
+    require-specific: false
 
   gocritic:
     enabled-tags:
@@ -87,7 +75,7 @@ linters-settings:
       - performance
       - style
     disabled-checks:
-      - dupImport # https://github.com/go-critic/go-critic/issues/845
+      - dupImport
       - ifElseChain
       - octalLiteral
       - whyNoLint
@@ -95,7 +83,6 @@ linters-settings:
       - nestingReduce
 
   revive:
-    # see https://github.com/mgechev/revive#available-rules for details.
     ignore-generated-header: true
     severity: error
     confidence: 0.8
@@ -116,29 +103,21 @@ linters-settings:
 
 output:
   print-issued-lines: false
-
   print-linter-name: true
-
   sort-results: true
 
 issues:
   max-issues-per-linter: 0
-
   max-same-issues: 0
-
   new: false
-
   fix: true
-
   exclude-dirs:
     - .github
     - .hooks
     - .vscode
-
   exclude-files:
     - README.md
-
   exclude:
-    - G115 # potential integer overflow when converting between integer types
-
+    - G115
   uniq-by-line: false
+

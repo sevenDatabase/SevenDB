@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/rs/zerolog"
+	"github.com/sevenDatabase/SevenDB/config"
 )
 
 func getSLogLevel() slog.Level {

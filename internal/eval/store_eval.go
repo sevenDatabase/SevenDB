@@ -535,11 +535,12 @@ func evalZRANGE(args []string, store *dstore.Store) *EvalResponse {
 	reverse := false
 	for i := 3; i < len(args); i++ {
 		arg := strings.ToUpper(args[i])
-		if arg == WithScores {
+		switch arg {
+		case WithScores:
 			withScores = true
-		} else if arg == REV {
+		case REV:
 			reverse = true
-		} else {
+		default:
 			return &EvalResponse{
 				Result: nil,
 				Error:  diceerrors.ErrInvalidSyntax("ZRANGE"),
@@ -2323,7 +2324,7 @@ func evalZPOPMAX(args []string, store *dstore.Store) *EvalResponse {
 		}
 	}
 
-	var res []string = sortedSet.PopMax(count)
+	var res = sortedSet.PopMax(count)
 
 	return &EvalResponse{
 		Result: res,
@@ -5187,13 +5188,14 @@ func evalGEOADD(args []string, store *dstore.Store) *EvalResponse {
 	// Parse options
 	for startIdx < len(args) {
 		option := strings.ToUpper(args[startIdx])
-		if option == "NX" {
+		switch option {
+		case "NX":
 			nx = true
 			startIdx++
-		} else if option == "XX" {
+		case "XX":
 			xx = true
 			startIdx++
-		} else {
+		default:
 			break
 		}
 	}

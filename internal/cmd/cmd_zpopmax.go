@@ -97,7 +97,7 @@ func evalZPOPMAX(c *Cmd, s *dstore.Store) (*CmdRes, error) {
 
 	ss = obj.Value.(*types.SortedSet)
 	elements := make([]*wire.ZElement, 0, count)
-	totalElements := ss.SortedSet.GetCount()
+	totalElements := ss.GetCount()
 
 	for i := 0; i < count; i++ {
 		n := ss.PopMax()

@@ -85,23 +85,23 @@ func (s *SortedSet) ZADD(scores []int64, members []string, params map[Param]stri
 }
 
 func (s *SortedSet) ZCOUNT(minScore, maxScore int64) int64 {
-	return int64(len(s.SortedSet.GetByScoreRange(sortedset.SCORE(minScore), sortedset.SCORE(maxScore), nil)))
+	return int64(len(s.GetByScoreRange(sortedset.SCORE(minScore), sortedset.SCORE(maxScore), nil)))
 }
 
 func (s *SortedSet) ZRANGE(start, stop int, byScore, byRank bool) []*wire.ZElement {
 	var nodes []*sortedset.SortedSetNode
 	if byScore {
-		nodes = s.SortedSet.GetByScoreRange(
+		nodes = s.GetByScoreRange(
 			sortedset.SCORE(start),
 			sortedset.SCORE(stop),
 			&sortedset.GetByScoreRangeOptions{})
 	} else {
-		nodes = s.SortedSet.GetByRankRange(start, stop, false)
+		nodes = s.GetByRankRange(start, stop, false)
 	}
 
 	var rank int64 = 0
 	if len(nodes) > 0 {
-		rank = int64(s.SortedSet.FindRank(nodes[0].Key()))
+		rank = int64(s.FindRank(nodes[0].Key()))
 	}
 
 	result := make([]*wire.ZElement, len(nodes))

@@ -83,22 +83,24 @@ func evalZCOUNT(c *Cmd, s *dstore.Store) (*CmdRes, error) {
 
 	key, minArg, maxArg := c.C.Args[0], c.C.Args[1], c.C.Args[2]
 
-	if minArg == "-inf" {
+	switch minArg {
+	case "-inf":
 		minVal = math.MinInt64
-	} else if minArg == "+inf" {
+	case "+inf":
 		minVal = math.MaxInt64
-	} else {
+	default:
 		minVal, err = strconv.ParseInt(minArg, 10, 64)
 		if err != nil {
 			return ZCOUNTResNilRes, errors.ErrInvalidNumberFormat
 		}
 	}
 
-	if maxArg == "-inf" {
+	switch maxArg {
+	case "-inf":
 		maxVal = math.MinInt64
-	} else if maxArg == "+inf" {
+	case "+inf":
 		maxVal = math.MaxInt64
-	} else {
+	default:
 		maxVal, err = strconv.ParseInt(maxArg, 10, 64)
 		if err != nil {
 			return ZCOUNTResNilRes, errors.ErrInvalidNumberFormat

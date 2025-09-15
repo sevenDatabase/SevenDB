@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/dicedb/dicedb-go"
 	"github.com/dicedb/dicedb-go/wire"
+	"github.com/sevenDatabase/SevenDB/config"
 	assert "github.com/stretchr/testify/assert"
 )
 
