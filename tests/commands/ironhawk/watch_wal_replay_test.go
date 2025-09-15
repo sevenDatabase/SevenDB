@@ -408,8 +408,10 @@ func TestWatch_MultipleSubscriptionsAcrossKeys_Replay(t *testing.T) {
     if r := client1.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{"k1"}}); r.Status != wire.Status_OK { t.Fatalf("watch k1 failed: %+v", r) }
     if r := client1.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{"k2"}}); r.Status != wire.Status_OK { t.Fatalf("watch k2 failed: %+v", r) }
 
-    // Wait for a rotation tick to ensure segments may rotate (best-effort, harmless if not)
-    time.Sleep(1100 * time.Millisecond)
+    // Deterministically wait for at least 2 WAL segments before proceeding
+    if err := waitForWALSegments(t, config.Config.WALDir, 2, 5*time.Second); err != nil {
+        t.Fatalf("wal rotation not observed in time: %v", err)
+    }
 
     cancel1(); join1()
 
@@ -434,6 +436,166 @@ func TestWatch_MultipleSubscriptionsAcrossKeys_Replay(t *testing.T) {
 
     want := map[string]struct{}{"v1b": {}, "v2b": {}}
     if err := waitForWatchValues(t, watchConn, want, 3*time.Second); err != nil {
+        t.Fatal(err)
+    }
+
+    cancel2()
+}
+
+// waitForWALSegments waits until at least minCount seg-*.wal files exist in dir or times out.
+func waitForWALSegments(t *testing.T, dir string, minCount int, timeout time.Duration) error {
+    t.Helper()
+    deadline := time.Now().Add(timeout)
+    pattern := filepath.Join(dir, "seg-*.wal")
+    for time.Now().Before(deadline) {
+        files, _ := filepath.Glob(pattern)
+        if len(files) >= minCount {
+            return nil
+        }
+        time.Sleep(50 * time.Millisecond)
+    }
+    files, _ := filepath.Glob(pattern)
+    return fmt.Errorf("have %d segments, want >= %d", len(files), minCount)
+}
+
+// Simulate an unclean crash: do not stop the WAL (no final flush), then restart and replay.
+func TestWatch_ReplayAfterCrash_NoWALStop(t *testing.T) {
+    dir := t.TempDir()
+    config.Config.WALDir = filepath.Join(dir, "wal_crash")
+    _ = os.MkdirAll(config.Config.WALDir, 0o755)
+    config.Config.WALVariant = "forge"
+    config.Config.Port = 7487
+    config.Config.EnableWatch = true
+
+    wal.SetupWAL()
+    // Intentionally DO NOT call wal.DefaultWAL.Stop() before restart to simulate crash.
+    // We'll stop it only at the very end of the test to release resources.
+    t.Cleanup(func() { if wal.DefaultWAL != nil { wal.DefaultWAL.Stop() } })
+
+    // Server 1: establish a subscription which is durably synced as part of watch flow
+    wm1 := serverih.NewWatchManager()
+    cancel1, join1 := startTestServer(t, wm1)
+    client, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("connect failed: %v", err) }
+    defer client.Close()
+    time.Sleep(150 * time.Millisecond)
+
+    cid := "cid-crash"
+    if r := client.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{cid, "command"}}); r.Status != wire.Status_OK {
+        t.Fatalf("handshake failed: %+v", r)
+    }
+    _ = client.Fire(&wire.Command{Cmd: "SET", Args: []string{"kc", "v0"}})
+    if r := client.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{"kc"}}); r.Status != wire.Status_OK {
+        t.Fatalf("watch kc failed: %+v", r)
+    }
+
+    // Simulate crash: stop the server goroutines without stopping WAL to avoid its final sync.
+    cancel1(); join1()
+
+    // Server 2: replay and verify subscription still restored (because watch path fsynced before ack)
+    wm2 := serverih.NewWatchManager()
+    replaySubscriptions(t, wm2)
+    cancel2, join2 := startTestServer(t, wm2)
+    defer join2()
+
+    watchConn, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("watch connect failed: %v", err) }
+    defer watchConn.Close()
+    if r := watchConn.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{cid, "watch"}}); r.Status != wire.Status_OK {
+        t.Fatalf("watch handshake failed: %+v", r)
+    }
+
+    pub, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("publisher connect failed: %v", err) }
+    defer pub.Close()
+    _ = pub.Fire(&wire.Command{Cmd: "SET", Args: []string{"kc", "v1"}})
+
+    if err := waitForWatchValue(t, watchConn, "v1", 2*time.Second); err != nil {
+        t.Fatal(err)
+    }
+
+    cancel2()
+}
+
+// Optional performance guardrail: large replay under load. Skipped on -short to keep CI fast.
+func TestWatch_ReplayUnderLoad_SkippedOnShort(t *testing.T) {
+    if testing.Short() {
+        t.Skip("skipping load test in -short mode")
+    }
+
+    dir := t.TempDir()
+    config.Config.WALDir = filepath.Join(dir, "wal_load")
+    _ = os.MkdirAll(config.Config.WALDir, 0o755)
+    config.Config.WALVariant = "forge"
+    config.Config.Port = 7488
+    config.Config.EnableWatch = true
+    // Encourage rotations during load
+    config.Config.WALRotationMode = "time"
+    config.Config.WALSegmentRotationTimeSec = 1
+
+    wal.SetupWAL()
+    defer func() { if wal.DefaultWAL != nil { wal.DefaultWAL.Stop() } }()
+
+    wm1 := serverih.NewWatchManager()
+    cancel1, join1 := startTestServer(t, wm1)
+    client, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("connect failed: %v", err) }
+    defer client.Close()
+    time.Sleep(200 * time.Millisecond)
+
+    cid := "cid-load"
+    if r := client.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{cid, "command"}}); r.Status != wire.Status_OK {
+        t.Fatalf("handshake failed: %+v", r)
+    }
+
+    // Create many subscriptions
+    N := 1000 // increase locally if needed; 10k may be too heavy for CI
+    for i := 0; i < N; i++ {
+        key := fmt.Sprintf("kl-%d", i)
+        _ = client.Fire(&wire.Command{Cmd: "SET", Args: []string{key, "seed"}})
+        if r := client.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{key}}); r.Status != wire.Status_OK {
+            t.Fatalf("watch %s failed: %+v", key, r)
+        }
+    }
+
+    // Wait for at least 2 segments (should rotate under time)
+    if err := waitForWALSegments(t, config.Config.WALDir, 2, 10*time.Second); err != nil {
+        t.Logf("warning: rotation not observed: %v", err)
+    }
+
+    cancel1(); join1()
+
+    // Replay and ensure we can deliver to a subset within a bounded time
+    wm2 := serverih.NewWatchManager()
+    start := time.Now()
+    replaySubscriptions(t, wm2)
+    replayDur := time.Since(start)
+    t.Logf("replay time for %d subscriptions: %s", N, replayDur)
+
+    cancel2, join2 := startTestServer(t, wm2)
+    defer join2()
+
+    watchConn, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("watch connect failed: %v", err) }
+    defer watchConn.Close()
+    if r := watchConn.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{cid, "watch"}}); r.Status != wire.Status_OK {
+        t.Fatalf("watch handshake failed: %+v", r)
+    }
+
+    pub, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("publisher connect failed: %v", err) }
+    defer pub.Close()
+
+    // Update a handful of keys and assert notifications arrive quickly
+    want := map[string]struct{}{}
+    for i := 0; i < 10; i++ {
+        val := fmt.Sprintf("load-%d", i)
+        key := fmt.Sprintf("kl-%d", i)
+        _ = pub.Fire(&wire.Command{Cmd: "SET", Args: []string{key, val}})
+        want[val] = struct{}{}
+    }
+
+    if err := waitForWatchValues(t, watchConn, want, 5*time.Second); err != nil {
         t.Fatal(err)
     }
 
