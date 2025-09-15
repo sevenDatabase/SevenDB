@@ -2,11 +2,13 @@ package ironhawk
 
 import (
     "context"
+    "io"
     "errors"
     "fmt"
     "os"
     "path/filepath"
     "strconv"
+    "strings"
     "sync"
     "testing"
     "time"
@@ -375,6 +377,10 @@ func TestWAL_CorruptedReplayFails(t *testing.T) {
     if err == nil {
         t.Fatalf("expected replay to fail due to corruption, got nil error")
     }
+    // Be precise: ensure this is a CRC mismatch and not some unrelated error
+    if !strings.Contains(err.Error(), "CRC32 mismatch") {
+        t.Fatalf("unexpected replay error for corruption: %v", err)
+    }
 }
 
 func TestWatch_MultipleSubscriptionsAcrossKeys_Replay(t *testing.T) {
@@ -571,6 +577,10 @@ func TestWatch_ReplayUnderLoad_SkippedOnShort(t *testing.T) {
     replaySubscriptions(t, wm2)
     replayDur := time.Since(start)
     t.Logf("replay time for %d subscriptions: %s", N, replayDur)
+    // Soft performance guardrail (tunable): fail if too slow to catch regressions
+    if replayDur > 5*time.Second {
+        t.Fatalf("replay too slow: %s (N=%d)", replayDur, N)
+    }
 
     cancel2, join2 := startTestServer(t, wm2)
     defer join2()
@@ -750,4 +760,159 @@ func TestWatch_ConcurrentSubscriptions_Replay(t *testing.T) {
 // Timestamp determinism placeholder: skipped until timestamps are surfaced to callbacks.
 func TestWAL_TimestampDeterminism_Skipped(t *testing.T) {
     t.Skip("wire.Command callbacks do not expose WAL entry timestamps; enable once available")
+}
+
+// Truncated EOF at the end of the WAL should cause replay to fail loudly.
+// Truncated EOF at the end of the WAL should cause replay to fail loudly with an EOF/UnexpectedEOF.
+func TestWAL_TruncatedEOF_ReplayFails(t *testing.T) {
+    dir := t.TempDir()
+    config.Config.WALDir = filepath.Join(dir, "wal_trunc")
+    _ = os.MkdirAll(config.Config.WALDir, 0o755)
+    config.Config.WALVariant = "forge"
+
+    wal.SetupWAL()
+    t.Cleanup(func() { if wal.DefaultWAL != nil { wal.DefaultWAL.Stop() } })
+
+    // Write a couple of entries and sync
+    _ = wal.DefaultWAL.LogCommand(&wire.Command{Cmd: "PING"})
+    _ = wal.DefaultWAL.LogCommand(&wire.Command{Cmd: "PING"})
+    _ = wal.DefaultWAL.Sync()
+
+    seg := filepath.Join(config.Config.WALDir, "seg-0.wal")
+    st, err := os.Stat(seg)
+    if err != nil { t.Fatalf("stat wal: %v", err) }
+    if st.Size() < 2 {
+        t.Fatalf("wal segment unexpectedly small (%d)", st.Size())
+    }
+    // Truncate the file by 1 byte to simulate partial last entry payload
+    if err := os.Truncate(seg, st.Size()-1); err != nil {
+        t.Fatalf("truncate wal: %v", err)
+    }
+
+    // Expect replay to fail due to EOF while reading last entry
+    err = wal.DefaultWAL.ReplayCommand(func(c *wire.Command) error { return nil })
+    if err == nil {
+        t.Fatalf("expected replay error due to truncated EOF, got nil")
+    }
+    if !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) &&
+        !strings.Contains(err.Error(), "error reading WAL data") && !strings.Contains(err.Error(), "error reading WAL") {
+        t.Fatalf("unexpected error when replaying truncated WAL: %v", err)
+    }
+}
+
+// Truncating inside the header (CRC/length) should also error with UnexpectedEOF during header read.
+func TestWAL_TruncatedHeader_ReplayFails(t *testing.T) {
+    dir := t.TempDir()
+    config.Config.WALDir = filepath.Join(dir, "wal_trunc_header")
+    _ = os.MkdirAll(config.Config.WALDir, 0o755)
+    config.Config.WALVariant = "forge"
+
+    wal.SetupWAL()
+    t.Cleanup(func() { if wal.DefaultWAL != nil { wal.DefaultWAL.Stop() } })
+
+    // Write entries and sync
+    _ = wal.DefaultWAL.LogCommand(&wire.Command{Cmd: "PING"})
+    _ = wal.DefaultWAL.LogCommand(&wire.Command{Cmd: "PING"})
+    _ = wal.DefaultWAL.Sync()
+
+    seg := filepath.Join(config.Config.WALDir, "seg-0.wal")
+    st, err := os.Stat(seg)
+    if err != nil { t.Fatalf("stat wal: %v", err) }
+    if st.Size() < 8 {
+        t.Fatalf("wal segment too small for header truncation (%d)", st.Size())
+    }
+    // Truncate last 4 bytes to force header read failure on next iteration
+    if err := os.Truncate(seg, st.Size()-4); err != nil {
+        t.Fatalf("truncate wal: %v", err)
+    }
+
+    err = wal.DefaultWAL.ReplayCommand(func(c *wire.Command) error { return nil })
+    if err == nil {
+        t.Fatalf("expected replay error due to truncated header, got nil")
+    }
+    if !errors.Is(err, io.ErrUnexpectedEOF) && !strings.Contains(err.Error(), "error reading WAL") {
+        t.Fatalf("unexpected error when replaying header-truncated WAL: %v", err)
+    }
+}
+
+// Subscribe -> Unsubscribe -> Resubscribe within one segment; only the final subscription should be active after replay.
+func TestWatch_SubUnsubResubscribe_SingleSegment_Replay(t *testing.T) {
+    dir := t.TempDir()
+    config.Config.WALDir = filepath.Join(dir, "wal_subunsub")
+    _ = os.MkdirAll(config.Config.WALDir, 0o755)
+    config.Config.WALVariant = "forge"
+    config.Config.Port = 7489
+    config.Config.EnableWatch = true
+    // Keep default time-based rotation (60s) so all ops stay in seg-0
+
+    wal.SetupWAL()
+    t.Cleanup(func() { if wal.DefaultWAL != nil { wal.DefaultWAL.Stop() } })
+
+    wm1 := serverih.NewWatchManager()
+    cancel1, join1 := startTestServer(t, wm1)
+    client, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("connect failed: %v", err) }
+    defer client.Close()
+    time.Sleep(150 * time.Millisecond)
+
+    cid := "cid-order"
+    if r := client.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{cid, "command"}}); r.Status != wire.Status_OK {
+        t.Fatalf("handshake failed: %+v", r)
+    }
+
+    key := "ko"
+    _ = client.Fire(&wire.Command{Cmd: "SET", Args: []string{key, "o0"}})
+
+    // SUBSCRIBE #1
+    res1 := client.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{key}})
+    if res1.Status != wire.Status_OK { t.Fatalf("watch #1 failed: %+v", res1) }
+    fp1 := strconv.FormatUint(res1.Fingerprint64, 10)
+
+    // UNSUBSCRIBE #1
+    if r := client.Fire(&wire.Command{Cmd: "UNWATCH", Args: []string{fp1}}); r.Status != wire.Status_OK {
+        t.Fatalf("unwatch #1 failed: %+v", r)
+    }
+
+    // RESUBSCRIBE #2
+    res2 := client.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{key}})
+    if res2.Status != wire.Status_OK { t.Fatalf("watch #2 failed: %+v", res2) }
+
+    cancel1(); join1()
+
+    // Replay and verify only the final subscription is active
+    wm2 := serverih.NewWatchManager()
+    replaySubscriptions(t, wm2)
+    cancel2, join2 := startTestServer(t, wm2)
+    defer join2()
+
+    watchConn, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("watch connect failed: %v", err) }
+    defer watchConn.Close()
+    if r := watchConn.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{cid, "watch"}}); r.Status != wire.Status_OK {
+        t.Fatalf("watch handshake failed: %+v", r)
+    }
+
+    pub, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("publisher connect failed: %v", err) }
+    defer pub.Close()
+    _ = pub.Fire(&wire.Command{Cmd: "SET", Args: []string{key, "o1"}})
+
+    if err := waitForWatchValue(t, watchConn, "o1", 2*time.Second); err != nil {
+        t.Fatal(err)
+    }
+    // Ensure we don't get duplicate notifications for the same update (only final subscription active).
+    dupDeadline := time.Now().Add(400 * time.Millisecond)
+    var dupCount int
+    for time.Now().Before(dupDeadline) {
+        res := watchConn.Fire(&wire.Command{Cmd: "PING"})
+        if getRes := res.GetGETRes(); getRes != nil && getRes.Value == "o1" {
+            dupCount++
+            if dupCount > 0 {
+                t.Fatalf("received duplicate notification for %s after replay", key)
+            }
+        }
+        time.Sleep(40 * time.Millisecond)
+    }
+
+    cancel2()
 }
