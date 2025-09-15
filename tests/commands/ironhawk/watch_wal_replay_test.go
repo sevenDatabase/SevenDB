@@ -3,6 +3,7 @@ package ironhawk
 import (
     "context"
     "errors"
+    "fmt"
     "os"
     "path/filepath"
     "strconv"
@@ -143,8 +144,10 @@ func replaySubscriptions(t *testing.T, wm *serverih.WatchManager) {
 
 func TestWatch_AckAfterSync(t *testing.T) {
     // Use a mock WAL with a blocking Sync to ensure no ack is sent before durability.
+    prev := wal.DefaultWAL
     mw := &mockWAL{syncCh: make(chan struct{})}
     wal.DefaultWAL = mw
+    t.Cleanup(func() { wal.DefaultWAL = prev })
 
     // Isolate port for this test
     config.Config.Port = 7482
@@ -296,4 +299,293 @@ func TestWatch_ReplayRestoresSubscription(t *testing.T) {
 
     // Cleanup
     cancel2()
+}
+
+// waitForWatchValue polls until it receives a GET result with the expected value or times out.
+func waitForWatchValue(t *testing.T, c *dicedb.Client, expected string, timeout time.Duration) error {
+    t.Helper()
+    deadline := time.Now().Add(timeout)
+    for time.Now().Before(deadline) {
+        res := c.Fire(&wire.Command{Cmd: "PING"})
+        if getRes := res.GetGETRes(); getRes != nil {
+            if getRes.Value == expected {
+                return nil
+            }
+        }
+        time.Sleep(50 * time.Millisecond)
+    }
+    return fmt.Errorf("timeout waiting for watch value %q", expected)
+}
+
+// waitForWatchValues waits until it has observed all values in expected set, or times out.
+func waitForWatchValues(t *testing.T, c *dicedb.Client, expected map[string]struct{}, timeout time.Duration) error {
+    t.Helper()
+    remaining := make(map[string]struct{}, len(expected))
+    for k := range expected {
+        remaining[k] = struct{}{}
+    }
+    deadline := time.Now().Add(timeout)
+    for time.Now().Before(deadline) {
+        res := c.Fire(&wire.Command{Cmd: "PING"})
+        if getRes := res.GetGETRes(); getRes != nil {
+            if _, ok := remaining[getRes.Value]; ok {
+                delete(remaining, getRes.Value)
+                if len(remaining) == 0 {
+                    return nil
+                }
+            }
+        }
+        time.Sleep(50 * time.Millisecond)
+    }
+    return fmt.Errorf("timeout waiting for watch values, still missing: %v", remaining)
+}
+
+func TestWAL_CorruptedReplayFails(t *testing.T) {
+    // Use real WAL and then corrupt the CRC header to force a replay error.
+    dir := t.TempDir()
+    config.Config.WALDir = filepath.Join(dir, "wal_corrupt")
+    _ = os.MkdirAll(config.Config.WALDir, 0o755)
+    config.Config.WALVariant = "forge"
+    wal.SetupWAL()
+    t.Cleanup(func() {
+        if wal.DefaultWAL != nil {
+            wal.DefaultWAL.Stop()
+        }
+    })
+
+    // Log a simple command and sync to create a segment file
+    _ = wal.DefaultWAL.LogCommand(&wire.Command{Cmd: "PING"})
+    _ = wal.DefaultWAL.Sync()
+
+    // Corrupt the CRC32 of the first entry in seg-0.wal
+    seg := filepath.Join(config.Config.WALDir, "seg-0.wal")
+    f, err := os.OpenFile(seg, os.O_RDWR, 0o644)
+    if err != nil {
+        t.Fatalf("open wal segment failed: %v", err)
+    }
+    // Overwrite first 4 bytes (CRC32) with zeros
+    if _, err := f.WriteAt([]byte{0, 0, 0, 0}, 0); err != nil {
+        _ = f.Close()
+        t.Fatalf("failed to corrupt wal: %v", err)
+    }
+    _ = f.Close()
+
+    // Expect replay to fail loudly due to CRC mismatch
+    err = wal.DefaultWAL.ReplayCommand(func(c *wire.Command) error { return nil })
+    if err == nil {
+        t.Fatalf("expected replay to fail due to corruption, got nil error")
+    }
+}
+
+func TestWatch_MultipleSubscriptionsAcrossKeys_Replay(t *testing.T) {
+    // Real WAL with time-based rotation to ensure replay over multiple entries
+    dir := t.TempDir()
+    config.Config.WALDir = filepath.Join(dir, "wal_multi")
+    _ = os.MkdirAll(config.Config.WALDir, 0o755)
+    config.Config.WALVariant = "forge"
+    config.Config.WALSegmentRotationTimeSec = 1
+    config.Config.WALRotationMode = "time"
+    config.Config.Port = 7484
+    config.Config.EnableWatch = true
+
+    wal.SetupWAL()
+    t.Cleanup(func() { if wal.DefaultWAL != nil { wal.DefaultWAL.Stop() } })
+
+    // Server 1: create two subscriptions on different keys
+    wm1 := serverih.NewWatchManager()
+    cancel1, join1 := startTestServer(t, wm1)
+    client1, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("connect failed: %v", err) }
+    defer client1.Close()
+    time.Sleep(150 * time.Millisecond)
+
+    cid := "cid-multi"
+    if r := client1.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{cid, "command"}}); r.Status != wire.Status_OK {
+        t.Fatalf("handshake failed: %+v", r)
+    }
+    _ = client1.Fire(&wire.Command{Cmd: "SET", Args: []string{"k1", "v1a"}})
+    _ = client1.Fire(&wire.Command{Cmd: "SET", Args: []string{"k2", "v2a"}})
+    if r := client1.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{"k1"}}); r.Status != wire.Status_OK { t.Fatalf("watch k1 failed: %+v", r) }
+    if r := client1.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{"k2"}}); r.Status != wire.Status_OK { t.Fatalf("watch k2 failed: %+v", r) }
+
+    // Wait for a rotation tick to ensure segments may rotate (best-effort, harmless if not)
+    time.Sleep(1100 * time.Millisecond)
+
+    cancel1(); join1()
+
+    // Server 2: replay and verify both deliver updates
+    wm2 := serverih.NewWatchManager()
+    replaySubscriptions(t, wm2)
+    cancel2, join2 := startTestServer(t, wm2)
+    defer join2()
+
+    watchConn, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("watch connect failed: %v", err) }
+    defer watchConn.Close()
+    if r := watchConn.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{cid, "watch"}}); r.Status != wire.Status_OK {
+        t.Fatalf("watch handshake failed: %+v", r)
+    }
+
+    pub, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("publisher connect failed: %v", err) }
+    defer pub.Close()
+    _ = pub.Fire(&wire.Command{Cmd: "SET", Args: []string{"k1", "v1b"}})
+    _ = pub.Fire(&wire.Command{Cmd: "SET", Args: []string{"k2", "v2b"}})
+
+    want := map[string]struct{}{"v1b": {}, "v2b": {}}
+    if err := waitForWatchValues(t, watchConn, want, 3*time.Second); err != nil {
+        t.Fatal(err)
+    }
+
+    cancel2()
+}
+
+func TestWatch_SubscribeUnsubscribe_Replay(t *testing.T) {
+    dir := t.TempDir()
+    config.Config.WALDir = filepath.Join(dir, "wal_unsub")
+    _ = os.MkdirAll(config.Config.WALDir, 0o755)
+    config.Config.WALVariant = "forge"
+    config.Config.Port = 7485
+    config.Config.EnableWatch = true
+
+    wal.SetupWAL()
+    t.Cleanup(func() { if wal.DefaultWAL != nil { wal.DefaultWAL.Stop() } })
+
+    wm1 := serverih.NewWatchManager()
+    cancel1, join1 := startTestServer(t, wm1)
+    client, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("connect failed: %v", err) }
+    defer client.Close()
+    time.Sleep(150 * time.Millisecond)
+
+    cid := "cid-unsub"
+    if r := client.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{cid, "command"}}); r.Status != wire.Status_OK {
+        t.Fatalf("handshake failed: %+v", r)
+    }
+
+    _ = client.Fire(&wire.Command{Cmd: "SET", Args: []string{"ka", "a1"}})
+    _ = client.Fire(&wire.Command{Cmd: "SET", Args: []string{"kb", "b1"}})
+    rA := client.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{"ka"}})
+    if rA.Status != wire.Status_OK { t.Fatalf("watch ka failed: %+v", rA) }
+    rB := client.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{"kb"}})
+    if rB.Status != wire.Status_OK { t.Fatalf("watch kb failed: %+v", rB) }
+
+    // Unsubscribe kb using fingerprint
+    fpB := strconv.FormatUint(rB.Fingerprint64, 10)
+    if r := client.Fire(&wire.Command{Cmd: "UNWATCH", Args: []string{fpB}}); r.Status != wire.Status_OK {
+        t.Fatalf("unwatch kb failed: %+v", r)
+    }
+
+    cancel1(); join1()
+
+    // Replay and verify only ka receives updates
+    wm2 := serverih.NewWatchManager()
+    replaySubscriptions(t, wm2)
+    cancel2, join2 := startTestServer(t, wm2)
+    defer join2()
+
+    watchConn, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("watch connect failed: %v", err) }
+    defer watchConn.Close()
+    if r := watchConn.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{cid, "watch"}}); r.Status != wire.Status_OK {
+        t.Fatalf("watch handshake failed: %+v", r)
+    }
+
+    pub, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("publisher connect failed: %v", err) }
+    defer pub.Close()
+    _ = pub.Fire(&wire.Command{Cmd: "SET", Args: []string{"ka", "a2"}})
+    _ = pub.Fire(&wire.Command{Cmd: "SET", Args: []string{"kb", "b2"}})
+
+    // We should see a2 but not b2 within the window
+    if err := waitForWatchValue(t, watchConn, "a2", 2*time.Second); err != nil {
+        t.Fatal(err)
+    }
+    // Ensure b2 does not arrive in a grace window
+    deadline := time.Now().Add(500 * time.Millisecond)
+    for time.Now().Before(deadline) {
+        res := watchConn.Fire(&wire.Command{Cmd: "PING"})
+        if getRes := res.GetGETRes(); getRes != nil && getRes.Value == "b2" {
+            t.Fatalf("unexpected notification for unsubscribed key kb: %v", getRes.Value)
+        }
+        time.Sleep(50 * time.Millisecond)
+    }
+
+    cancel2()
+}
+
+func TestWatch_ConcurrentSubscriptions_Replay(t *testing.T) {
+    dir := t.TempDir()
+    config.Config.WALDir = filepath.Join(dir, "wal_concurrent")
+    _ = os.MkdirAll(config.Config.WALDir, 0o755)
+    config.Config.WALVariant = "forge"
+    config.Config.Port = 7486
+    config.Config.EnableWatch = true
+
+    wal.SetupWAL()
+    t.Cleanup(func() { if wal.DefaultWAL != nil { wal.DefaultWAL.Stop() } })
+
+    wm1 := serverih.NewWatchManager()
+    cancel1, join1 := startTestServer(t, wm1)
+    client, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("connect failed: %v", err) }
+    defer client.Close()
+    time.Sleep(150 * time.Millisecond)
+
+    cid := "cid-conc"
+    if r := client.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{cid, "command"}}); r.Status != wire.Status_OK {
+        t.Fatalf("handshake failed: %+v", r)
+    }
+
+    // Fire multiple subscriptions concurrently
+    keys := []string{"kc1", "kc2", "kc3", "kc4", "kc5"}
+    var wg sync.WaitGroup
+    for _, k := range keys {
+        k := k
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            _ = client.Fire(&wire.Command{Cmd: "SET", Args: []string{k, "seed"}})
+            res := client.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{k}})
+            if res.Status != wire.Status_OK {
+                t.Errorf("watch %s failed: %+v", k, res)
+            }
+        }()
+    }
+    wg.Wait()
+
+    cancel1(); join1()
+
+    // Replay and verify updates for all keys
+    wm2 := serverih.NewWatchManager()
+    replaySubscriptions(t, wm2)
+    cancel2, join2 := startTestServer(t, wm2)
+    defer join2()
+
+    watchConn, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("watch connect failed: %v", err) }
+    defer watchConn.Close()
+    if r := watchConn.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{cid, "watch"}}); r.Status != wire.Status_OK {
+        t.Fatalf("watch handshake failed: %+v", r)
+    }
+
+    pub, err := dicedb.NewClient("localhost", config.Config.Port)
+    if err != nil { t.Fatalf("publisher connect failed: %v", err) }
+    defer pub.Close()
+    want := map[string]struct{}{}
+    for i, k := range keys {
+        val := fmt.Sprintf("cval-%d", i)
+        _ = pub.Fire(&wire.Command{Cmd: "SET", Args: []string{k, val}})
+        want[val] = struct{}{}
+    }
+    if err := waitForWatchValues(t, watchConn, want, 4*time.Second); err != nil {
+        t.Fatal(err)
+    }
+
+    cancel2()
+}
+
+// Timestamp determinism placeholder: skipped until timestamps are surfaced to callbacks.
+func TestWAL_TimestampDeterminism_Skipped(t *testing.T) {
+    t.Skip("wire.Command callbacks do not expose WAL entry timestamps; enable once available")
 }
