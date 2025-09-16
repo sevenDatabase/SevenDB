@@ -911,6 +911,7 @@ func TestWAL_TruncatedHeader_ReplayFails(t *testing.T) {
 }
 
 // Subscribe -> Unsubscribe -> Resubscribe within one segment; only the final subscription should be active after replay.
+// Subscribe -> Unsubscribe -> Resubscribe within one segment; only the final subscription should be active after replay.
 func TestWatch_SubUnsubResubscribe_SingleSegment_Replay(t *testing.T) {
 	dir := t.TempDir()
 	config.Config.WALDir = filepath.Join(dir, "wal_subunsub")
@@ -1002,6 +1003,101 @@ func TestWatch_SubUnsubResubscribe_SingleSegment_Replay(t *testing.T) {
 			}
 		}
 		time.Sleep(40 * time.Millisecond)
+	}
+
+	cancel2()
+}
+
+func TestWatch_MultiClientSameKey_Replay(t *testing.T) {
+	dir := t.TempDir()
+	config.Config.WALDir = filepath.Join(dir, "wal_multi_client")
+	_ = os.MkdirAll(config.Config.WALDir, 0o755)
+	config.Config.WALVariant = "forge"
+	config.Config.Port = 7490
+	config.Config.EnableWatch = true
+
+	wal.SetupWAL()
+	t.Cleanup(func() {
+		if wal.DefaultWAL != nil {
+			wal.DefaultWAL.Stop()
+		}
+	})
+
+	// Server 1: two clients subscribe to the same key
+	wm1 := serverih.NewWatchManager()
+	cancel1, join1 := startTestServer(t, wm1)
+	time.Sleep(150 * time.Millisecond)
+
+	clientA, err := dicedb.NewClient("localhost", config.Config.Port)
+	if err != nil {
+		t.Fatalf("client A connect failed: %v", err)
+	}
+	defer clientA.Close()
+	if r := clientA.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{"cid-A", "command"}}); r.Status != wire.Status_OK {
+		t.Fatalf("handshake A failed: %+v", r)
+	}
+
+	clientB, err := dicedb.NewClient("localhost", config.Config.Port)
+	if err != nil {
+		t.Fatalf("client B connect failed: %v", err)
+	}
+	defer clientB.Close()
+	if r := clientB.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{"cid-B", "command"}}); r.Status != wire.Status_OK {
+		t.Fatalf("handshake B failed: %+v", r)
+	}
+
+	key := "the_same_key"
+	_ = clientA.Fire(&wire.Command{Cmd: "SET", Args: []string{key, "v0"}})
+	if r := clientA.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{key}}); r.Status != wire.Status_OK {
+		t.Fatalf("client A watch failed: %+v", r)
+	}
+	if r := clientB.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{key}}); r.Status != wire.Status_OK {
+		t.Fatalf("client B watch failed: %+v", r)
+	}
+
+	// Simulate crash
+	cancel1()
+	join1()
+
+	// Server 2: replay and verify both clients get updates
+	wm2 := serverih.NewWatchManager()
+	replaySubscriptions(t, wm2)
+	cancel2, join2 := startTestServer(t, wm2)
+	defer join2()
+
+	// Re-establish watch connections for both client IDs
+	watchConnA, err := dicedb.NewClient("localhost", config.Config.Port)
+	if err != nil {
+		t.Fatalf("watch connect A failed: %v", err)
+	}
+	defer watchConnA.Close()
+	if r := watchConnA.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{"cid-A", "watch"}}); r.Status != wire.Status_OK {
+		t.Fatalf("watch handshake A failed: %+v", r)
+	}
+
+	watchConnB, err := dicedb.NewClient("localhost", config.Config.Port)
+	if err != nil {
+		t.Fatalf("watch connect B failed: %v", err)
+	}
+	defer watchConnB.Close()
+	if r := watchConnB.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{"cid-B", "watch"}}); r.Status != wire.Status_OK {
+		t.Fatalf("watch handshake B failed: %+v", r)
+	}
+
+	// Publisher updates the key
+	pub, err := dicedb.NewClient("localhost", config.Config.Port)
+	if err != nil {
+		t.Fatalf("publisher connect failed: %v", err)
+	}
+	defer pub.Close()
+	_ = pub.Fire(&wire.Command{Cmd: "SET", Args: []string{key, "final-value"}})
+
+	// Verify both clients receive the notification
+	if err := waitForWatchValue(t, watchConnA, "final-value", 2*time.Second); err != nil {
+		t.Errorf("client A did not receive notification: %v", err)
+	}
+	if err := waitForWatchValue(t, watchConnB, "final-value", 2*time.Second); err != nil {
+		t.Errorf("client B did not receive notification: %v", err)
 	}
 
 	cancel2()
