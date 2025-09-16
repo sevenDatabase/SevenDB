@@ -50,6 +50,7 @@ func (c *SimulatedClock) Advance(d time.Duration) {
 		return
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.current = c.current.Add(d)
 	// wake any waiters whose deadline has passed
 	if len(c.waiters) > 0 {
@@ -66,7 +67,6 @@ func (c *SimulatedClock) Advance(d time.Duration) {
 		}
 		c.waiters = remaining
 	}
-	c.mu.Unlock()
 }
 
 // After implements Clock.
