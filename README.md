@@ -70,11 +70,15 @@ go run main.go #run like a normal go program
 ```
 By default, the server listens on `localhost:7379`.
 
-### 2. Connect with a Redis client
-Using `redis-cli`:
+### 2. Connect with a SevenDB-cli 
+Best way to connect to sevenDB is through `SevenDB-cli`
+
 
 ```bash
-redis-cli -p 7379
+git clone https://github.com/sevenDatabase/SevenDB-cli
+cd SevenDB-cli
+make build
+./sevendb-cli  # ofcourse , the db server should be running for this to work
 ```
 ### 3. Basic operations
 SevenDB supports familiar Redis-style commands:
