@@ -31,7 +31,7 @@ import (
 )
 
 func printConfiguration() {
-	slog.Info("starting DiceDB", slog.String("version", config.DiceDBVersion))
+	slog.Info("starting SevenDB", slog.String("version", config.DiceDBVersion))
 	slog.Info("running with", slog.Int("total_commands", cmd.Total()))
 	slog.Info("running with", slog.String("engine", config.Config.Engine))
 	slog.Info("running with", slog.Int("port", config.Config.Port))
