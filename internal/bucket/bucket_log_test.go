@@ -15,6 +15,11 @@ import (
 // setTestWalDir points WALDir to a temp directory for isolation.
 func setTestWalDir(t *testing.T) string {
 	t.Helper()
+	// Some unit tests may invoke bucket log logic without having initialized global config.
+	// Ensure we have a non-nil config pointer with zero-value defaults so we can set WALDir.
+	if config.Config == nil {
+		config.Config = &config.DiceDBConfig{}
+	}
 	dir := t.TempDir()
 	config.Config.WALDir = filepath.Join(dir, "wal")
 	if err := os.MkdirAll(config.Config.WALDir, 0o755); err != nil {

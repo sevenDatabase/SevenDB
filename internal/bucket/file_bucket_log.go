@@ -38,6 +38,10 @@ type FileBucketLog struct {
 }
 
 func NewFileBucketLog() (*FileBucketLog, error) {
+	// Defensive: tests using this package directly may not have loaded configuration.
+	if config.Config == nil {
+		config.Config = &config.DiceDBConfig{}
+	}
 	dir := filepath.Join(config.Config.WALDir, "buckets")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create bucket wal dir: %w", err)
