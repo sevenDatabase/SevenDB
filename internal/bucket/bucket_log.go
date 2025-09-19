@@ -10,8 +10,8 @@ type BucketID string
 // EpochID represents a (BucketID, Counter) pair. Epoch counter increments when
 // a bucket is recreated/migrated. For the MVP only Counter==0 is used.
 type EpochID struct {
-    Bucket   BucketID `json:"bucket"`
-    Counter  uint64   `json:"counter"`
+	Bucket  BucketID `json:"bucket"`
+	Counter uint64   `json:"counter"`
 }
 
 // WALRecordType identifies the kind of logical entry inside a bucket log.
@@ -20,13 +20,13 @@ type EpochID struct {
 type WALRecordType int
 
 const (
-    RecDataUpdate WALRecordType = iota
-    RecSubscribe
-    RecUnsubscribe
-    RecOutboxWrite
-    RecOutboxAck
-    RecEpochCreate
-    RecNotifierLease
+	RecDataUpdate WALRecordType = iota
+	RecSubscribe
+	RecUnsubscribe
+	RecOutboxWrite
+	RecOutboxAck
+	RecEpochCreate
+	RecNotifierLease
 )
 
 // WALEntry is the canonical bucket-scoped log entry persisted to disk.
@@ -34,26 +34,26 @@ const (
 // bucket file). CommitIndex is monotonically increasing per bucket.
 // Payload is an opaque byte slice (caller is free to use JSON / protobuf etc.).
 type WALEntry struct {
-    // FileOffset is the byte offset within the per-bucket WAL file at which
-    // this entry starts. (Named FileOffset instead of GlobalOffset to avoid
-    // implying any cross-bucket ordering semantics in the MVP.)
-    FileOffset  uint64        `json:"file_offset"`
-    Timestamp   int64         `json:"ts"`
-    BucketID    BucketID      `json:"bucket_id"`
-    Epoch       EpochID       `json:"epoch"`
-    CommitIndex uint64        `json:"commit_index"`
-    Type        WALRecordType `json:"type"`
-    Payload     []byte        `json:"payload"`
+	// FileOffset is the byte offset within the per-bucket WAL file at which
+	// this entry starts. (Named FileOffset instead of GlobalOffset to avoid
+	// implying any cross-bucket ordering semantics in the MVP.)
+	FileOffset  uint64        `json:"file_offset"`
+	Timestamp   int64         `json:"ts"`
+	BucketID    BucketID      `json:"bucket_id"`
+	Epoch       EpochID       `json:"epoch"`
+	CommitIndex uint64        `json:"commit_index"`
+	Type        WALRecordType `json:"type"`
+	Payload     []byte        `json:"payload"`
 }
 
 // BucketLog abstracts a per-bucket logical log. Future implementations (e.g.
 // Raft) should satisfy this same interface.
 type BucketLog interface {
-    // Append persists an entry, assigning CommitIndex & FileOffset. Returns
-    // the assigned commit index and file offset.
-    Append(ctx context.Context, entry *WALEntry) (commitIndex uint64, fileOffset uint64, err error)
-    Read(ctx context.Context, bucket BucketID, fromCommitIndex uint64) (<-chan *WALEntry, error)
-    Snapshot(ctx context.Context, bucket BucketID) (snapshotID string, err error)
-    Compact(ctx context.Context, bucket BucketID, beforeCommitIndex uint64) error
-    Close() error
+	// Append persists an entry, assigning CommitIndex & FileOffset. Returns
+	// the assigned commit index and file offset.
+	Append(ctx context.Context, entry *WALEntry) (commitIndex uint64, fileOffset uint64, err error)
+	Read(ctx context.Context, bucket BucketID, fromCommitIndex uint64) (<-chan *WALEntry, error)
+	Snapshot(ctx context.Context, bucket BucketID) (snapshotID string, err error)
+	Compact(ctx context.Context, bucket BucketID, beforeCommitIndex uint64) error
+	Close() error
 }
