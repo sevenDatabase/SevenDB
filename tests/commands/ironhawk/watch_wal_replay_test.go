@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -28,6 +29,13 @@ type mockWAL struct {
 	entries  []*wire.Command
 	syncCh   chan struct{}
 	initOnce sync.Once
+}
+
+// ensureConfig guarantees config.Config is initialized when running a single test file directly.
+func ensureConfig() {
+	if config.Config == nil {
+		config.ForceInit(&config.DiceDBConfig{})
+	}
 }
 
 func (m *mockWAL) Init() error { m.initOnce.Do(func() {}); return nil }
@@ -66,6 +74,7 @@ func (m *mockWAL) unblock() {
 // startTestServer spins up a minimal ironhawk server bound to config.Config.Port and returns a cancel func and waitgroup join.
 func startTestServer(t *testing.T, wm *serverih.WatchManager) (cancel func(), join func()) {
 	t.Helper()
+	log.Printf("[test] starting test server host=%s port=%d", config.Config.Host, config.Config.Port)
 
 	gec := make(chan error, 1)
 	// Keep 1 shard for simpler tests
@@ -87,16 +96,28 @@ func startTestServer(t *testing.T, wm *serverih.WatchManager) (cancel func(), jo
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		log.Printf("[test] server Run entering")
 		_ = srv.Run(ctx)
+		log.Printf("[test] server Run exited")
 	}()
 
-	// propagate abort
+	// propagate abort (non-blocking loop that exits on context cancel)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for err := range gec {
-			if err != nil && errors.Is(err, derrors.ErrAborted) {
-				cancelFn()
+		for {
+			select {
+			case <-ctx.Done():
+				log.Printf("[test] error-listener goroutine exiting on ctx cancel")
+				return
+			case err := <-gec:
+				if err == nil {
+					continue
+				}
+				if errors.Is(err, derrors.ErrAborted) {
+					log.Printf("[test] received abort error; canceling context: %v", err)
+					cancelFn()
+				}
 			}
 		}
 	}()
@@ -145,7 +166,10 @@ func replaySubscriptions(t *testing.T, wm *serverih.WatchManager) {
 }
 
 func TestWatch_AckAfterSync(t *testing.T) {
+	// Ensure global config is initialized when running this file standalone.
+	ensureConfig()
 	// Use a mock WAL with a blocking Sync to ensure no ack is sent before durability.
+	config.Config.EnableWatch = true
 	prev := wal.DefaultWAL
 	mw := &mockWAL{syncCh: make(chan struct{})}
 	wal.DefaultWAL = mw
@@ -157,16 +181,20 @@ func TestWatch_AckAfterSync(t *testing.T) {
 	cancel, join := startTestServer(t, wm)
 	defer join()
 
+	log.Printf("[test] dialing client localhost:%d", config.Config.Port)
 	client, err := dicedb.NewClient("localhost", config.Config.Port)
 	if err != nil {
-		t.Fatalf("client connect failed: %v", err)
+			 t.Fatalf("client connect failed: %v", err)
 	}
 	defer client.Close()
+	log.Printf("[test] client connected, firing GET.WATCH (should block)")
 
 	// Fire a GET.WATCH; it should block until WAL.Sync is unblocked
 	resCh := make(chan *wire.Result, 1)
 	go func() {
+		log.Printf("[test] goroutine issuing GET.WATCH")
 		res := client.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{"k_ack_sync"}})
+		log.Printf("[test] GET.WATCH returned status=%v", res.Status)
 		resCh <- res
 	}()
 
@@ -178,6 +206,7 @@ func TestWatch_AckAfterSync(t *testing.T) {
 	}
 
 	// Now unblock WAL sync; the response should come through
+	log.Printf("[test] unblocking WAL Sync")
 	mw.unblock()
 	select {
 	case res := <-resCh:
@@ -201,11 +230,13 @@ func TestWatch_AckAfterSync(t *testing.T) {
 		t.Fatal("timeout waiting for watch response after WAL.Sync unblock")
 	}
 
-	// Cleanup
+	// Cleanup promptly (avoid lingering server if join waits on channels)
+	log.Printf("[test] canceling server context after success")
 	cancel()
 }
 
 func TestWatch_ReplayRestoresSubscription(t *testing.T) {
+	ensureConfig()
 	// Use a real WAL in a temp directory
 	dir := t.TempDir()
 	config.Config.WALDir = filepath.Join(dir, "wal")
@@ -343,6 +374,7 @@ func waitForWatchValues(t *testing.T, c *dicedb.Client, expected map[string]stru
 }
 
 func TestWAL_CorruptedReplayFails(t *testing.T) {
+	ensureConfig()
 	// Use real WAL and then corrupt the CRC header to force a replay error.
 	dir := t.TempDir()
 	config.Config.WALDir = filepath.Join(dir, "wal_corrupt")
@@ -384,6 +416,7 @@ func TestWAL_CorruptedReplayFails(t *testing.T) {
 }
 
 func TestWatch_MultipleSubscriptionsAcrossKeys_Replay(t *testing.T) {
+	ensureConfig()
 	// Real WAL with time-based rotation to ensure replay over multiple entries
 	dir := t.TempDir()
 	config.Config.WALDir = filepath.Join(dir, "wal_multi")
@@ -481,6 +514,7 @@ func waitForWALSegments(t *testing.T, dir string, minCount int, timeout time.Dur
 
 // Simulate an unclean crash: do not stop the WAL (no final flush), then restart and replay.
 func TestWatch_ReplayAfterCrash_NoWALStop(t *testing.T) {
+	ensureConfig()
 	dir := t.TempDir()
 	config.Config.WALDir = filepath.Join(dir, "wal_crash")
 	_ = os.MkdirAll(config.Config.WALDir, 0o755)
@@ -554,6 +588,8 @@ func TestWatch_ReplayUnderLoad_SkippedOnShort(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping load test in -short mode")
 	}
+
+	ensureConfig()
 
 	dir := t.TempDir()
 	config.Config.WALDir = filepath.Join(dir, "wal_load")
@@ -650,6 +686,7 @@ func TestWatch_ReplayUnderLoad_SkippedOnShort(t *testing.T) {
 }
 
 func TestWatch_SubscribeUnsubscribe_Replay(t *testing.T) {
+	ensureConfig()
 	dir := t.TempDir()
 	config.Config.WALDir = filepath.Join(dir, "wal_unsub")
 	_ = os.MkdirAll(config.Config.WALDir, 0o755)
@@ -739,6 +776,7 @@ func TestWatch_SubscribeUnsubscribe_Replay(t *testing.T) {
 }
 
 func TestWatch_ConcurrentSubscriptions_Replay(t *testing.T) {
+	ensureConfig()
 	dir := t.TempDir()
 	config.Config.WALDir = filepath.Join(dir, "wal_concurrent")
 	_ = os.MkdirAll(config.Config.WALDir, 0o755)
@@ -828,6 +866,7 @@ func TestWAL_TimestampDeterminism_Skipped(t *testing.T) {
 // Truncated EOF at the end of the WAL should cause replay to fail loudly.
 // Truncated EOF at the end of the WAL should cause replay to fail loudly with an EOF/UnexpectedEOF.
 func TestWAL_TruncatedEOF_ReplayFails(t *testing.T) {
+	ensureConfig()
 	dir := t.TempDir()
 	config.Config.WALDir = filepath.Join(dir, "wal_trunc")
 	_ = os.MkdirAll(config.Config.WALDir, 0o755)
@@ -871,6 +910,7 @@ func TestWAL_TruncatedEOF_ReplayFails(t *testing.T) {
 
 // Truncating inside the header (CRC/length) should also error with UnexpectedEOF during header read.
 func TestWAL_TruncatedHeader_ReplayFails(t *testing.T) {
+	ensureConfig()
 	dir := t.TempDir()
 	config.Config.WALDir = filepath.Join(dir, "wal_trunc_header")
 	_ = os.MkdirAll(config.Config.WALDir, 0o755)
@@ -913,6 +953,7 @@ func TestWAL_TruncatedHeader_ReplayFails(t *testing.T) {
 // Subscribe -> Unsubscribe -> Resubscribe within one segment; only the final subscription should be active after replay.
 // Subscribe -> Unsubscribe -> Resubscribe within one segment; only the final subscription should be active after replay.
 func TestWatch_SubUnsubResubscribe_SingleSegment_Replay(t *testing.T) {
+	ensureConfig()
 	dir := t.TempDir()
 	config.Config.WALDir = filepath.Join(dir, "wal_subunsub")
 	_ = os.MkdirAll(config.Config.WALDir, 0o755)
@@ -1009,6 +1050,7 @@ func TestWatch_SubUnsubResubscribe_SingleSegment_Replay(t *testing.T) {
 }
 
 func TestWatch_MultiClientSameKey_Replay(t *testing.T) {
+	ensureConfig()
 	dir := t.TempDir()
 	config.Config.WALDir = filepath.Join(dir, "wal_multi_client")
 	_ = os.MkdirAll(config.Config.WALDir, 0o755)

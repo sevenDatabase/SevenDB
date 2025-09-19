@@ -36,12 +36,18 @@ func NewWatchManager() *WatchManager {
 }
 
 func (w *WatchManager) RegisterThread(t *IOThread) {
-	if t.Mode == "watch" {
-		// Only acquire lock if we are in "watch" mode.
-		w.mu.Lock()
-		defer w.mu.Unlock()
-		w.clientWatchThreadMap[t.ClientID] = t
-	}
+	// Register (or refresh) the IOThread for the client irrespective of its mode.
+	//
+	// Rationale: Durable watch acks are sent via NotifyWatchers which resolves
+	// client threads from this map. Some tests (and legitimate clients) perform
+	// subscriptions from a connection that initially handshakes in "command"
+	// mode. Restricting registration only to explicit "watch" mode caused the
+	// initial watch response never to be delivered, leading to blocked clients
+	// (and test hangs) waiting on the GET.WATCH ack. Allowing all modes here is
+	// safe; CleanupThreadWatchSubscriptions will prune on disconnect.
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.clientWatchThreadMap[t.ClientID] = t
 }
 
 func (w *WatchManager) HandleWatch(c *cmd.Cmd, t *IOThread) error {
