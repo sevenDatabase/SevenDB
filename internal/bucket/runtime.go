@@ -22,10 +22,11 @@ func NewBucket(id BucketID, l BucketLog) *Bucket {
     return &Bucket{ID: id, log: l}
 }
 
-// run executes a sequential apply loop for the bucket until ctx is cancelled.
+// Run executes a sequential apply loop for the bucket until ctx is cancelled.
 // It re-reads from (lastApplied+1) each time the stream ends (e.g., reaching EOF)
 // which is acceptable for the simple file log (new appends require a new Read).
-func (b *Bucket) run(ctx context.Context) {
+// TODO(runtime): plug in subscription + outbox + GC + snapshot hooks once those subsystems land.
+func (b *Bucket) Run(ctx context.Context) {
     for {
         select {
         case <-ctx.Done():

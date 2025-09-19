@@ -156,9 +156,11 @@ func (f *FileBucketLog) Append(ctx context.Context, entry *WALEntry) (uint64, ui
     if _, err := bw.Write(payload); err != nil {
         return 0, 0, fmt.Errorf("write payload: %w", err)
     }
-    if err := bw.Flush(); err != nil { // ensure durability ordering semantics for MVP
+    if _, err := bw.Flush(); err != nil { // ensure durability ordering semantics for MVP
         return 0, 0, fmt.Errorf("flush: %w", err)
     }
+    // TODO(perf): This fsync happens per entry (safe but slow). Introduce group commit / batching
+    // (timer or size based) and possibly fdatasync for higher throughput.
     if err := file.Sync(); err != nil { // fsync per entry (slow); optimize later with group commit
         return 0, 0, fmt.Errorf("fsync: %w", err)
     }
@@ -236,10 +238,14 @@ func (f *FileBucketLog) Read(ctx context.Context, bucket BucketID, fromCommitInd
 
 // Snapshot is a stub for the MVP – returns a generated snapshot ID without creating an actual snapshot.
 func (f *FileBucketLog) Snapshot(ctx context.Context, bucket BucketID) (string, error) {
+    // TODO(snapshot): Persist point-in-time image of bucket state (keys, subs, outbox) so replay + delta is bounded.
+    // Required for: WAL GC, rapid bucket migration and future Raft snapshot installation.
     return fmt.Sprintf("snapshot-%s-%d", bucket, time.Now().UnixNano()), nil
 }
 
-// Compact currently a no-op (MVP). Future work: rewrite file excluding entries before beforeCommitIndex.
+// Compact currently a no-op (MVP).
+// TODO(compaction): Rewrite file excluding entries before beforeCommitIndex (>= durable snapshot point)
+// to reclaim space and keep replay time bounded.
 func (f *FileBucketLog) Compact(ctx context.Context, bucket BucketID, beforeCommitIndex uint64) error {
     return nil
 }
