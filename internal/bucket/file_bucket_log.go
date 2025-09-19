@@ -31,10 +31,10 @@ type FileBucketLog struct {
 
     mu sync.Mutex
     // per bucket state (opened lazily)
-    files   map[BucketID]*os.File
-    writers map[BucketID]*bufio.Writer
-    // last assigned commit index per bucket
-    commitIdx map[BucketID]uint64
+    files      map[BucketID]*os.File
+    writers    map[BucketID]*bufio.Writer
+    commitIdx  map[BucketID]uint64 // last assigned commit index per bucket
+    epochCount map[BucketID]uint64 // current epoch counter per bucket
 }
 
 func NewFileBucketLog() (*FileBucketLog, error) {
@@ -47,6 +47,7 @@ func NewFileBucketLog() (*FileBucketLog, error) {
         files:     map[BucketID]*os.File{},
         writers:   map[BucketID]*bufio.Writer{},
         commitIdx: map[BucketID]uint64{},
+        epochCount: map[BucketID]uint64{},
     }
     return fbl, nil
 }
@@ -125,17 +126,18 @@ func (f *FileBucketLog) Append(ctx context.Context, entry *WALEntry) (uint64, ui
     // Assign commit index & timestamp
     entry.CommitIndex = f.commitIdx[entry.BucketID] + 1
     entry.Timestamp = time.Now().UnixNano()
-    entry.Epoch = EpochID{Bucket: entry.BucketID, Counter: entry.Epoch.Counter} // ensure Bucket filled
+    // Stamp epoch deterministically from internal counter; caller supplied counter ignored for safety.
+    entry.Epoch = EpochID{Bucket: entry.BucketID, Counter: f.epochCount[entry.BucketID]}
 
     bw := f.writers[entry.BucketID]
     file := f.files[entry.BucketID]
 
-    // GlobalOffset = current file size (seek)
+    // FileOffset = current file size (seek)
     off, err := file.Seek(0, io.SeekCurrent)
     if err != nil {
         return 0, 0, fmt.Errorf("seek current: %w", err)
     }
-    entry.GlobalOffset = uint64(off)
+    entry.FileOffset = uint64(off)
 
     payload, err := json.Marshal(entry)
     if err != nil {
@@ -161,7 +163,7 @@ func (f *FileBucketLog) Append(ctx context.Context, entry *WALEntry) (uint64, ui
         return 0, 0, fmt.Errorf("fsync: %w", err)
     }
     f.commitIdx[entry.BucketID] = entry.CommitIndex
-    return entry.CommitIndex, entry.GlobalOffset, nil
+    return entry.CommitIndex, entry.FileOffset, nil
 }
 
 // Read streams entries for a bucket starting at fromCommitIndex. Caller must
