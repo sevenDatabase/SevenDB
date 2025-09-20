@@ -41,7 +41,7 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 	if config.Config != nil && config.Config.RaftEnabled {
 		sm.raftNodes = make([]*raft.ShardRaftNode, shardCount)
 		for i := 0; i < shardCount; i++ {
-			rn, err := raft.NewShardRaftNode(raft.RaftConfig{ShardID:  string(rune('a'+i))})
+			rn, err := raft.NewShardRaftNode(raft.RaftConfig{ShardID: string(rune('a' + i)), Engine: config.Config.RaftEngine, HeartbeatMillis: config.Config.RaftHeartbeatMillis, ElectionTimeoutMillis: config.Config.RaftElectionTimeoutMillis})
 			if err != nil {
 				slog.Error("failed to start raft for shard", slog.Int("shard", i), slog.Any("error", err))
 				continue
@@ -100,11 +100,16 @@ func (manager *ShardManager) Shards() []*shard.Shard {
 // BucketLogFor returns a bucket log implementation for the shard index. When raft is enabled
 // it returns a RaftBucketLog; otherwise a file-backed log. Errors are logged and a nil may be returned.
 func (manager *ShardManager) BucketLogFor(shardIdx int) bucket.BucketLog {
-	if shardIdx < 0 || shardIdx >= len(manager.shards) { return nil }
+	if shardIdx < 0 || shardIdx >= len(manager.shards) {
+		return nil
+	}
 	if manager.raftNodes != nil && manager.raftNodes[shardIdx] != nil {
 		return bucket.NewRaftBucketLog(manager.raftNodes[shardIdx])
 	}
 	fbl, err := bucket.NewFileBucketLog()
-	if err != nil { slog.Error("failed to create file bucket log", slog.Int("shard", shardIdx), slog.Any("error", err)); return nil }
+	if err != nil {
+		slog.Error("failed to create file bucket log", slog.Int("shard", shardIdx), slog.Any("error", err))
+		return nil
+	}
 	return fbl
 }

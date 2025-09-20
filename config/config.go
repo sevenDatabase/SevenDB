@@ -71,14 +71,15 @@ type DiceDBConfig struct {
 	WALBufferSyncIntervalMillis int    `mapstructure:"wal-buffer-sync-interval-ms" default:"200" description:"the interval (in milliseconds) at which the wal write buffer is synced to disk"`
 
 	// Raft / replication flags (MVP – subject to change; kept flat for simple flag binding)
-	RaftEnabled                 bool     `mapstructure:"raft-enabled" default:"false" description:"enable raft replication (experimental)"`
-	RaftNodes                   []string `mapstructure:"raft-nodes" description:"comma separated raft peer addresses (host:port) for static cluster"`
-	RaftHeartbeatMillis         int      `mapstructure:"raft-heartbeat-ms" default:"100" description:"raft heartbeat interval in ms"`
-	RaftElectionTimeoutMillis   int      `mapstructure:"raft-election-timeout-ms" default:"1000" description:"raft election timeout base in ms"`
-	RaftSnapshotThresholdEntries int     `mapstructure:"raft-snapshot-threshold-entries" default:"10000" description:"create shard snapshot after this many new committed entries"`
-	RaftSnapshotThresholdBytes  int      `mapstructure:"raft-snapshot-threshold-bytes" default:"104857600" description:"create shard snapshot if approximate added bytes exceed this"`
-	RaftSnapshotIntervalSec     int      `mapstructure:"raft-snapshot-interval-sec" default:"300" description:"force snapshot if this many seconds pass without one"`
-	RaftPersistentDir           string   `mapstructure:"raft-persistent-dir" default:"raftdata" description:"base directory for raft logs & snapshots"`
+	RaftEnabled                  bool     `mapstructure:"raft-enabled" default:"false" description:"enable raft replication (experimental)"`
+	RaftNodes                    []string `mapstructure:"raft-nodes" description:"comma separated raft peer addresses (host:port) for static cluster"`
+	RaftHeartbeatMillis          int      `mapstructure:"raft-heartbeat-ms" default:"100" description:"raft heartbeat interval in ms"`
+	RaftElectionTimeoutMillis    int      `mapstructure:"raft-election-timeout-ms" default:"1000" description:"raft election timeout base in ms"`
+	RaftSnapshotThresholdEntries int      `mapstructure:"raft-snapshot-threshold-entries" default:"10000" description:"create shard snapshot after this many new committed entries"`
+	RaftSnapshotThresholdBytes   int      `mapstructure:"raft-snapshot-threshold-bytes" default:"104857600" description:"create shard snapshot if approximate added bytes exceed this"`
+	RaftSnapshotIntervalSec      int      `mapstructure:"raft-snapshot-interval-sec" default:"300" description:"force snapshot if this many seconds pass without one"`
+	RaftPersistentDir            string   `mapstructure:"raft-persistent-dir" default:"raftdata" description:"base directory for raft logs & snapshots"`
+	RaftEngine                  string   `mapstructure:"raft-engine" default:"stub" description:"raft engine implementation: stub | etcd"`
 }
 
 func Load(flags *pflag.FlagSet) {

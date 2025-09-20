@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sevenDatabase/SevenDB/internal/server/utils"
 	"github.com/sevenDatabase/SevenDB/config"
+	"github.com/sevenDatabase/SevenDB/internal/server/utils"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -32,8 +32,8 @@ type (
 		ID   uint64
 		User *User
 
-	CreatedAt      int64
-	LastAccessedAt int64
+		CreatedAt      int64
+		LastAccessedAt int64
 
 		Status SessionStatusT
 	}

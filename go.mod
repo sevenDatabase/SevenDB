@@ -11,6 +11,8 @@ require (
 	github.com/dgryski/go-metro v0.0.0-20211217172704-adc40b04c140 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
+	github.com/gogo/protobuf v1.3.2 // indirect
+	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
@@ -50,6 +52,7 @@ require (
 	github.com/stretchr/testify v1.10.0
 	github.com/twmb/murmur3 v1.1.8
 	github.com/wangjia184/sortedset v0.0.0-20220209072355-af6d6d227aa7
+	go.etcd.io/etcd/raft/v3 v3.5.13
 	golang.org/x/crypto v0.38.0
 	google.golang.org/protobuf v1.36.6
 )
