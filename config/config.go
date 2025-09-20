@@ -79,7 +79,7 @@ type DiceDBConfig struct {
 	RaftSnapshotThresholdBytes   int      `mapstructure:"raft-snapshot-threshold-bytes" default:"104857600" description:"create shard snapshot if approximate added bytes exceed this"`
 	RaftSnapshotIntervalSec      int      `mapstructure:"raft-snapshot-interval-sec" default:"300" description:"force snapshot if this many seconds pass without one"`
 	RaftPersistentDir            string   `mapstructure:"raft-persistent-dir" default:"raftdata" description:"base directory for raft logs & snapshots"`
-	RaftEngine                  string   `mapstructure:"raft-engine" default:"stub" description:"raft engine implementation: stub | etcd"`
+	RaftEngine                   string   `mapstructure:"raft-engine" default:"stub" description:"raft engine implementation: stub | etcd"`
 }
 
 func Load(flags *pflag.FlagSet) {
