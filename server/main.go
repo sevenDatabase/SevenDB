@@ -174,7 +174,9 @@ func Start() {
 					// had its expiry set in the past) means no additional mutation needs
 					// to be applied at restore time.
 					if cd.Cmd == "GETEX" && strings.Contains(err.Error(), "PXAT") {
-						slog.Warn("skipping expired GETEX PXAT during WAL replay", slog.String("cmd", cd.Cmd), slog.Any("error", err))
+						// Silently skip expired GETEX PXAT entries during WAL replay. Originally this logged a warning
+						// per occurrence, but these are expected when absolute expirations have already passed while
+						// the server was down. Treat as a no-op with no log noise.
 						return nil
 					}
 					return fmt.Errorf("error handling WAL replay: %w", err)
