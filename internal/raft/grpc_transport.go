@@ -11,7 +11,7 @@ import (
 
 	"go.etcd.io/etcd/raft/v3/raftpb"
 
-	"github.com/sevenDatabase/SevenDB/internal/raft/pb"
+	"github.com/sevenDatabase/SevenDB/internal/raft"
 )
 
 // GRPCTransport implements Transport using a persistent bidirectional stream per peer.

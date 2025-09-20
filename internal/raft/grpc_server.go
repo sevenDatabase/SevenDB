@@ -12,7 +12,7 @@ import (
 
 	"go.etcd.io/etcd/raft/v3/raftpb"
 
-	"github.com/sevenDatabase/SevenDB/internal/raft/pb"
+	"github.com/sevenDatabase/SevenDB/internal/raft"
 )
 
 // RaftGRPCServer implements the server side of the RaftTransport gRPC service.
