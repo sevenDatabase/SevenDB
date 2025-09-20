@@ -7,11 +7,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/proto"
+	gogoproto "github.com/gogo/protobuf/proto"
 
 	"go.etcd.io/etcd/raft/v3/raftpb"
-
-	"github.com/sevenDatabase/SevenDB/internal/raft"
 )
 
 // GRPCTransport implements Transport using a persistent bidirectional stream per peer.
@@ -29,7 +27,7 @@ type peerConn struct {
 	id     uint64
 	addr   string
 	conn   *grpc.ClientConn
-	stream pb.RaftTransport_MessageStreamClient
+	stream RaftTransport_MessageStreamClient
 	cancel context.CancelFunc
 }
 
@@ -42,12 +40,12 @@ type PeerResolver interface {
 
 // StaticPeerResolver implements PeerResolver over a fixed map.
 type StaticPeerResolver struct {
-	self  uint64
-	addrs map[uint64]string
+    SelfID uint64
+    Addrs  map[uint64]string
 }
 
-func (s *StaticPeerResolver) Resolve(id uint64) (string, bool) { v, ok := s.addrs[id]; return v, ok }
-func (s *StaticPeerResolver) Self() uint64                  { return s.self }
+func (s *StaticPeerResolver) Resolve(id uint64) (string, bool) { v, ok := s.Addrs[id]; return v, ok }
+func (s *StaticPeerResolver) Self() uint64                  { return s.SelfID }
 
 func NewGRPCTransport(selfID uint64, shardID string, r PeerResolver) *GRPCTransport {
     return &GRPCTransport{selfID: selfID, shardID: shardID, peers: make(map[uint64]*peerConn), resolver: r}
@@ -67,7 +65,7 @@ func (t *GRPCTransport) peerIDSet() map[uint64]struct{} {
 	res := make(map[uint64]struct{})
 	// Extract from resolver (static implementation only for now)
 	if sr, ok := t.resolver.(*StaticPeerResolver); ok {
-		for id := range sr.addrs {
+		for id := range sr.Addrs {
 			res[id] = struct{}{}
 		}
 	}
@@ -92,9 +90,9 @@ func (t *GRPCTransport) ensurePeerStream(id uint64) {
 			time.Sleep(2 * time.Second)
 			continue
 		}
-		client := pb.NewRaftTransportClient(conn)
+		client := NewRaftTransportClient(conn)
 		streamCtx, streamCancel := context.WithCancel(context.Background())
-		stream, err := client.MessageStream(streamCtx)
+	stream, err := client.MessageStream(streamCtx)
 		if err != nil {
 			slog.Warn("raft open stream failed", slog.Uint64("peer", id), slog.Any("error", err))
 			streamCancel()
@@ -161,12 +159,12 @@ func (t *GRPCTransport) Send(ctx context.Context, msgs []raftpb.Message) {
 			go t.ensurePeerStream(m.To)
 			continue
 		}
-		data, err := proto.Marshal(&m)
+	data, err := gogoproto.Marshal(&m)
 		if err != nil {
 			slog.Warn("raft marshal failed", slog.Uint64("to", m.To), slog.Any("error", err))
 			continue
 		}
-		env := &pb.RaftEnvelope{ShardId: t.shardID, RaftMessage: data}
+	env := &RaftEnvelope{ShardId: t.shardID, RaftMessage: data}
 		if err := pc.stream.Send(env); err != nil {
 			slog.Warn("raft send failed", slog.Uint64("to", m.To), slog.Any("error", err))
 			t.removePeer(m.To)

@@ -80,6 +80,9 @@ type DiceDBConfig struct {
 	RaftSnapshotIntervalSec      int      `mapstructure:"raft-snapshot-interval-sec" default:"300" description:"force snapshot if this many seconds pass without one"`
 	RaftPersistentDir            string   `mapstructure:"raft-persistent-dir" default:"raftdata" description:"base directory for raft logs & snapshots"`
 	RaftEngine                   string   `mapstructure:"raft-engine" default:"stub" description:"raft engine implementation: stub | etcd"`
+	RaftNodeID                   string   `mapstructure:"raft-node-id" description:"local raft node id (uint64 as string); required for multi-node"`
+	RaftListenAddr               string   `mapstructure:"raft-listen-addr" default:":7090" description:"address host:port for local raft gRPC server to listen on"`
+	RaftAdvertiseAddr            string   `mapstructure:"raft-advertise-addr" description:"public address host:port other peers use to reach this node; defaults to raft-listen-addr if empty"`
 }
 
 func Load(flags *pflag.FlagSet) {

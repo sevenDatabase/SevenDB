@@ -309,19 +309,32 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 	heartbeatTicks := 1
 	c := &etcdraft.Config{ID: id, ElectionTick: int(electionTicks), HeartbeatTick: heartbeatTicks, Storage: etcdraft.NewMemoryStorage(), MaxSizePerMsg: 1 << 20, MaxInflightMsgs: 256, CheckQuorum: true, PreVote: true, Logger: &etcdLoggerAdapter{}}
 	s.storage = c.Storage.(*etcdraft.MemoryStorage)
-	// TODO: parse cfg.Peers to build initial peer set (MVP keeps single self peer if len<=1)
-	peers := []etcdraft.Peer{{ID: id}}
-	// Future: when cfg.Peers provided in format id=addr, build transport + peer slice.
+	var peers []etcdraft.Peer
+	if len(cfg.Peers) == 0 {
+		peers = []etcdraft.Peer{{ID: id}}
+	} else {
+		// Expect peer specs as "<id>@<addr>"; we only need IDs here.
+		for _, spec := range cfg.Peers {
+			parts := spec
+			at := -1
+			for i, ch := range spec {
+				if ch == '@' { at = i; break }
+			}
+			if at != -1 { parts = spec[:at] }
+			if pid, err := strconv.ParseUint(parts, 10, 64); err == nil {
+				peers = append(peers, etcdraft.Peer{ID: pid})
+			}
+		}
+		// Ensure self id is included.
+		found := false
+		for _, p := range peers { if p.ID == id { found = true; break } }
+		if !found { peers = append(peers, etcdraft.Peer{ID: id}) }
+	}
 	s.rn = etcdraft.StartNode(c, peers)
 	s.stopCh = make(chan struct{})
 	s.tickEvery = time.Duration(hb) * time.Millisecond
 	// Install a noop transport for now; future commit will wire HTTP/gRPC based multi-node message passing.
-	if len(cfg.Peers) > 1 {
-		// Placeholder: real transport will be constructed here using cfg.Peers
-		s.transport = &noopTransport{}
-	} else {
-		s.transport = &noopTransport{}
-	}
+	s.transport = &noopTransport{}
 	go s.tickLoop()
 	go s.readyLoop()
 	return nil
@@ -396,6 +409,12 @@ func (s *ShardRaftNode) Step(ctx context.Context, m raftpb.Message) error {
 	}
 	return nil
 }
+
+// SetTransport allows late attachment of a concrete transport (e.g. gRPC) after node creation.
+func (s *ShardRaftNode) SetTransport(t Transport) { s.transport = t }
+
+// ShardID returns the logical shard identifier.
+func (s *ShardRaftNode) ShardID() string { return s.shardID }
 
 // Transport defines the minimal interface for sending raft pb.Messages to peers.
 // A future implementation will likely be HTTP or gRPC based with batching & backpressure.

@@ -8,22 +8,20 @@ import (
 	"sync"
 
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/proto"
+	gogoproto "github.com/gogo/protobuf/proto"
 
 	"go.etcd.io/etcd/raft/v3/raftpb"
-
-	"github.com/sevenDatabase/SevenDB/internal/raft"
 )
 
 // RaftGRPCServer implements the server side of the RaftTransport gRPC service.
 // It accepts RaftEnvelope streams, unmarshals raftpb.Messages, and forwards
 // them into the appropriate shard's ShardRaftNode via Step().
 type RaftGRPCServer struct {
-	pb.UnimplementedRaftTransportServer
-	localID uint64
+	UnimplementedRaftTransportServer
+    localID uint64
 
-	mu     sync.RWMutex
-	shards map[string]*ShardRaftNode // shardID -> node
+    mu     sync.RWMutex
+    shards map[string]*ShardRaftNode // shardID -> node
 }
 
 // NewRaftGRPCServer creates a new transport server for the given local raft node ID.
@@ -52,7 +50,7 @@ func (s *RaftGRPCServer) getShard(shardID string) *ShardRaftNode {
 // MessageStream handles the bidirectional stream. For now we only consume
 // envelopes from peers (no responses / acks are sent). Future enhancements
 // may use the return stream for flow control or snapshots.
-func (s *RaftGRPCServer) MessageStream(stream pb.RaftTransport_MessageStreamServer) error {
+func (s *RaftGRPCServer) MessageStream(stream RaftTransport_MessageStreamServer) error {
 	ctx := stream.Context()
 	for {
 		env, err := stream.Recv()
@@ -74,7 +72,7 @@ func (s *RaftGRPCServer) MessageStream(stream pb.RaftTransport_MessageStreamServ
 		}
 		// Unmarshal raft message
 		var m raftpb.Message
-		if err := proto.Unmarshal(env.RaftMessage, &m); err != nil {
+		if err := gogoproto.Unmarshal(env.RaftMessage, &m); err != nil {
 			slog.Warn("raft envelope unmarshal failed", slog.String("shard", env.ShardId), slog.Int("len", len(env.RaftMessage)), slog.Any("error", err))
 			continue
 		}
@@ -102,7 +100,7 @@ func (s *RaftGRPCServer) Serve(addr string, opts ...grpc.ServerOption) error {
 		return err
 	}
 	grpcSrv := grpc.NewServer(opts...)
-	pb.RegisterRaftTransportServer(grpcSrv, s)
+	RegisterRaftTransportServer(grpcSrv, s)
 	slog.Info("raft grpc server listening", slog.String("addr", addr))
 	return grpcSrv.Serve(lis)
 }

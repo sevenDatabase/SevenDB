@@ -5,6 +5,7 @@ package shardmanager
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -21,10 +22,12 @@ import (
 )
 
 type ShardManager struct {
-	shards  []*shard.Shard
-	sigChan chan os.Signal // sigChan is the signal channel for the shard manager
+	shards      []*shard.Shard
+	sigChan     chan os.Signal // sigChan is the signal channel for the shard manager
 	// raftNodes (optional) holds one ShardRaftNode per shard when raft is enabled.
-	raftNodes []*raft.ShardRaftNode
+	raftNodes   []*raft.ShardRaftNode
+	raftSrv     *raft.RaftGRPCServer
+	localRaftID uint64
 }
 
 // NewShardManager creates a new ShardManager instance with the given number of Shards and a parent context.
@@ -39,16 +42,39 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 	}
 	sm := &ShardManager{shards: shards, sigChan: make(chan os.Signal, 1)}
 	if config.Config != nil && config.Config.RaftEnabled {
+		var peerMap map[uint64]string
+		var canonical []string
+		var err error
+		if len(config.Config.RaftNodes) > 0 {
+			peerMap, canonical, err = raft.ParsePeerSpecs(config.Config.RaftNodes)
+			if err != nil {
+				slog.Error("raft peer parse failed", slog.Any("error", err))
+			} else {
+				if config.Config.RaftAdvertiseAddr == "" { config.Config.RaftAdvertiseAddr = config.Config.RaftListenAddr }
+				localID, derr := raft.DetermineLocalID(config.Config.RaftNodeID, config.Config.RaftAdvertiseAddr, peerMap)
+				if derr != nil {
+					slog.Error("raft local id determination failed", slog.Any("error", derr))
+				} else {
+					sm.localRaftID = localID
+				}
+			}
+		} else {
+			// Single-node implicit cluster
+			peerMap = map[uint64]string{1: config.Config.RaftAdvertiseAddr}
+			canonical = []string{"1@" + config.Config.RaftAdvertiseAddr}
+			sm.localRaftID = 1
+		}
 		sm.raftNodes = make([]*raft.ShardRaftNode, shardCount)
 		for i := 0; i < shardCount; i++ {
-			rn, err := raft.NewShardRaftNode(raft.RaftConfig{ShardID: string(rune('a' + i)), Engine: config.Config.RaftEngine, HeartbeatMillis: config.Config.RaftHeartbeatMillis, ElectionTimeoutMillis: config.Config.RaftElectionTimeoutMillis})
+			cfg := raft.RaftConfig{ShardID: string(rune('a' + i)), Engine: config.Config.RaftEngine, HeartbeatMillis: config.Config.RaftHeartbeatMillis, ElectionTimeoutMillis: config.Config.RaftElectionTimeoutMillis, NodeID: fmt.Sprintf("%d", sm.localRaftID), Peers: canonical}
+			rn, err := raft.NewShardRaftNode(cfg)
 			if err != nil {
 				slog.Error("failed to start raft for shard", slog.Int("shard", i), slog.Any("error", err))
 				continue
 			}
 			sm.raftNodes[i] = rn
 		}
-		slog.Info("raft enabled for shards", slog.Int("count", shardCount))
+		slog.Info("raft enabled for shards", slog.Int("count", shardCount), slog.Uint64("local_id", sm.localRaftID))
 	}
 	return sm
 }
@@ -60,6 +86,36 @@ func (manager *ShardManager) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 	shardCtx, cancelShard := context.WithCancel(ctx)
 	defer cancelShard()
+
+	// If raft multi-node & etcd engine enabled, start gRPC server and attach transports.
+	if manager.raftNodes != nil && config.Config.RaftEngine == "etcd" && manager.localRaftID != 0 && config.Config.RaftListenAddr != "" {
+		resolverAddrs := make(map[uint64]string)
+		if len(config.Config.RaftNodes) > 0 {
+			pm, _, err := raft.ParsePeerSpecs(config.Config.RaftNodes)
+			if err == nil { resolverAddrs = pm }
+		}
+		if len(resolverAddrs) == 0 { // single node fallback
+			resolverAddrs[manager.localRaftID] = config.Config.RaftAdvertiseAddr
+		}
+		resolver := &raft.StaticPeerResolver{SelfID: manager.localRaftID, Addrs: resolverAddrs}
+		// Register shards in server
+		if len(resolverAddrs) > 1 { // only run server if multi-node
+			manager.raftSrv = raft.NewRaftGRPCServer(manager.localRaftID)
+			for _, rn := range manager.raftNodes { if rn != nil { manager.raftSrv.RegisterShard(rn.ShardID(), rn) } }
+			go func() {
+				if err := manager.raftSrv.Serve(config.Config.RaftListenAddr); err != nil {
+					slog.Error("raft grpc server exited", slog.Any("error", err))
+				}
+			}()
+		}
+		// Attach transports
+		for _, rn := range manager.raftNodes {
+			if rn == nil { continue }
+			gt := raft.NewGRPCTransport(manager.localRaftID, rn.ShardID(), resolver)
+			rn.SetTransport(gt)
+			go gt.Start(shardCtx)
+		}
+	}
 
 	manager.start(shardCtx, &wg)
 
