@@ -1,0 +1,17 @@
+syntax = "proto3";
+package rafttransport;
+
+option go_package = "github.com/sevenDatabase/SevenDB/internal/raft/pb";
+
+// RaftEnvelope wraps a serialized etcd raftpb.Message plus shard routing info.
+// We avoid importing the etcd raft .proto directly to keep generation simple and
+// stable against upstream changes. The payload is a marshaled raftpb.Message.
+message RaftEnvelope {
+  string shard_id = 1;     // logical shard identifier (matches ShardRaftNode.shardID)
+  bytes raft_message = 2;  // marshaled go.etcd.io/etcd/raft/v3/raftpb.Message
+}
+
+// RaftTransport provides a bidirectional stream for raft envelopes.
+service RaftTransport {
+  rpc MessageStream(stream RaftEnvelope) returns (stream RaftEnvelope);
+}
