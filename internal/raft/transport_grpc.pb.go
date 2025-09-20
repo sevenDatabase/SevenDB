@@ -4,7 +4,7 @@
 // - protoc             v3.19.6
 // source: internal/raft/transport.proto
 
-package pb
+package raft
 
 import (
 	context "context"

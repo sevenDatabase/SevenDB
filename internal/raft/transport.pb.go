@@ -4,7 +4,7 @@
 // 	protoc        v3.19.6
 // source: internal/raft/transport.proto
 
-package pb
+package raft
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -85,7 +85,7 @@ const file_internal_raft_transport_proto_rawDesc = "" +
 	"\bshard_id\x18\x01 \x01(\tR\ashardId\x12!\n" +
 	"\fraft_message\x18\x02 \x01(\fR\vraftMessage2^\n" +
 	"\rRaftTransport\x12M\n" +
-	"\rMessageStream\x12\x1b.rafttransport.RaftEnvelope\x1a\x1b.rafttransport.RaftEnvelope(\x010\x01B3Z1github.com/sevenDatabase/SevenDB/internal/raft/pbb\x06proto3"
+	"\rMessageStream\x12\x1b.rafttransport.RaftEnvelope\x1a\x1b.rafttransport.RaftEnvelope(\x010\x01B0Z.github.com/sevenDatabase/SevenDB/internal/raftb\x06proto3"
 
 var (
 	file_internal_raft_transport_proto_rawDescOnce sync.Once

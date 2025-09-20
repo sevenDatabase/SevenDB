@@ -1,7 +1,7 @@
 syntax = "proto3";
 package rafttransport;
 
-option go_package = "github.com/sevenDatabase/SevenDB/internal/raft/pb";
+option go_package = "github.com/sevenDatabase/SevenDB/internal/raft";
 
 // RaftEnvelope wraps a serialized etcd raftpb.Message plus shard routing info.
 // We avoid importing the etcd raft .proto directly to keep generation simple and
