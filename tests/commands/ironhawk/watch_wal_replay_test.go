@@ -184,7 +184,7 @@ func TestWatch_AckAfterSync(t *testing.T) {
 	log.Printf("[test] dialing client localhost:%d", config.Config.Port)
 	client, err := dicedb.NewClient("localhost", config.Config.Port)
 	if err != nil {
-			 t.Fatalf("client connect failed: %v", err)
+		t.Fatalf("client connect failed: %v", err)
 	}
 	defer client.Close()
 	log.Printf("[test] client connected, firing GET.WATCH (should block)")

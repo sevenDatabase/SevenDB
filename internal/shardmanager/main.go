@@ -5,6 +5,7 @@ package shardmanager
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"os/signal"
 	"sync"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/sevenDatabase/SevenDB/config"
+	"github.com/sevenDatabase/SevenDB/internal/bucket"
+	"github.com/sevenDatabase/SevenDB/internal/raft"
 	"github.com/sevenDatabase/SevenDB/internal/shard"
 	"github.com/sevenDatabase/SevenDB/internal/shardthread"
 	"github.com/sevenDatabase/SevenDB/internal/store"
@@ -20,6 +23,8 @@ import (
 type ShardManager struct {
 	shards  []*shard.Shard
 	sigChan chan os.Signal // sigChan is the signal channel for the shard manager
+	// raftNodes (optional) holds one ShardRaftNode per shard when raft is enabled.
+	raftNodes []*raft.ShardRaftNode
 }
 
 // NewShardManager creates a new ShardManager instance with the given number of Shards and a parent context.
@@ -32,11 +37,20 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 			Thread: shardthread.NewShardThread(i, globalErrorChan, store.NewPrimitiveEvictionStrategy(maxKeysPerShard)),
 		}
 	}
-
-	return &ShardManager{
-		shards:  shards,
-		sigChan: make(chan os.Signal, 1),
+	sm := &ShardManager{shards: shards, sigChan: make(chan os.Signal, 1)}
+	if config.Config != nil && config.Config.RaftEnabled {
+		sm.raftNodes = make([]*raft.ShardRaftNode, shardCount)
+		for i := 0; i < shardCount; i++ {
+			rn, err := raft.NewShardRaftNode(raft.RaftConfig{ShardID:  string(rune('a'+i))})
+			if err != nil {
+				slog.Error("failed to start raft for shard", slog.Int("shard", i), slog.Any("error", err))
+				continue
+			}
+			sm.raftNodes[i] = rn
+		}
+		slog.Info("raft enabled for shards", slog.Int("count", shardCount))
 	}
+	return sm
 }
 
 // Run starts the ShardManager, manages its lifecycle, and listens for errors.
@@ -81,4 +95,16 @@ func (manager *ShardManager) ShardCount() int8 {
 
 func (manager *ShardManager) Shards() []*shard.Shard {
 	return manager.shards
+}
+
+// BucketLogFor returns a bucket log implementation for the shard index. When raft is enabled
+// it returns a RaftBucketLog; otherwise a file-backed log. Errors are logged and a nil may be returned.
+func (manager *ShardManager) BucketLogFor(shardIdx int) bucket.BucketLog {
+	if shardIdx < 0 || shardIdx >= len(manager.shards) { return nil }
+	if manager.raftNodes != nil && manager.raftNodes[shardIdx] != nil {
+		return bucket.NewRaftBucketLog(manager.raftNodes[shardIdx])
+	}
+	fbl, err := bucket.NewFileBucketLog()
+	if err != nil { slog.Error("failed to create file bucket log", slog.Int("shard", shardIdx), slog.Any("error", err)); return nil }
+	return fbl
 }

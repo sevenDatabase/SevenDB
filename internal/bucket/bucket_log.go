@@ -57,3 +57,7 @@ type BucketLog interface {
 	Compact(ctx context.Context, bucket BucketID, beforeCommitIndex uint64) error
 	Close() error
 }
+
+// NOTE: The Raft-backed implementation lives in raft_bucket_log.go and will
+// evolve to route through a per-shard ShardRaftNode. The existing file-backed
+// implementation remains the default when raft is disabled.

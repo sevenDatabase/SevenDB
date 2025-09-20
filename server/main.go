@@ -15,6 +15,7 @@ import (
 	"runtime/pprof"
 	"runtime/trace"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -162,12 +163,20 @@ func Start() {
 				}
 				return watchManager.RemoveSubscription(clientID, fp)
 			default:
-				cmdTemp := cmd.Cmd{
-					C:        cd,
-					IsReplay: true,
-				}
+				cmdTemp := cmd.Cmd{C: cd, IsReplay: true}
 				_, err := cmdTemp.Execute(shardManager)
 				if err != nil {
+					// Tolerate expired time-based GETEX PXAT entries whose absolute timestamp
+					// is now in the past. During normal execution they were valid, but on
+					// replay we re-evaluate with current wall time and the PXAT value can
+					// become <= now(), triggering an invalid value error and aborting boot.
+					// We treat these as no-ops because the original effect (key existed and
+					// had its expiry set in the past) means no additional mutation needs
+					// to be applied at restore time.
+					if cd.Cmd == "GETEX" && strings.Contains(err.Error(), "PXAT") {
+						slog.Warn("skipping expired GETEX PXAT during WAL replay", slog.String("cmd", cd.Cmd), slog.Any("error", err))
+						return nil
+					}
 					return fmt.Errorf("error handling WAL replay: %w", err)
 				}
 				return nil
