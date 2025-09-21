@@ -32,51 +32,59 @@ func newRaftPersistence(baseDir, shardID string) (*raftPersistence, error) {
     return &raftPersistence{dir: d, shardID: shardID, entriesPath: filepath.Join(d, "entries.log"), hsPath: filepath.Join(d, "hardstate.json"), snapPath: filepath.Join(d, "snapshot.bin")}, nil
 }
 
-// Load previous snapshot, hardstate, and entries into storage. Returns true if any state loaded.
-func (p *raftPersistence) Load(storage *etcdraft.MemoryStorage) (bool, error) {
+// Load previous snapshot, hardstate, and entries into storage.
+// Returns:
+//  loaded: whether any state (snapshot, hardstate, or entries) was loaded
+//  snapIdx: index of loaded snapshot (0 if none)
+//  lastEntryIdx: index of last appended entry (0 if none)
+func (p *raftPersistence) Load(storage *etcdraft.MemoryStorage) (loaded bool, snapIdx uint64, lastEntryIdx uint64, err error) {
     p.mu.Lock(); defer p.mu.Unlock()
-    loaded := false
     // Snapshot
-    if b, err := os.ReadFile(p.snapPath); err == nil && len(b) > 0 {
+    if b, rerr := os.ReadFile(p.snapPath); rerr == nil && len(b) > 0 {
         var snap raftpb.Snapshot
-        if err := gogoproto.Unmarshal(b, &snap); err == nil && !etcdraft.IsEmptySnap(snap) {
-            if err := storage.ApplySnapshot(snap); err != nil {
-                slog.Warn("apply snapshot failed", slog.String("shard", p.shardID), slog.Any("error", err))
-            } else { loaded = true }
+        if uerr := gogoproto.Unmarshal(b, &snap); uerr == nil && !etcdraft.IsEmptySnap(snap) {
+            if aerr := storage.ApplySnapshot(snap); aerr != nil {
+                slog.Warn("apply snapshot failed", slog.String("shard", p.shardID), slog.Any("error", aerr))
+            } else {
+                loaded = true
+                snapIdx = snap.Metadata.Index
+                // lastEntryIdx at least snapshot index for initialization semantics
+                if lastEntryIdx < snapIdx { lastEntryIdx = snapIdx }
+            }
         }
     }
     // HardState
-    if b, err := os.ReadFile(p.hsPath); err == nil && len(b) > 0 {
+    if b, rerr := os.ReadFile(p.hsPath); rerr == nil && len(b) > 0 {
         var hs raftpb.HardState
-        if err := json.Unmarshal(b, &hs); err == nil && !etcdraft.IsEmptyHardState(hs) {
+        if uerr := json.Unmarshal(b, &hs); uerr == nil && !etcdraft.IsEmptyHardState(hs) {
             storage.SetHardState(hs); loaded = true
         }
     }
     // Entries
-    f, err := os.Open(p.entriesPath)
-    if err == nil {
+    if f, rerr := os.Open(p.entriesPath); rerr == nil {
         defer f.Close()
         r := bufio.NewReader(f)
         var entries []raftpb.Entry
         for {
-            line, err := r.ReadString('\n')
-            if errors.Is(err, io.EOF) && line == "" { break }
+            line, lerr := r.ReadString('\n')
+            if errors.Is(lerr, io.EOF) && line == "" { break }
             if line == "" { break }
             if len(line) > 0 && line[len(line)-1] == '\n' { line = line[:len(line)-1] }
-            if line == "" { if errors.Is(err, io.EOF) { break }; continue }
+            if line == "" { if errors.Is(lerr, io.EOF) { break }; continue }
             b, decErr := base64.StdEncoding.DecodeString(line)
             if decErr != nil { continue }
             var e raftpb.Entry
             if uErr := gogoproto.Unmarshal(b, &e); uErr == nil {
                 entries = append(entries, e)
+                if e.Index > lastEntryIdx { lastEntryIdx = e.Index }
             }
-            if errors.Is(err, io.EOF) { break }
+            if errors.Is(lerr, io.EOF) { break }
         }
         if len(entries) > 0 {
-            if err := storage.Append(entries); err == nil { loaded = true }
+            if aerr := storage.Append(entries); aerr == nil { loaded = true }
         }
     }
-    return loaded, nil
+    return loaded, snapIdx, lastEntryIdx, nil
 }
 
 // Persist writes raft Ready components (HardState, Entries, Snapshot) atomically enough for MVP.

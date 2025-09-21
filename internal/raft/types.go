@@ -365,10 +365,16 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 		return err
 	}
 	storage := etcdraft.NewMemoryStorage()
-	// Attempt load of prior state
-	loaded, loadErr := persist.Load(storage)
+	// Attempt load of prior state (snapshot, hard state, entries)
+	loaded, snapIdx, lastEntryIdx, loadErr := persist.Load(storage)
 	if loadErr != nil {
 		slog.Warn("raft persistence load failed", slog.String("shard", cfg.ShardID), slog.Any("error", loadErr))
+	}
+	if loaded {
+		// Initialize metrics indexes:
+		// lastSnapshotIndex from snapshot, lastAppliedIndex is max(snapshot, lastEntry)
+		s.lastSnapshotIndex = snapIdx
+		if lastEntryIdx > snapIdx { s.lastAppliedIndex = lastEntryIdx } else { s.lastAppliedIndex = snapIdx }
 	}
 	c := &etcdraft.Config{ID: id, ElectionTick: int(electionTicks), HeartbeatTick: heartbeatTicks, Storage: storage, MaxSizePerMsg: 1 << 20, MaxInflightMsgs: 256, CheckQuorum: true, PreVote: true, Logger: &etcdLoggerAdapter{}}
 	s.storage = storage
