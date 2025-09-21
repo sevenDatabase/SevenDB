@@ -93,6 +93,9 @@ type ShardRaftNode struct {
 	lastSnapshotIndex  uint64
 	lastAppliedIndex   uint64
 
+	// current configuration state for snapshot creation
+	confState raftpb.ConfState
+
 	// config flags
 	forwardProposals bool
 }
@@ -379,8 +382,10 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 	c := &etcdraft.Config{ID: id, ElectionTick: int(electionTicks), HeartbeatTick: heartbeatTicks, Storage: storage, MaxSizePerMsg: 1 << 20, MaxInflightMsgs: 256, CheckQuorum: true, PreVote: true, Logger: &etcdLoggerAdapter{}}
 	s.storage = storage
 	var peers []etcdraft.Peer
+	var confVoters []uint64
 	if len(cfg.Peers) == 0 {
 		peers = []etcdraft.Peer{{ID: id}}
+		confVoters = append(confVoters, id)
 	} else {
 		// Expect peer specs as "<id>@<addr>"; we only need IDs here.
 		for _, spec := range cfg.Peers {
@@ -392,18 +397,21 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 			if at != -1 { parts = spec[:at] }
 			if pid, err := strconv.ParseUint(parts, 10, 64); err == nil {
 				peers = append(peers, etcdraft.Peer{ID: pid})
+				confVoters = append(confVoters, pid)
 			}
 		}
 		// Ensure self id is included.
 		found := false
 		for _, p := range peers { if p.ID == id { found = true; break } }
-		if !found { peers = append(peers, etcdraft.Peer{ID: id}) }
+		if !found { peers = append(peers, etcdraft.Peer{ID: id}); confVoters = append(confVoters, id) }
 	}
 	if loaded { // restart path
 		s.rn = etcdraft.RestartNode(c)
 	} else {
 		s.rn = etcdraft.StartNode(c, peers)
 	}
+	// record conf state for snapshots
+	s.confState = raftpb.ConfState{Voters: confVoters}
 	s.stopCh = make(chan struct{})
 	s.tickEvery = time.Duration(hb) * time.Millisecond
 	// Install noop transport by default (caller can SetTransport later)
@@ -447,6 +455,20 @@ func (s *ShardRaftNode) readyLoop() {
 				slog.Warn("raft persist failed", slog.String("shard", s.shardID), slog.Any("error", err))
 			}
 		}
+		// Apply snapshot (if any) to in-memory storage BEFORE appending new entries.
+		if !etcdraft.IsEmptySnap(rd.Snapshot) {
+			if s.storage != nil {
+				if err := s.storage.ApplySnapshot(rd.Snapshot); err != nil {
+					slog.Warn("raft storage apply snapshot failed", slog.String("shard", s.shardID), slog.Any("error", err))
+				}
+			}
+		}
+		// Append new entries to storage (etcd raft contract requires this before Advance)
+		if len(rd.Entries) > 0 && s.storage != nil {
+			if err := s.storage.Append(rd.Entries); err != nil {
+				slog.Warn("raft storage append failed", slog.String("shard", s.shardID), slog.Any("error", err))
+			}
+		}
 		if len(rd.CommittedEntries) > 0 {
 			for _, ent := range rd.CommittedEntries {
 				if ent.Type == raftpb.EntryNormal && len(ent.Data) > 0 {
@@ -476,20 +498,25 @@ func (s *ShardRaftNode) readyLoop() {
 				}
 			}
 		}
-		// Simple snapshot trigger (count-based) - create snapshot & persist
+		// Send outbound raft messages (multi-node). Currently a noop in single-node mode.
+		if len(rd.Messages) > 0 && s.transport != nil {
+			// Best-effort send; errors will be logged inside transport implementation.
+			s.transport.Send(context.Background(), rd.Messages)
+		}
+		s.rn.Advance()
+		// Snapshot trigger AFTER Advance so raft state (commit index) has progressed.
 		if s.snapshotThreshold > 0 && s.committedSinceSnap >= s.snapshotThreshold && s.lastAppliedIndex > s.lastSnapshotIndex {
 			if s.storage != nil {
-				if snap, err := s.storage.Snapshot(); err == nil && !etcdraft.IsEmptySnap(snap) {
+				// Create snapshot at lastAppliedIndex with current conf state
+				if snap, err := s.storage.CreateSnapshot(s.lastAppliedIndex, &s.confState, nil); err == nil && !etcdraft.IsEmptySnap(snap) {
 					if s.persist != nil {
 						if err := s.persist.PersistSnapshot(&snap); err != nil {
 							slog.Warn("raft snapshot persist failed", slog.String("shard", s.shardID), slog.Any("error", err))
 						} else {
-							// In-memory compaction: storage.Compact requires index <= applied index
 							compactionIndex := snap.Metadata.Index
 							if err := s.storage.Compact(compactionIndex); err != nil {
 								slog.Warn("raft storage compact failed", slog.String("shard", s.shardID), slog.Any("error", err))
 							}
-							// On-disk pruning (best-effort)
 							if err := s.persist.PruneEntries(compactionIndex); err != nil {
 								slog.Warn("raft prune failed", slog.String("shard", s.shardID), slog.Any("error", err))
 							}
@@ -497,15 +524,11 @@ func (s *ShardRaftNode) readyLoop() {
 							s.committedSinceSnap = 0
 						}
 					}
+				} else if err != nil {
+					slog.Warn("raft create snapshot failed", slog.String("shard", s.shardID), slog.Any("error", err))
 				}
 			}
 		}
-		// Send outbound raft messages (multi-node). Currently a noop in single-node mode.
-		if len(rd.Messages) > 0 && s.transport != nil {
-			// Best-effort send; errors will be logged inside transport implementation.
-			s.transport.Send(context.Background(), rd.Messages)
-		}
-		s.rn.Advance()
 	}
 }
 
