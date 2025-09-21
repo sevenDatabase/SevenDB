@@ -36,7 +36,10 @@ pnpm-debug.log*
 
 # macOS-specific files
 .DS_Store
+sevendb
+sevendb.yaml
 dicedb.yaml
+sevendb.conf
 dicedb.conf
 last_commit.diff
 logs/

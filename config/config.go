@@ -87,14 +87,24 @@ type DiceDBConfig struct {
 
 func Load(flags *pflag.FlagSet) {
 	configureMetadataDir()
-	viper.SetConfigName("dicedb")
+	// Prefer sevendb.yaml, fallback to dicedb.yaml for backward compatibility.
+	triedSeven := false
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath(MetadataDir)
-
-	err := viper.ReadInConfig()
-	if _, ok := err.(viper.ConfigFileNotFoundError); !ok && err != nil {
-		if err.Error() != "While parsing config: yaml: control characters are not allowed" {
+	viper.SetConfigName("sevendb")
+	if err := viper.ReadInConfig(); err == nil {
+		triedSeven = true
+	} else {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok && err.Error() != "While parsing config: yaml: control characters are not allowed" {
 			panic(err)
+		}
+	}
+	if !triedSeven { // attempt dicedb
+		viper.SetConfigName("dicedb")
+		if err := viper.ReadInConfig(); err != nil {
+			if _, ok := err.(viper.ConfigFileNotFoundError); !ok && err.Error() != "While parsing config: yaml: control characters are not allowed" {
+				panic(err)
+			}
 		}
 	}
 
@@ -123,7 +133,8 @@ func Load(flags *pflag.FlagSet) {
 // as the metadata directory.
 func InitConfig(flags *pflag.FlagSet) {
 	Load(flags)
-	configPath := filepath.Join(MetadataDir, "dicedb.yaml")
+	// Write primary config as sevendb.yaml. If legacy dicedb.yaml exists we do not delete it.
+	configPath := filepath.Join(MetadataDir, "sevendb.yaml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		err := viper.WriteConfigAs(configPath)
 		if err != nil {

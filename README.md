@@ -64,13 +64,13 @@ Clone and build SevenDB:
 git clone https://github.com/sevenDatabase/SevenDB.git
 cd sevendb
 
-make build # to get a binary
+make build # builds ./sevendb executable
 or
 go run main.go #run like a normal go program
 ```
 By default, the server listens on `localhost:7379`.
 
-### 2. Connect with a SevenDB-cli 
+### 2. Connect with a SevenDB-cli
 Best way to connect to sevenDB is through `SevenDB-cli`
 
 
@@ -78,7 +78,7 @@ Best way to connect to sevenDB is through `SevenDB-cli`
 git clone https://github.com/sevenDatabase/SevenDB-cli
 cd SevenDB-cli
 make build
-./sevendb-cli  # ofcourse , the db server should be running for this to work
+./sevendb-cli  # ensure the sevendb server is running first
 ```
 ### 3. Basic operations
 SevenDB supports familiar Redis-style commands:

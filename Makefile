@@ -5,15 +5,18 @@ GOARCH ?= $(shell go env GOARCH)
 .PHONY: build test build-docker run test-one
 
 build:
-	@echo "Building for $(GOOS)/$(GOARCH)"
-	CGO_ENABLED=1 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -ldflags "-s -w -X config.DiceDBVersion=$(VERSION)" -o ./dicedb
+	@echo "Building SevenDB for $(GOOS)/$(GOARCH)"
+	CGO_ENABLED=1 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -ldflags "-s -w -X config.DiceDBVersion=$(VERSION)" -o ./sevendb
+	@# Backward compatibility optional symlink
+	@if [ ! -e dicedb ]; then ln -s sevendb dicedb; fi
 
 build-debug:
-	@echo "Building for $(GOOS)/$(GOARCH)"
-	CGO_ENABLED=1 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -gcflags="all=-N -l" -o ./dicedb
+	@echo "Building SevenDB (debug) for $(GOOS)/$(GOARCH)"
+	CGO_ENABLED=1 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -gcflags="all=-N -l" -o ./sevendb
+	@if [ ! -e dicedb ]; then ln -s sevendb dicedb; fi
 
 build-docker:
-	docker build --tag dicedb/dicedb:latest --tag dicedb/dicedb:$(VERSION) .
+	docker build --tag sevendb/sevendb:latest --tag sevendb/sevendb:$(VERSION) .
 
 ##@ Testing
 
@@ -37,7 +40,7 @@ unittest-one: ## run a single unit test function by name (e.g. make unittest-one
 	CGO_ENABLED=1 go test -race -count=1 --run $(TEST_FUNC) ./internal/...
 
 ##@ Development
-run: ## run dicedb with the default configuration
+run: ## run sevendb with the default configuration
 	go run main.go --engine ironhawk --log-level debug --enable-wal
 
 format: ## format the code using go fmt
@@ -57,22 +60,22 @@ check-golangci-lint:
 		exit 1; \
 	fi
 
-clean: ## clean the dicedb binary
+clean: ## clean the sevendb binary
 	@echo "Cleaning build artifacts..."
 	go clean -cache -modcache
-	rm -f dicedb
+	rm -f sevendb dicedb
 	@echo "Clean complete."
 
-release: ## build and push the Docker image to Docker Hub with the latest tag and the version tag
+release: ## build and push the Docker image (sevendb)
 	git tag $(VERSION)
 	git push origin --tags
 	$(MAKE) build-docker
-	docker push dicedb/dicedb:$(VERSION)
-	docker push dicedb/dicedb:latest
+	docker push sevendb/sevendb:$(VERSION)
+	docker push sevendb/sevendb:latest
 
 push-binary-remote:
 	$(MAKE) build
-	scp -i ${SSH_PEM_PATH} ./dicedb ubuntu@${REMOTE_HOST}:.
+	scp -i ${SSH_PEM_PATH} ./sevendb ubuntu@${REMOTE_HOST}:.
 
 add-license-notice:
 	./add_license_notice.sh
