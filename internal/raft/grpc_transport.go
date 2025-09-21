@@ -23,6 +23,21 @@ type GRPCTransport struct {
 	resolver PeerResolver // resolves peerID -> address
 }
 
+// PeerStats is a lightweight snapshot of current peer connectivity.
+type PeerStats struct {
+	Total     int `json:"total"`
+	Connected int `json:"connected"`
+}
+
+// Stats returns current peer connectivity counts.
+func (t *GRPCTransport) Stats() PeerStats {
+	t.mu.RLock(); defer t.mu.RUnlock()
+	total := len(t.peers)
+	connected := 0
+	for _, pc := range t.peers { if pc != nil && pc.stream != nil { connected++ } }
+	return PeerStats{Total: total, Connected: connected}
+}
+
 type peerConn struct {
 	id     uint64
 	addr   string

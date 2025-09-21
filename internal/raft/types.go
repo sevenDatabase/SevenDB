@@ -161,6 +161,8 @@ type StatusSnapshot struct {
 	CommittedSinceSnap int              `json:"committed_since_snapshot"`
 	PerBucketCommit   map[string]uint64 `json:"per_bucket_commit"`
 	PrunedThroughIndex uint64           `json:"pruned_through_index"`
+	TransportPeersTotal int             `json:"transport_peers_total"`
+	TransportPeersConnected int         `json:"transport_peers_connected"`
 }
 
 // Status returns an immutable snapshot of internal counters useful for debug/metrics.
@@ -168,7 +170,13 @@ func (s *ShardRaftNode) Status() StatusSnapshot {
 	s.mu.Lock(); defer s.mu.Unlock()
 	copyMap := make(map[string]uint64, len(s.perBucketCommit))
 	for k, v := range s.perBucketCommit { copyMap[k] = v }
-	return StatusSnapshot{ShardID: s.shardID, LeaderID: s.LeaderID(), IsLeader: s.IsLeader(), LastAppliedIndex: s.lastAppliedIndex, LastSnapshotIndex: s.lastSnapshotIndex, CommittedSinceSnap: s.committedSinceSnap, PerBucketCommit: copyMap, PrunedThroughIndex: s.prunedThroughIndex}
+	ss := StatusSnapshot{ShardID: s.shardID, LeaderID: s.LeaderID(), IsLeader: s.IsLeader(), LastAppliedIndex: s.lastAppliedIndex, LastSnapshotIndex: s.lastSnapshotIndex, CommittedSinceSnap: s.committedSinceSnap, PerBucketCommit: copyMap, PrunedThroughIndex: s.prunedThroughIndex}
+	if gt, ok := s.transport.(*GRPCTransport); ok && gt != nil {
+		ps := gt.Stats()
+		ss.TransportPeersTotal = ps.Total
+		ss.TransportPeersConnected = ps.Connected
+	}
+	return ss
 }
 
 // Propose submits a record asynchronously. For now the stub immediately

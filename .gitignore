@@ -3,6 +3,7 @@ bin/dice
 *.out
 *.prof
 dice-server
+SevenDB
 dicedb
 venv
 __pycache__

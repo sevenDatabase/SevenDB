@@ -30,6 +30,11 @@ type ShardManager struct {
 	localRaftID uint64
 }
 
+var globalManager *ShardManager
+
+// GetGlobal returns the process-wide shard manager instance (nil if server not started in this process).
+func GetGlobal() *ShardManager { return globalManager }
+
 // NewShardManager creates a new ShardManager instance with the given number of Shards and a parent context.
 func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 	shards := make([]*shard.Shard, shardCount)
@@ -41,6 +46,7 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 		}
 	}
 	sm := &ShardManager{shards: shards, sigChan: make(chan os.Signal, 1)}
+	globalManager = sm
 	if config.Config != nil && config.Config.RaftEnabled {
 		var peerMap map[uint64]string
 		var canonical []string
@@ -168,4 +174,18 @@ func (manager *ShardManager) BucketLogFor(shardIdx int) bucket.BucketLog {
 		return nil
 	}
 	return fbl
+}
+
+// RaftStatusSnapshots returns a slice of raft.StatusSnapshot for each shard raft node (if enabled).
+func (manager *ShardManager) RaftStatusSnapshots() []interface{} { // using interface{} to avoid import cycle; CLI marshals raw
+    if manager == nil || manager.raftNodes == nil {
+        return nil
+    }
+    out := make([]interface{}, 0, len(manager.raftNodes))
+    for _, rn := range manager.raftNodes {
+        if rn == nil { continue }
+        snap := rn.Status() // StatusSnapshot is a plain struct
+        out = append(out, snap)
+    }
+    return out
 }

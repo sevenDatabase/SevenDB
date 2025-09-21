@@ -40,9 +40,11 @@ func init() {
 	}
 }
 
+
 var rootCmd = &cobra.Command{
-	Use:   "dicedb",
-	Short: "an in-memory database;",
+	Use:   "sevendb",
+	Aliases: []string{"dicedb"}, // backward compatibility
+	Short: "SevenDB - an in-memory database;",
 	Run: func(cmd *cobra.Command, args []string) {
 		config.Load(cmd.Flags())
 		slog.SetDefault(logger.New())

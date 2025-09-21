@@ -21,9 +21,9 @@ import (
 
 	"github.com/dicedb/dicedb-go/wire"
 	"github.com/sevenDatabase/SevenDB/internal/auth"
-	"github.com/sevenDatabase/SevenDB/internal/cmd"
 	"github.com/sevenDatabase/SevenDB/internal/server/ironhawk"
 	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
+	"github.com/sevenDatabase/SevenDB/internal/cmd"
 
 	"github.com/sevenDatabase/SevenDB/internal/wal"
 
@@ -33,7 +33,6 @@ import (
 
 func printConfiguration() {
 	slog.Info("starting SevenDB", slog.String("version", config.DiceDBVersion))
-	slog.Info("running with", slog.Int("total_commands", cmd.Total()))
 	slog.Info("running with", slog.String("engine", config.Config.Engine))
 	slog.Info("running with", slog.Int("port", config.Config.Port))
 	slog.Info("running on", slog.Int("cores", runtime.NumCPU()))
