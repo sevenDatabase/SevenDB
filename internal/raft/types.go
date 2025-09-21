@@ -44,7 +44,10 @@ type CommittedRecord struct {
 }
 
 // ErrNotLeader is returned when a proposal is attempted on a follower.
-var ErrNotLeader = errors.New("raft: not leader")
+// NotLeaderError provides leader hint for clients to redirect proposals.
+type NotLeaderError struct { LeaderID string }
+func (e *NotLeaderError) Error() string { if e.LeaderID == "" { return "raft: not leader" }; return "raft: not leader (leader="+e.LeaderID+")" }
+var ErrNotLeader = &NotLeaderError{}
 
 // ProposalResult represents the outcome of a ProposeAndWait call.
 type ProposalResult struct {
@@ -89,6 +92,9 @@ type ShardRaftNode struct {
 	committedSinceSnap int
 	lastSnapshotIndex  uint64
 	lastAppliedIndex   uint64
+
+	// config flags
+	forwardProposals bool
 }
 
 // RaftConfig captures initialization parameters required to start a shard node.
@@ -100,6 +106,7 @@ type RaftConfig struct {
 	HeartbeatMillis       int
 	ElectionTimeoutMillis int
 	Engine                string // "stub" | "etcd" (default stub)
+	ForwardProposals      bool   // if true, return NotLeaderError with leader hint (future: internal forwarding)
 }
 
 // NewShardRaftNode creates a new in-memory stub. Follow-up commits will
@@ -116,6 +123,7 @@ func NewShardRaftNode(cfg RaftConfig) (*ShardRaftNode, error) {
 		perBucketCommit: make(map[string]uint64),
 		engine:          engine,
 		waitersSeq:      make(map[uint64]chan *ProposalResult),
+		forwardProposals: cfg.ForwardProposals,
 	}
 	if engine == "etcd" {
 		if err := s.initEtcd(cfg); err != nil {
@@ -139,6 +147,25 @@ func (s *ShardRaftNode) LeaderID() string {
 	return "stub"
 }
 
+// StatusSnapshot is a lightweight snapshot of raft node state for observability.
+type StatusSnapshot struct {
+	ShardID           string            `json:"shard_id"`
+	LeaderID          string            `json:"leader_id"`
+	IsLeader          bool              `json:"is_leader"`
+	LastAppliedIndex  uint64            `json:"last_applied_index"`
+	LastSnapshotIndex uint64            `json:"last_snapshot_index"`
+	CommittedSinceSnap int              `json:"committed_since_snapshot"`
+	PerBucketCommit   map[string]uint64 `json:"per_bucket_commit"`
+}
+
+// Status returns an immutable snapshot of internal counters useful for debug/metrics.
+func (s *ShardRaftNode) Status() StatusSnapshot {
+	s.mu.Lock(); defer s.mu.Unlock()
+	copyMap := make(map[string]uint64, len(s.perBucketCommit))
+	for k, v := range s.perBucketCommit { copyMap[k] = v }
+	return StatusSnapshot{ShardID: s.shardID, LeaderID: s.LeaderID(), IsLeader: s.IsLeader(), LastAppliedIndex: s.lastAppliedIndex, LastSnapshotIndex: s.lastSnapshotIndex, CommittedSinceSnap: s.committedSinceSnap, PerBucketCommit: copyMap}
+}
+
 // Propose submits a record asynchronously. For now the stub immediately
 // synthesizes a commit (single-node mode) and returns. This allows integration
 // with bucket runtime before full replication lands.
@@ -147,7 +174,10 @@ func (s *ShardRaftNode) Propose(ctx context.Context, rec *RaftLogRecord) (uint64
 		return 0, errors.New("nil raft record")
 	}
 	if s.engine == "etcd" && s.rn != nil && !s.IsLeader() {
-		return 0, ErrNotLeader
+		if s.forwardProposals {
+			return 0, &NotLeaderError{LeaderID: s.LeaderID()}
+		}
+		return 0, &NotLeaderError{LeaderID: s.LeaderID()}
 	}
 	if s.engine == "etcd" && s.rn != nil {
 		seq := atomic.AddUint64(&s.nextSeq, 1)
@@ -181,7 +211,10 @@ func (s *ShardRaftNode) ProposeAndWait(ctx context.Context, rec *RaftLogRecord) 
 		return 0, 0, errors.New("nil raft record")
 	}
 	if s.engine == "etcd" && s.rn != nil && !s.IsLeader() {
-		return 0, 0, ErrNotLeader
+		if s.forwardProposals {
+			return 0, 0, &NotLeaderError{LeaderID: s.LeaderID()}
+		}
+		return 0, 0, &NotLeaderError{LeaderID: s.LeaderID()}
 	}
 	if s.engine == "etcd" && s.rn != nil {
 		ch := make(chan *ProposalResult, 1)
@@ -445,6 +478,15 @@ func (s *ShardRaftNode) readyLoop() {
 						if err := s.persist.PersistSnapshot(&snap); err != nil {
 							slog.Warn("raft snapshot persist failed", slog.String("shard", s.shardID), slog.Any("error", err))
 						} else {
+							// In-memory compaction: storage.Compact requires index <= applied index
+							compactionIndex := snap.Metadata.Index
+							if err := s.storage.Compact(compactionIndex); err != nil {
+								slog.Warn("raft storage compact failed", slog.String("shard", s.shardID), slog.Any("error", err))
+							}
+							// On-disk pruning (best-effort)
+							if err := s.persist.PruneEntries(compactionIndex); err != nil {
+								slog.Warn("raft prune failed", slog.String("shard", s.shardID), slog.Any("error", err))
+							}
 							s.lastSnapshotIndex = snap.Metadata.Index
 							s.committedSinceSnap = 0
 						}

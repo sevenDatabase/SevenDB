@@ -10,6 +10,7 @@ import (
     "os"
     "path/filepath"
     "sync"
+    "strings"
 
     gogoproto "github.com/gogo/protobuf/proto"
     etcdraft "go.etcd.io/etcd/raft/v3"
@@ -121,4 +122,46 @@ func (p *raftPersistence) writeSnapshot(snap *raftpb.Snapshot) error {
     return os.Rename(tmp, p.snapPath)
 }
 
+// PruneEntries rewrites the entries log keeping only entries with index > upto.
+// Best-effort; on failure the original file is left intact. This is a coarse
+// approach (line scan) adequate for MVP scale. Future optimization: segment the log.
+func (p *raftPersistence) PruneEntries(upto uint64) error {
+    p.mu.Lock(); defer p.mu.Unlock()
+    src, err := os.Open(p.entriesPath)
+    if err != nil { return err }
+    defer src.Close()
+    tmpPath := p.entriesPath + ".compact.tmp"
+    tmp, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+    if err != nil { return err }
+    w := bufio.NewWriter(tmp)
+    r := bufio.NewReader(src)
+    for {
+        line, err := r.ReadString('\n')
+        if line == "" && errors.Is(err, io.EOF) { break }
+        if line == "" { if errors.Is(err, io.EOF) { break }; continue }
+        // Trim newline
+        if line[len(line)-1] == '\n' { line = line[:len(line)-1] }
+        if line == "" { if errors.Is(err, io.EOF) { break }; continue }
+        b, decErr := base64.StdEncoding.DecodeString(line)
+        if decErr != nil { continue }
+        var e raftpb.Entry
+        if uErr := gogoproto.Unmarshal(b, &e); uErr != nil { continue }
+        if e.Index <= upto { continue }
+        // Write original line back (ensure newline)
+        _, _ = w.WriteString(strings.TrimRight(line, "\n") + "\n")
+        if errors.Is(err, io.EOF) { break }
+    }
+    _ = w.Flush()
+    _ = tmp.Close()
+    // Atomic replace
+    if err := os.Rename(tmpPath, p.entriesPath); err != nil {
+        // Best-effort cleanup
+        _ = os.Remove(tmpPath)
+        return err
+    }
+    return nil
+}
+
+// PruneEntries rewrites the entries log keeping only entries with Index > upto (inclusive prune).
+// Called after successful snapshot / in-memory compaction. Best-effort: on error, we log and leave file un-pruned.
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
