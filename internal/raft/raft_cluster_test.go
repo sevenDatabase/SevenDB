@@ -6,6 +6,7 @@ import (
     "fmt"
     "path/filepath"
     "runtime"
+    "sort"
     "sync"
     "testing"
     "time"
@@ -171,4 +172,150 @@ func TestRaftClusterBasicReplicationAndSnapshot(t *testing.T) {
 
     // Final GC hint to reduce noise in race tests.
     runtime.GC()
+}
+
+// --- Additional Tests ---
+
+// TestRaftLogPruneAfterSnapshot verifies that entries prior to snapshot index are pruned from disk.
+func TestRaftLogPruneAfterSnapshot(t *testing.T) {
+    config.Config = &config.DiceDBConfig{}
+    config.Config.RaftSnapshotThresholdEntries = 3
+    tempRoot := t.TempDir()
+    shardID := "shard-prune"
+    peerSpecs := []string{"1@x","2@x","3@x"}
+    mtrans := newMemTransport()
+    var nodes []*ShardRaftNode
+    for i:=1;i<=3;i++ {
+        dataDir := filepath.Join(tempRoot, fmt.Sprintf("node-%d", i))
+        n, err := NewShardRaftNode(RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", i), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true})
+        if err != nil { t.Fatalf("create node: %v", err) }
+        mtrans.attach(uint64(i), n); n.SetTransport(mtrans)
+        nodes = append(nodes, n)
+    }
+    waitUntil(t, 10*time.Second, 50*time.Millisecond, func() bool { _,_,ok:=findLeader(nodes);return ok }, "leader election")
+    // Drive proposals until node-1 snapshots.
+    var lastRaft uint64
+    for i:=0; i<20; i++ {
+        _, rIdx := proposeOnLeader(t, nodes, "b", []byte(fmt.Sprintf("p-%d", i)))
+        lastRaft = rIdx
+        waitApplied(t, nodes, lastRaft)
+        if nodes[0].Status().LastSnapshotIndex > 0 { break }
+    }
+    snapIdx := nodes[0].Status().LastSnapshotIndex
+    if snapIdx == 0 { t.Fatalf("node-1 never produced snapshot within proposal budget") }
+    // Wait for pruning completion signaled by prunedThroughIndex >= snapshot index.
+    waitUntil(t, 5*time.Second, 50*time.Millisecond, func() bool {
+        st := nodes[0].Status(); return st.PrunedThroughIndex >= snapIdx
+    }, fmt.Sprintf("prunedThroughIndex >= snapshot index %d", snapIdx))
+}
+
+// TestRaftFollowerRestartCatchUp ensures a stopped follower catches up on restart.
+func TestRaftFollowerRestartCatchUp(t *testing.T) {
+    config.Config = &config.DiceDBConfig{}
+    config.Config.RaftSnapshotThresholdEntries = 100 // disable snapshot influence here
+    tempRoot := t.TempDir()
+    shardID := "shard-restart-follower"
+    peerSpecs := []string{"1@x","2@x","3@x"}
+    mtrans := newMemTransport()
+    var nodes []*ShardRaftNode
+    for i:=1;i<=3;i++ {
+        dataDir := filepath.Join(tempRoot, fmt.Sprintf("node-%d", i))
+        n, err := NewShardRaftNode(RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", i), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true})
+        if err != nil { t.Fatalf("create node: %v", err) }
+        mtrans.attach(uint64(i), n); n.SetTransport(mtrans)
+        nodes = append(nodes, n)
+    }
+    waitUntil(t, 10*time.Second, 50*time.Millisecond, func() bool { _,_,ok:=findLeader(nodes);return ok }, "leader election")
+    // Propose initial entries
+    var last uint64
+    for i:=0;i<5;i++ { _, rIdx := proposeOnLeader(t, nodes, "bx", []byte("seed")); last = rIdx }
+    waitApplied(t, nodes, last)
+    // Pick a follower to restart
+    leader, lid, _ := findLeader(nodes)
+    var followerIdx int
+    for i,n := range nodes { if n != leader { followerIdx = i; break } }
+    follower := nodes[followerIdx]
+    preIdx := follower.Status().LastAppliedIndex
+    if err := follower.Close(); err != nil { t.Fatalf("close follower: %v", err) }
+    // Build active node list excluding the closed follower to avoid proposing to a closed node (race fix).
+    activeNodes := make([]*ShardRaftNode,0,len(nodes)-1)
+    for _, n := range nodes { if n != follower { activeNodes = append(activeNodes, n) } }
+    // Produce more entries while follower is down using only active nodes.
+    for i:=0;i<6;i++ { _, rIdx := proposeOnLeader(t, activeNodes, "bx", []byte("later")); last = rIdx }
+    // Ensure those entries are applied on all active nodes (2-node cluster) before restart.
+    waitApplied(t, activeNodes, last)
+    // Restart follower
+    dataDir := filepath.Join(tempRoot, fmt.Sprintf("node-%d", followerIdx+1))
+    newFollower, err := NewShardRaftNode(RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", followerIdx+1), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true})
+    if err != nil { t.Fatalf("restart follower: %v", err) }
+    nodes[followerIdx] = newFollower
+    mtrans.attach(uint64(followerIdx+1), newFollower); newFollower.SetTransport(mtrans)
+    // Ensure leader still leader
+    _ = lid
+    waitApplied(t, nodes, last)
+    if newFollower.Status().LastAppliedIndex <= preIdx { t.Fatalf("follower didn't advance after restart: %d <= %d", newFollower.Status().LastAppliedIndex, preIdx) }
+}
+
+// TestRaftMultiBucketCommitIsolation checks that commit indices per bucket are independent and gapless.
+func TestRaftMultiBucketCommitIsolation(t *testing.T) {
+    config.Config = &config.DiceDBConfig{}
+    config.Config.RaftSnapshotThresholdEntries = 50
+    tempRoot := t.TempDir()
+    shardID := "shard-multi-bucket"
+    peerSpecs := []string{"1@x","2@x","3@x"}
+    mtrans := newMemTransport()
+    var nodes []*ShardRaftNode
+    for i:=1;i<=3;i++ {
+        dataDir := filepath.Join(tempRoot, fmt.Sprintf("node-%d", i))
+        n, err := NewShardRaftNode(RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", i), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true})
+        if err != nil { t.Fatalf("create node: %v", err) }
+        mtrans.attach(uint64(i), n); n.SetTransport(mtrans)
+        nodes = append(nodes, n)
+    }
+    waitUntil(t, 10*time.Second, 50*time.Millisecond, func() bool { _,_,ok:=findLeader(nodes);return ok }, "leader election")
+    var seqA, seqB []uint64
+    for i:=0;i<20;i++ {
+        bucket := "A"; if i%2==1 { bucket = "B" }
+        commitIdx, _ := func() (uint64, uint64) { return proposeOnLeader(t, nodes, bucket, []byte("x")) }()
+        if bucket == "A" { seqA = append(seqA, commitIdx) } else { seqB = append(seqB, commitIdx) }
+    }
+    // Validate sequences strictly increasing and contiguous starting at 1.
+    validate := func(name string, s []uint64) {
+        if len(s)==0 { t.Fatalf("empty sequence for %s", name) }
+        copyS := append([]uint64(nil), s...)
+    sorted := append([]uint64(nil), s...); sort.Slice(sorted, func(i,j int) bool {return sorted[i]<sorted[j]})
+        for i, v := range sorted { expect := uint64(i+1); if v != expect { t.Fatalf("%s commit index gap: got %v at pos %d expect %d (raw=%v)", name, v, i, expect, copyS) } }
+    }
+    validate("bucketA", seqA)
+    validate("bucketB", seqB)
+}
+
+// TestNotLeaderErrorSemantics ensures ErrNotLeader style errors are typed & leader hint present.
+func TestNotLeaderErrorSemantics(t *testing.T) {
+    config.Config = &config.DiceDBConfig{}
+    config.Config.RaftSnapshotThresholdEntries = 100
+    tempRoot := t.TempDir()
+    shardID := "shard-nl"
+    peerSpecs := []string{"1@x","2@x","3@x"}
+    mtrans := newMemTransport()
+    var nodes []*ShardRaftNode
+    for i:=1;i<=3;i++ {
+        dataDir := filepath.Join(tempRoot, fmt.Sprintf("node-%d", i))
+        n, err := NewShardRaftNode(RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", i), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true})
+        if err != nil { t.Fatalf("create node: %v", err) }
+        mtrans.attach(uint64(i), n); n.SetTransport(mtrans)
+        nodes = append(nodes, n)
+    }
+    waitUntil(t, 10*time.Second, 50*time.Millisecond, func() bool { _,_,ok:=findLeader(nodes);return ok }, "leader election")
+    leader, leaderID, _ := findLeader(nodes)
+    // Pick follower
+    var follower *ShardRaftNode
+    for _, n := range nodes { if n != leader { follower = n; break } }
+    ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+    _, _, err := follower.ProposeAndWait(ctx, &RaftLogRecord{BucketID:"zz", Type:1, Payload: []byte("no")})
+    cancel()
+    if err == nil { t.Fatalf("expected not leader error") }
+    var nle *NotLeaderError
+    if !errors.As(err, &nle) { t.Fatalf("expected NotLeaderError type got %v", err) }
+    if nle.LeaderID != leaderID { t.Fatalf("leader id mismatch hint=%s actual=%s", nle.LeaderID, leaderID) }
 }

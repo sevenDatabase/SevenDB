@@ -88,10 +88,11 @@ type ShardRaftNode struct {
 	// persistence (etcd engine only)
 	persist *raftPersistence
 	// snapshot management
-	snapshotThreshold int
+	snapshotThreshold  int
 	committedSinceSnap int
 	lastSnapshotIndex  uint64
 	lastAppliedIndex   uint64
+	prunedThroughIndex uint64 // highest index for which on-disk log has been pruned (>= this index removed)
 
 	// current configuration state for snapshot creation
 	confState raftpb.ConfState
@@ -159,6 +160,7 @@ type StatusSnapshot struct {
 	LastSnapshotIndex uint64            `json:"last_snapshot_index"`
 	CommittedSinceSnap int              `json:"committed_since_snapshot"`
 	PerBucketCommit   map[string]uint64 `json:"per_bucket_commit"`
+	PrunedThroughIndex uint64           `json:"pruned_through_index"`
 }
 
 // Status returns an immutable snapshot of internal counters useful for debug/metrics.
@@ -166,7 +168,7 @@ func (s *ShardRaftNode) Status() StatusSnapshot {
 	s.mu.Lock(); defer s.mu.Unlock()
 	copyMap := make(map[string]uint64, len(s.perBucketCommit))
 	for k, v := range s.perBucketCommit { copyMap[k] = v }
-	return StatusSnapshot{ShardID: s.shardID, LeaderID: s.LeaderID(), IsLeader: s.IsLeader(), LastAppliedIndex: s.lastAppliedIndex, LastSnapshotIndex: s.lastSnapshotIndex, CommittedSinceSnap: s.committedSinceSnap, PerBucketCommit: copyMap}
+	return StatusSnapshot{ShardID: s.shardID, LeaderID: s.LeaderID(), IsLeader: s.IsLeader(), LastAppliedIndex: s.lastAppliedIndex, LastSnapshotIndex: s.lastSnapshotIndex, CommittedSinceSnap: s.committedSinceSnap, PerBucketCommit: copyMap, PrunedThroughIndex: s.prunedThroughIndex}
 }
 
 // Propose submits a record asynchronously. For now the stub immediately
@@ -519,9 +521,22 @@ func (s *ShardRaftNode) readyLoop() {
 							}
 							if err := s.persist.PruneEntries(compactionIndex); err != nil {
 								slog.Warn("raft prune failed", slog.String("shard", s.shardID), slog.Any("error", err))
+							} else {
+								// mark pruning completion
+								s.mu.Lock()
+								if compactionIndex > s.prunedThroughIndex { s.prunedThroughIndex = compactionIndex }
+								// also update snapshot fields while holding lock for consistency
+								if snap.Metadata.Index > s.lastSnapshotIndex { s.lastSnapshotIndex = snap.Metadata.Index }
+								s.committedSinceSnap = 0
+								s.mu.Unlock()
 							}
-							s.lastSnapshotIndex = snap.Metadata.Index
-							s.committedSinceSnap = 0
+							// if prune failed we still advance snapshot index but under lock
+							if s.prunedThroughIndex < compactionIndex {
+								s.mu.Lock()
+								if snap.Metadata.Index > s.lastSnapshotIndex { s.lastSnapshotIndex = snap.Metadata.Index }
+								s.committedSinceSnap = 0
+								s.mu.Unlock()
+							}
 						}
 					}
 				} else if err != nil {
