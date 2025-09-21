@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sevenDatabase/SevenDB/config"
+
 	etcdraft "go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
 )
@@ -79,6 +81,14 @@ type ShardRaftNode struct {
 
 	// transport (only used for multi-node etcd raft). For single-node or stub it's nil or noop.
 	transport Transport
+
+	// persistence (etcd engine only)
+	persist *raftPersistence
+	// snapshot management
+	snapshotThreshold int
+	committedSinceSnap int
+	lastSnapshotIndex  uint64
+	lastAppliedIndex   uint64
 }
 
 // RaftConfig captures initialization parameters required to start a shard node.
@@ -136,6 +146,9 @@ func (s *ShardRaftNode) Propose(ctx context.Context, rec *RaftLogRecord) (uint64
 	if rec == nil {
 		return 0, errors.New("nil raft record")
 	}
+	if s.engine == "etcd" && s.rn != nil && !s.IsLeader() {
+		return 0, ErrNotLeader
+	}
 	if s.engine == "etcd" && s.rn != nil {
 		seq := atomic.AddUint64(&s.nextSeq, 1)
 		wr := wireRecord{Seq: seq, BucketID: rec.BucketID, Type: rec.Type, Payload: rec.Payload}
@@ -166,6 +179,9 @@ func (s *ShardRaftNode) Propose(ctx context.Context, rec *RaftLogRecord) (uint64
 func (s *ShardRaftNode) ProposeAndWait(ctx context.Context, rec *RaftLogRecord) (uint64, uint64, error) {
 	if rec == nil {
 		return 0, 0, errors.New("nil raft record")
+	}
+	if s.engine == "etcd" && s.rn != nil && !s.IsLeader() {
+		return 0, 0, ErrNotLeader
 	}
 	if s.engine == "etcd" && s.rn != nil {
 		ch := make(chan *ProposalResult, 1)
@@ -307,8 +323,22 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 		electionTicks = 5
 	}
 	heartbeatTicks := 1
-	c := &etcdraft.Config{ID: id, ElectionTick: int(electionTicks), HeartbeatTick: heartbeatTicks, Storage: etcdraft.NewMemoryStorage(), MaxSizePerMsg: 1 << 20, MaxInflightMsgs: 256, CheckQuorum: true, PreVote: true, Logger: &etcdLoggerAdapter{}}
-	s.storage = c.Storage.(*etcdraft.MemoryStorage)
+	persistDir := cfg.DataDir
+	if persistDir == "" {
+		persistDir = "raftdata"
+	}
+	persist, err := newRaftPersistence(persistDir, cfg.ShardID)
+	if err != nil {
+		return err
+	}
+	storage := etcdraft.NewMemoryStorage()
+	// Attempt load of prior state
+	loaded, loadErr := persist.Load(storage)
+	if loadErr != nil {
+		slog.Warn("raft persistence load failed", slog.String("shard", cfg.ShardID), slog.Any("error", loadErr))
+	}
+	c := &etcdraft.Config{ID: id, ElectionTick: int(electionTicks), HeartbeatTick: heartbeatTicks, Storage: storage, MaxSizePerMsg: 1 << 20, MaxInflightMsgs: 256, CheckQuorum: true, PreVote: true, Logger: &etcdLoggerAdapter{}}
+	s.storage = storage
 	var peers []etcdraft.Peer
 	if len(cfg.Peers) == 0 {
 		peers = []etcdraft.Peer{{ID: id}}
@@ -330,11 +360,17 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 		for _, p := range peers { if p.ID == id { found = true; break } }
 		if !found { peers = append(peers, etcdraft.Peer{ID: id}) }
 	}
-	s.rn = etcdraft.StartNode(c, peers)
+	if loaded { // restart path
+		s.rn = etcdraft.RestartNode(c)
+	} else {
+		s.rn = etcdraft.StartNode(c, peers)
+	}
 	s.stopCh = make(chan struct{})
 	s.tickEvery = time.Duration(hb) * time.Millisecond
-	// Install a noop transport for now; future commit will wire HTTP/gRPC based multi-node message passing.
+	// Install noop transport by default (caller can SetTransport later)
 	s.transport = &noopTransport{}
+	s.persist = persist
+	s.snapshotThreshold = config.Config.RaftSnapshotThresholdEntries
 	go s.tickLoop()
 	go s.readyLoop()
 	return nil
@@ -366,6 +402,12 @@ func (s *ShardRaftNode) readyLoop() {
 		if !ok {
 			return
 		}
+		// Persist raft state (HardState, Entries, Snapshot) before apply
+		if s.persist != nil {
+			if err := s.persist.Persist(&rd); err != nil {
+				slog.Warn("raft persist failed", slog.String("shard", s.shardID), slog.Any("error", err))
+			}
+		}
 		if len(rd.CommittedEntries) > 0 {
 			for _, ent := range rd.CommittedEntries {
 				if ent.Type == raftpb.EntryNormal && len(ent.Data) > 0 {
@@ -380,6 +422,8 @@ func (s *ShardRaftNode) readyLoop() {
 					commitIdx := s.perBucketCommit[rec.BucketID]
 					waiter := s.waitersSeq[wr.Seq]
 					delete(s.waitersSeq, wr.Seq)
+					s.lastAppliedIndex = ent.Index
+					s.committedSinceSnap++
 					s.mu.Unlock()
 					cr := &CommittedRecord{RaftIndex: ent.Index, Term: ent.Term, CommitIndex: commitIdx, Record: rec}
 					select {
@@ -389,6 +433,21 @@ func (s *ShardRaftNode) readyLoop() {
 					if waiter != nil {
 						waiter <- &ProposalResult{CommitIndex: commitIdx, RaftIndex: ent.Index}
 						close(waiter)
+					}
+				}
+			}
+		}
+		// Simple snapshot trigger (count-based) - create snapshot & persist
+		if s.snapshotThreshold > 0 && s.committedSinceSnap >= s.snapshotThreshold && s.lastAppliedIndex > s.lastSnapshotIndex {
+			if s.storage != nil {
+				if snap, err := s.storage.Snapshot(); err == nil && !etcdraft.IsEmptySnap(snap) {
+					if s.persist != nil {
+						if err := s.persist.PersistSnapshot(&snap); err != nil {
+							slog.Warn("raft snapshot persist failed", slog.String("shard", s.shardID), slog.Any("error", err))
+						} else {
+							s.lastSnapshotIndex = snap.Metadata.Index
+							s.committedSinceSnap = 0
+						}
 					}
 				}
 			}

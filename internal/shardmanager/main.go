@@ -66,7 +66,7 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 		}
 		sm.raftNodes = make([]*raft.ShardRaftNode, shardCount)
 		for i := 0; i < shardCount; i++ {
-			cfg := raft.RaftConfig{ShardID: string(rune('a' + i)), Engine: config.Config.RaftEngine, HeartbeatMillis: config.Config.RaftHeartbeatMillis, ElectionTimeoutMillis: config.Config.RaftElectionTimeoutMillis, NodeID: fmt.Sprintf("%d", sm.localRaftID), Peers: canonical}
+			cfg := raft.RaftConfig{ShardID: string(rune('a' + i)), Engine: config.Config.RaftEngine, HeartbeatMillis: config.Config.RaftHeartbeatMillis, ElectionTimeoutMillis: config.Config.RaftElectionTimeoutMillis, NodeID: fmt.Sprintf("%d", sm.localRaftID), Peers: canonical, DataDir: config.Config.RaftPersistentDir}
 			rn, err := raft.NewShardRaftNode(cfg)
 			if err != nil {
 				slog.Error("failed to start raft for shard", slog.Int("shard", i), slog.Any("error", err))
