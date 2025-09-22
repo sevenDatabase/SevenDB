@@ -99,6 +99,11 @@ type ShardRaftNode struct {
 
 	// config flags
 	forwardProposals bool
+
+	// manual mode: if true, background goroutines (tickLoop/readyLoop)
+	// are NOT started. Tests can drive the raft state machine deterministically
+	// by calling ManualTick() and ManualProcessReady(). In production leave false.
+	manual bool
 }
 
 // RaftConfig captures initialization parameters required to start a shard node.
@@ -111,6 +116,8 @@ type RaftConfig struct {
 	ElectionTimeoutMillis int
 	Engine                string // "stub" | "etcd" (default stub)
 	ForwardProposals      bool   // if true, return NotLeaderError with leader hint (future: internal forwarding)
+	Manual                bool   // if true, do not spawn background loops; tests drive manually
+	DisablePersistence    bool   // if true (tests), skip disk persistence and load; purely in-memory
 }
 
 // NewShardRaftNode creates a new in-memory stub. Follow-up commits will
@@ -128,6 +135,7 @@ func NewShardRaftNode(cfg RaftConfig) (*ShardRaftNode, error) {
 		engine:          engine,
 		waitersSeq:      make(map[uint64]chan *ProposalResult),
 		forwardProposals: cfg.ForwardProposals,
+		manual:           cfg.Manual,
 	}
 	if engine == "etcd" {
 		if err := s.initEtcd(cfg); err != nil {
@@ -369,25 +377,24 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 		electionTicks = 5
 	}
 	heartbeatTicks := 1
-	persistDir := cfg.DataDir
-	if persistDir == "" {
-		persistDir = "raftdata"
-	}
-	persist, err := newRaftPersistence(persistDir, cfg.ShardID)
-	if err != nil {
-		return err
-	}
+	var persist *raftPersistence
 	storage := etcdraft.NewMemoryStorage()
-	// Attempt load of prior state (snapshot, hard state, entries)
-	loaded, snapIdx, lastEntryIdx, loadErr := persist.Load(storage)
-	if loadErr != nil {
-		slog.Warn("raft persistence load failed", slog.String("shard", cfg.ShardID), slog.Any("error", loadErr))
-	}
-	if loaded {
-		// Initialize metrics indexes:
-		// lastSnapshotIndex from snapshot, lastAppliedIndex is max(snapshot, lastEntry)
-		s.lastSnapshotIndex = snapIdx
-		if lastEntryIdx > snapIdx { s.lastAppliedIndex = lastEntryIdx } else { s.lastAppliedIndex = snapIdx }
+	var loaded bool
+	if !cfg.DisablePersistence {
+		persistDir := cfg.DataDir
+		if persistDir == "" { persistDir = "raftdata" }
+		p, err := newRaftPersistence(persistDir, cfg.ShardID)
+		if err != nil { return err }
+		persist = p
+		// Attempt load of prior state (snapshot, hard state, entries)
+		var snapIdx, lastEntryIdx uint64
+		loaded, snapIdx, lastEntryIdx, err = persist.Load(storage)
+		if err != nil {
+			slog.Warn("raft persistence load failed", slog.String("shard", cfg.ShardID), slog.Any("error", err))
+		} else if loaded {
+			s.lastSnapshotIndex = snapIdx
+			if lastEntryIdx > snapIdx { s.lastAppliedIndex = lastEntryIdx } else { s.lastAppliedIndex = snapIdx }
+		}
 	}
 	c := &etcdraft.Config{ID: id, ElectionTick: int(electionTicks), HeartbeatTick: heartbeatTicks, Storage: storage, MaxSizePerMsg: 1 << 20, MaxInflightMsgs: 256, CheckQuorum: true, PreVote: true, Logger: &etcdLoggerAdapter{}}
 	s.storage = storage
@@ -427,9 +434,17 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 	// Install noop transport by default (caller can SetTransport later)
 	s.transport = &noopTransport{}
 	s.persist = persist
-	s.snapshotThreshold = config.Config.RaftSnapshotThresholdEntries
-	go s.tickLoop()
-	go s.readyLoop()
+	// snapshot threshold: tolerate nil global config (tests with DisablePersistence)
+	if config.Config != nil {
+		s.snapshotThreshold = config.Config.RaftSnapshotThresholdEntries
+	} else {
+		// default high threshold to avoid unexpected snapshotting in tests unless explicitly configured
+		s.snapshotThreshold = 0
+	}
+	if !s.manual { // only spawn background loops when not in manual deterministic mode
+		go s.tickLoop()
+		go s.readyLoop()
+	}
 	return nil
 }
 
@@ -439,9 +454,7 @@ func (s *ShardRaftNode) tickLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			if s.rn != nil {
-				s.rn.Tick()
-			}
+			if s.rn != nil { s.rn.Tick() }
 		case <-s.stopCh:
 			return
 		}
@@ -505,6 +518,16 @@ func (s *ShardRaftNode) readyLoop() {
 						waiter <- &ProposalResult{CommitIndex: commitIdx, RaftIndex: ent.Index}
 						close(waiter)
 					}
+				} else if ent.Type == raftpb.EntryConfChange {
+					var cc raftpb.ConfChange
+					if len(ent.Data) > 0 { _ = cc.Unmarshal(ent.Data) }
+					cs := s.rn.ApplyConfChange(cc)
+					s.mu.Lock(); s.confState = *cs; s.lastAppliedIndex = ent.Index; s.mu.Unlock()
+				} else if ent.Type == raftpb.EntryConfChangeV2 {
+					var cc raftpb.ConfChangeV2
+					if len(ent.Data) > 0 { _ = cc.Unmarshal(ent.Data) }
+					cs := s.rn.ApplyConfChange(cc)
+					s.mu.Lock(); s.confState = *cs; s.lastAppliedIndex = ent.Index; s.mu.Unlock()
 				}
 			}
 		}
@@ -553,6 +576,180 @@ func (s *ShardRaftNode) readyLoop() {
 			}
 		}
 	}
+}
+
+// ManualTick advances the raft node one logical heartbeat/election tick.
+// Only valid when RaftConfig.Manual = true.
+func (s *ShardRaftNode) ManualTick() {
+	if !s.manual || s.rn == nil { return }
+	s.rn.Tick()
+}
+
+// ManualForceCampaign forces a leadership campaign (single-node deterministic tests).
+// Safe only in manual mode; ignores errors.
+func (s *ShardRaftNode) ManualForceCampaign() {
+    if !s.manual || s.rn == nil { return }
+    _ = s.rn.Campaign(context.Background())
+}
+
+// ManualProcessReady drains a single Ready from the raft node and processes it
+// identically to the background readyLoop. Returns false if no Ready was
+// available immediately. Only valid in manual mode.
+func (s *ShardRaftNode) ManualProcessReady() bool {
+	if !s.manual || s.rn == nil { return false }
+	select {
+	case rd, ok := <-s.rn.Ready():
+		if !ok { return false }
+		if s.persist != nil {
+			if err := s.persist.Persist(&rd); err != nil {
+				slog.Warn("raft persist failed", slog.String("shard", s.shardID), slog.Any("error", err))
+			}
+		}
+		if !etcdraft.IsEmptySnap(rd.Snapshot) && s.storage != nil {
+			if err := s.storage.ApplySnapshot(rd.Snapshot); err != nil {
+				slog.Warn("raft storage apply snapshot failed", slog.String("shard", s.shardID), slog.Any("error", err))
+			}
+		}
+		if len(rd.Entries) > 0 && s.storage != nil {
+			if err := s.storage.Append(rd.Entries); err != nil {
+				slog.Warn("raft storage append failed", slog.String("shard", s.shardID), slog.Any("error", err))
+			}
+		}
+		if len(rd.CommittedEntries) > 0 {
+			for _, ent := range rd.CommittedEntries {
+				if ent.Type == raftpb.EntryNormal && len(ent.Data) > 0 {
+					var wr wireRecord
+					if err := json.Unmarshal(ent.Data, &wr); err != nil { slog.Error("raft unmarshal", slog.Any("error", err)); continue }
+					rec := &RaftLogRecord{BucketID: wr.BucketID, Type: wr.Type, Payload: wr.Payload}
+					s.mu.Lock()
+					s.perBucketCommit[rec.BucketID]++
+					commitIdx := s.perBucketCommit[rec.BucketID]
+					waiter := s.waitersSeq[wr.Seq]
+					delete(s.waitersSeq, wr.Seq)
+					s.lastAppliedIndex = ent.Index
+					s.committedSinceSnap++
+					s.mu.Unlock()
+					cr := &CommittedRecord{RaftIndex: ent.Index, Term: ent.Term, CommitIndex: commitIdx, Record: rec}
+					select { case s.committedCh <- cr: case <-time.After(100 * time.Millisecond): }
+					if waiter != nil { waiter <- &ProposalResult{CommitIndex: commitIdx, RaftIndex: ent.Index}; close(waiter) }
+				} else if ent.Type == raftpb.EntryConfChange {
+					var cc raftpb.ConfChange
+					if len(ent.Data) > 0 { _ = cc.Unmarshal(ent.Data) }
+					cs := s.rn.ApplyConfChange(cc)
+					s.mu.Lock(); s.confState = *cs; s.lastAppliedIndex = ent.Index; s.mu.Unlock()
+				} else if ent.Type == raftpb.EntryConfChangeV2 {
+					var cc raftpb.ConfChangeV2
+					if len(ent.Data) > 0 { _ = cc.Unmarshal(ent.Data) }
+					cs := s.rn.ApplyConfChange(cc)
+					s.mu.Lock(); s.confState = *cs; s.lastAppliedIndex = ent.Index; s.mu.Unlock()
+				}
+			}
+		}
+		if len(rd.Messages) > 0 && s.transport != nil {
+			s.transport.Send(context.Background(), rd.Messages)
+		}
+		s.rn.Advance()
+		// Single-node convenience: if still follower after applying initial conf state and no leader, campaign.
+		if s.rn.Status().Lead == 0 && len(s.confState.Voters) == 1 {
+			_ = s.rn.Campaign(context.Background())
+		}
+		if s.snapshotThreshold > 0 && s.committedSinceSnap >= s.snapshotThreshold && s.lastAppliedIndex > s.lastSnapshotIndex {
+			if s.storage != nil {
+				if snap, err := s.storage.CreateSnapshot(s.lastAppliedIndex, &s.confState, nil); err == nil && !etcdraft.IsEmptySnap(snap) {
+					if s.persist != nil {
+						if err := s.persist.PersistSnapshot(&snap); err != nil { slog.Warn("raft snapshot persist failed", slog.String("shard", s.shardID), slog.Any("error", err)) } else {
+							compactionIndex := snap.Metadata.Index
+							if err := s.storage.Compact(compactionIndex); err != nil { slog.Warn("raft storage compact failed", slog.String("shard", s.shardID), slog.Any("error", err)) }
+							if err := s.persist.PruneEntries(compactionIndex); err != nil { slog.Warn("raft prune failed", slog.String("shard", s.shardID), slog.Any("error", err)) } else {
+								s.mu.Lock()
+								if compactionIndex > s.prunedThroughIndex { s.prunedThroughIndex = compactionIndex }
+								if snap.Metadata.Index > s.lastSnapshotIndex { s.lastSnapshotIndex = snap.Metadata.Index }
+								s.committedSinceSnap = 0
+								s.mu.Unlock()
+							}
+							if s.prunedThroughIndex < compactionIndex { // prune failure path
+								s.mu.Lock()
+								if snap.Metadata.Index > s.lastSnapshotIndex { s.lastSnapshotIndex = snap.Metadata.Index }
+								s.committedSinceSnap = 0
+								s.mu.Unlock()
+							}
+						}
+					}
+				} else if err != nil { slog.Warn("raft create snapshot failed", slog.String("shard", s.shardID), slog.Any("error", err)) }
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+// ManualProcessNextReady blocks until a Ready is available (or the raft node closes)
+// and processes it. Returns true if a Ready was processed. Only valid in manual mode.
+func (s *ShardRaftNode) ManualProcessNextReady() bool {
+	if !s.manual || s.rn == nil { return false }
+	rd, ok := <-s.rn.Ready()
+	if !ok { return false }
+	if s.persist != nil {
+		if err := s.persist.Persist(&rd); err != nil { slog.Warn("raft persist failed", slog.String("shard", s.shardID), slog.Any("error", err)) }
+	}
+	if !etcdraft.IsEmptySnap(rd.Snapshot) && s.storage != nil {
+		if err := s.storage.ApplySnapshot(rd.Snapshot); err != nil { slog.Warn("raft storage apply snapshot failed", slog.String("shard", s.shardID), slog.Any("error", err)) }
+	}
+	if len(rd.Entries) > 0 && s.storage != nil {
+		if err := s.storage.Append(rd.Entries); err != nil { slog.Warn("raft storage append failed", slog.String("shard", s.shardID), slog.Any("error", err)) }
+	}
+	if len(rd.CommittedEntries) > 0 {
+		for _, ent := range rd.CommittedEntries {
+			if ent.Type == raftpb.EntryNormal && len(ent.Data) > 0 {
+				var wr wireRecord
+				if err := json.Unmarshal(ent.Data, &wr); err != nil { slog.Error("raft unmarshal", slog.Any("error", err)); continue }
+				rec := &RaftLogRecord{BucketID: wr.BucketID, Type: wr.Type, Payload: wr.Payload}
+				s.mu.Lock(); s.perBucketCommit[rec.BucketID]++; commitIdx := s.perBucketCommit[rec.BucketID]; waiter := s.waitersSeq[wr.Seq]; delete(s.waitersSeq, wr.Seq); s.lastAppliedIndex = ent.Index; s.committedSinceSnap++; s.mu.Unlock()
+				cr := &CommittedRecord{RaftIndex: ent.Index, Term: ent.Term, CommitIndex: commitIdx, Record: rec}
+				select { case s.committedCh <- cr: case <-time.After(100 * time.Millisecond): }
+				if waiter != nil { waiter <- &ProposalResult{CommitIndex: commitIdx, RaftIndex: ent.Index}; close(waiter) }
+			} else if ent.Type == raftpb.EntryConfChange {
+				var cc raftpb.ConfChange
+				if len(ent.Data) > 0 { _ = cc.Unmarshal(ent.Data) }
+				cs := s.rn.ApplyConfChange(cc)
+				s.mu.Lock(); s.confState = *cs; s.lastAppliedIndex = ent.Index; s.mu.Unlock()
+			} else if ent.Type == raftpb.EntryConfChangeV2 {
+				var cc raftpb.ConfChangeV2
+				if len(ent.Data) > 0 { _ = cc.Unmarshal(ent.Data) }
+				cs := s.rn.ApplyConfChange(cc)
+				s.mu.Lock(); s.confState = *cs; s.lastAppliedIndex = ent.Index; s.mu.Unlock()
+			}
+		}
+	}
+	if len(rd.Messages) > 0 && s.transport != nil { s.transport.Send(context.Background(), rd.Messages) }
+	s.rn.Advance()
+	if s.rn.Status().Lead == 0 && len(s.confState.Voters) == 1 { _ = s.rn.Campaign(context.Background()) }
+	if s.snapshotThreshold > 0 && s.committedSinceSnap >= s.snapshotThreshold && s.lastAppliedIndex > s.lastSnapshotIndex {
+		if s.storage != nil {
+			if snap, err := s.storage.CreateSnapshot(s.lastAppliedIndex, &s.confState, nil); err == nil && !etcdraft.IsEmptySnap(snap) {
+				if s.persist != nil {
+					if err := s.persist.PersistSnapshot(&snap); err != nil { slog.Warn("raft snapshot persist failed", slog.String("shard", s.shardID), slog.Any("error", err)) } else {
+						compactionIndex := snap.Metadata.Index
+						if err := s.storage.Compact(compactionIndex); err != nil { slog.Warn("raft storage compact failed", slog.String("shard", s.shardID), slog.Any("error", err)) }
+						if err := s.persist.PruneEntries(compactionIndex); err != nil { slog.Warn("raft prune failed", slog.String("shard", s.shardID), slog.Any("error", err)) } else {
+							s.mu.Lock(); if compactionIndex > s.prunedThroughIndex { s.prunedThroughIndex = compactionIndex }; if snap.Metadata.Index > s.lastSnapshotIndex { s.lastSnapshotIndex = snap.Metadata.Index }; s.committedSinceSnap = 0; s.mu.Unlock()
+						}
+						if s.prunedThroughIndex < compactionIndex { s.mu.Lock(); if snap.Metadata.Index > s.lastSnapshotIndex { s.lastSnapshotIndex = snap.Metadata.Index }; s.committedSinceSnap = 0; s.mu.Unlock() }
+					}
+				}
+			} else if err != nil { slog.Warn("raft create snapshot failed", slog.String("shard", s.shardID), slog.Any("error", err)) }
+		}
+	}
+	return true
+}
+
+// ManualStep performs a single logical advancement: one Tick followed by
+// draining all immediately available Ready structs. Useful for tests.
+func (s *ShardRaftNode) ManualStep() {
+	if !s.manual || s.rn == nil { return }
+	s.rn.Tick()
+	for s.ManualProcessReady() { /* drain */ }
 }
 
 // Step injects an incoming raft message (used by network transport) into the raft state machine.
