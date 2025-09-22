@@ -5,12 +5,15 @@ package shardmanager
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/sevenDatabase/SevenDB/config"
@@ -124,6 +127,43 @@ func (manager *ShardManager) Run(ctx context.Context) {
 	}
 
 	manager.start(shardCtx, &wg)
+
+	// Periodic status writer (local development / external observation). Writes status.json in metadata dir.
+	if manager.raftNodes != nil && config.Config != nil && config.Config.RaftEnabled {
+		statusPath := filepath.Join(config.MetadataDir, "status.json")
+		// secondary path: CWD (process working directory) for tooling/scripts expecting local file
+		cwd, _ := os.Getwd()
+		altPath := filepath.Join(cwd, "status.json")
+		slog.Info("status writer active", slog.String("primary", statusPath), slog.String("alt", altPath), slog.Duration("interval", time.Second))
+		go func() {
+			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-shardCtx.Done():
+					return
+				case <-ticker.C:
+					// Collect snapshots
+					snaps := manager.RaftStatusSnapshots()
+					payload := map[string]interface{}{"ts_unix": time.Now().Unix(), "nodes": snaps}
+					b, err := json.MarshalIndent(payload, "", "  ")
+					if err != nil { slog.Debug("status marshal failed", slog.Any("error", err)); continue }
+					// write primary
+					tmp := statusPath + ".tmp"
+					if err := os.WriteFile(tmp, b, 0o600); err != nil {
+						slog.Debug("status write failed", slog.String("path", statusPath), slog.Any("error", err))
+					} else {
+						_ = os.Rename(tmp, statusPath)
+					}
+					// write alternate (best-effort, no atomic rename needed but keep similar pattern)
+					tmpAlt := altPath + ".tmp"
+					if err := os.WriteFile(tmpAlt, b, 0o600); err != nil {
+						slog.Debug("status alt write failed", slog.String("path", altPath), slog.Any("error", err))
+					} else { _ = os.Rename(tmpAlt, altPath) }
+				}
+			}
+		}()
+	}
 
 	select {
 	case <-ctx.Done():
