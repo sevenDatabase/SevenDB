@@ -33,6 +33,36 @@ type RaftLogRecord struct {
 	// TODO: optional client metadata (ClientID, ReqID, TraceID) for tracing.
 }
 
+// Raft record Type values reserved for higher-level application semantics.
+// Existing tests used Type=1 generically; to avoid accidental decoding of
+// historical test payloads we reserve a distinct high value for application
+// command replication going forward.
+const (
+	RaftRecordTypeAppCommand = 10 // JSON-encoded ReplicationPayload
+)
+
+// ReplicationPayload is the canonical serialized application command envelope
+// carried inside a RaftLogRecord (Type==RaftRecordTypeAppCommand). It is
+// deliberately minimal; version field enables future evolution without
+// breaking old nodes during rolling upgrades.
+type ReplicationPayload struct {
+	Version   int      `json:"v"`
+	Cmd       string   `json:"cmd"`
+	Args      []string `json:"args"`
+	ClientID  string   `json:"cid,omitempty"`
+	RequestID string   `json:"rid,omitempty"`
+}
+
+// BuildReplicationRecord helper constructs a RaftLogRecord suitable for proposal
+// carrying an application command. BucketID should be the logical bucket or shard-
+// scoping identifier chosen by caller (currently opaque to raft layer).
+func BuildReplicationRecord(bucketID string, cmd string, args []string) (*RaftLogRecord, error) {
+	pl := &ReplicationPayload{Version: 1, Cmd: cmd, Args: args}
+	b, err := json.Marshal(pl)
+	if err != nil { return nil, err }
+	return &RaftLogRecord{BucketID: bucketID, Type: RaftRecordTypeAppCommand, Payload: b}, nil
+}
+
 // CommittedRecord is emitted by ShardRaftNode when a raft log entry is
 // durably committed (i.e. applied to the FSM). It includes the raft log
 // index for durability tracking and raw record bytes.
@@ -104,6 +134,40 @@ type ShardRaftNode struct {
 	// are NOT started. Tests can drive the raft state machine deterministically
 	// by calling ManualTick() and ManualProcessReady(). In production leave false.
 	manual bool
+
+	// replicationHandler (optional) is invoked for each committed application
+	// command payload (Type == RaftRecordTypeAppCommand) after commit ordering
+	// has been established. It is executed outside the internal mutex.
+	replicationHandler func(*ReplicationPayload) error
+	replicationStrict  bool // if true, handler errors are treated as fatal (panic) to avoid divergence
+}
+
+// SetReplicationHandler registers the application state apply callback. If strict
+// is true, any handler error will panic the process to avoid silent divergence
+// between state machines. In non-strict mode errors are logged (WARN) and the
+// raft pipeline continues (suitable only if handler cannot fail or failures are
+// safe to ignore, e.g. metrics side-effects).
+func (s *ShardRaftNode) SetReplicationHandler(handler func(*ReplicationPayload) error, strict bool) {
+	s.replicationHandler = handler
+	s.replicationStrict = strict
+}
+
+// invokeReplicationHandler centralizes decoding & error policy for application
+// command entries.
+func (s *ShardRaftNode) invokeReplicationHandler(rec *RaftLogRecord) {
+	if rec == nil || rec.Type != RaftRecordTypeAppCommand || s.replicationHandler == nil || len(rec.Payload) == 0 { return }
+	var pl ReplicationPayload
+	if err := json.Unmarshal(rec.Payload, &pl); err != nil {
+		slog.Warn("replication payload decode failed", slog.String("shard", s.shardID), slog.Any("error", err))
+		return
+	}
+	if err := s.replicationHandler(&pl); err != nil {
+		if s.replicationStrict {
+			slog.Error("replication handler fatal error", slog.String("shard", s.shardID), slog.Any("error", err))
+			panic(fmt.Sprintf("replication handler error (strict): %v", err))
+		}
+		slog.Warn("replication handler error", slog.String("shard", s.shardID), slog.Any("error", err))
+	}
 }
 
 // StatusSnapshot is a lightweight snapshot of raft node state for observability.
@@ -331,6 +395,8 @@ func (s *ShardRaftNode) apply(raftIndex uint64, rec *RaftLogRecord) {
 	s.mu.Unlock()
 
 	cr := &CommittedRecord{RaftIndex: raftIndex, Term: 1, CommitIndex: commitIdx, Record: rec}
+	// Apply application-level state mutation (stub engine)
+	s.invokeReplicationHandler(rec)
 	// Non-blocking send with small timeout to avoid deadlock if consumer slow
 	select {
 	case s.committedCh <- cr:
@@ -538,6 +604,8 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 				s.committedSinceSnap++
 				s.mu.Unlock()
 				cr := &CommittedRecord{RaftIndex: ent.Index, Term: ent.Term, CommitIndex: commitIdx, Record: rec}
+				// Apply application mutation
+				s.invokeReplicationHandler(rec)
 				select { case s.committedCh <- cr: case <-time.After(100 * time.Millisecond): }
 				if waiter != nil { waiter <- &ProposalResult{CommitIndex: commitIdx, RaftIndex: ent.Index}; close(waiter) }
 			case raftpb.EntryConfChange:
@@ -638,6 +706,8 @@ func (s *ShardRaftNode) ManualProcessNextReady() bool {
 				rec := &RaftLogRecord{BucketID: wr.BucketID, Type: wr.Type, Payload: wr.Payload}
 				s.mu.Lock(); s.perBucketCommit[rec.BucketID]++; commitIdx := s.perBucketCommit[rec.BucketID]; waiter := s.waitersSeq[wr.Seq]; delete(s.waitersSeq, wr.Seq); s.lastAppliedIndex = ent.Index; s.committedSinceSnap++; s.mu.Unlock()
 				cr := &CommittedRecord{RaftIndex: ent.Index, Term: ent.Term, CommitIndex: commitIdx, Record: rec}
+				// Apply application mutation
+				s.invokeReplicationHandler(rec)
 				select { case s.committedCh <- cr: case <-time.After(100 * time.Millisecond): }
 				if waiter != nil { waiter <- &ProposalResult{CommitIndex: commitIdx, RaftIndex: ent.Index}; close(waiter) }
 			} else if ent.Type == raftpb.EntryConfChange {
