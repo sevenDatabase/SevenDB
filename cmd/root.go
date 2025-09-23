@@ -9,6 +9,7 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/sevenDatabase/SevenDB/internal/logger"
@@ -36,6 +37,23 @@ func init() {
 		case reflect.Bool:
 			val, _ := strconv.ParseBool(defaultTag)
 			flags.Bool(yamlTag, val, descriptionTag)
+		case reflect.Slice:
+			// Support []string slice flags (e.g. --raft-nodes). Use StringArray so repeated flags append cleanly.
+			if field.Type.Elem().Kind() == reflect.String {
+				var defVal []string
+				if defaultTag != "" {
+					for _, seg := range strings.Split(defaultTag, ",") {
+						trim := strings.TrimSpace(seg)
+						if trim != "" { defVal = append(defVal, trim) }
+					}
+				}
+				if len(defVal) == 0 {
+					flags.StringArray(yamlTag, []string{}, descriptionTag)
+				} else {
+					// Cobra lacks direct default for StringArray; fall back to StringSlice for defaults then convert post-load if needed.
+					flags.StringSlice(yamlTag, defVal, descriptionTag)
+				}
+			}
 		}
 	}
 }

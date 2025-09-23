@@ -34,13 +34,6 @@ COLOR=${COLOR:-1}
 NO_WATCH=${NO_WATCH:-0}
 NO_PREFIX_LOGS=${NO_PREFIX_LOGS:-0}
 
-# Clean previous run if CLEAN=1
-if [ "${CLEAN:-0}" = "1" ]; then
-  echo "[INFO] Cleaning previous cluster data..."
-  rm -rf "$BASE_DIR"/*
-  mkdir -p "$BASE_DIR/logs"
-fi
-
 # Node definitions
 # id  client_port raft_port
 NODES=( \
@@ -69,7 +62,6 @@ start_node() {
   local peers_flags
   peers_flags=$(join_peers_flags)
   echo "[INFO] Starting node ${id} (client ${cport}, raft ${rport})"
-  # Launch process and capture PID explicitly; run from its data dir for isolated metadata/config.
   (
     cd "$datadir" || exit 1
     "$BIN" \
@@ -80,6 +72,7 @@ start_node() {
       --raft-listen-addr=":${rport}" \
       --raft-advertise-addr="127.0.0.1:${rport}" \
       --raft-snapshot-threshold-entries="${SNAP_THRESHOLD}" \
+      --status-file-path="${datadir}/status.json" \
       --log-level="${LOG_LEVEL}" \
       ${peers_flags} \
       >"${log}" 2>&1 &
@@ -101,18 +94,89 @@ stop_cluster() {
   done
 }
 
+# Sample one-shot raft status via CLI (same-process only) – helpful initial sanity check.
 status_sample() {
   echo "[INFO] Sampling raft status from node1 (if running)"
   local nodeDir="$BASE_DIR/node1"
   if [ ! -d "$nodeDir" ]; then
-    echo "[WARN] node1 directory missing"
-    return
+    echo "[WARN] node1 directory missing"; return
   fi
   if command -v jq >/dev/null 2>&1; then
     ( cd "$nodeDir" && "$BIN" raft-status | jq ) || echo "[WARN] Could not fetch status"
   else
     ( cd "$nodeDir" && "$BIN" raft-status ) || echo "[WARN] Could not fetch status"
   fi
+}
+leader_watch() {
+  echo "[INFO] Leader watch started (interval ${WATCH_INTERVAL}s). Ctrl+C to exit."
+  local statusFile="$BASE_DIR/node1/status.json"
+  local lastApplied=0 lastSnap=0
+  local attempts=0
+  # Preflight diagnostics (once)
+  if [ ! -d "$BASE_DIR/node1" ]; then
+    echo "[DIAG] node1 directory missing at start: $BASE_DIR/node1"
+  else
+    echo "[DIAG] node1 dir present"
+  fi
+  if [ -f "$BASE_DIR/node1/pid" ]; then
+    pid=$(cat "$BASE_DIR/node1/pid" 2>/dev/null || echo "")
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      echo "[DIAG] node1 process running (pid $pid)"
+    else
+      echo "[DIAG] node1 pid file exists but process not running"
+    fi
+  else
+    echo "[DIAG] node1 pid file missing"
+  fi
+  while true; do
+    if [ ! -f "$statusFile" ]; then
+      attempts=$((attempts+1))
+      if [ $attempts -eq 1 ]; then
+        echo "[DIAG] Listing node1 directory contents:"; ls -al "$BASE_DIR/node1" || true
+      fi
+      if [ $attempts -eq 5 ]; then
+        echo "[DIAG] tail last 30 lines of node1 log:"; tail -n 30 "$BASE_DIR/logs/node1.log" | sed 's/^/[node1-log] /'
+      fi
+      if [ $attempts -eq 10 ]; then
+        echo "[DIAG] Checking for any status.json under base dir:"; find "$BASE_DIR" -maxdepth 4 -name status.json -printf '%p\n' 2>/dev/null || true
+      fi
+      if [ $attempts -eq 15 ]; then
+        echo "[DIAG] Reprinting node1 command line (from /proc if available):"
+        if [ -f "$BASE_DIR/node1/pid" ]; then pid=$(cat "$BASE_DIR/node1/pid" 2>/dev/null || echo ""); fi
+        if [ -n "${pid:-}" ] && [ -r "/proc/$pid/cmdline" ]; then tr '\0' ' ' < "/proc/$pid/cmdline" | sed 's/^/[proc-cmd] /'; else echo "[proc-cmd] unavailable"; fi
+      fi
+      if [ $attempts -eq 20 ]; then
+        echo "[DIAG] Giving up after 20 attempts; status file not found at $statusFile"
+        echo "[DIAG] Possible causes: early panic, wrong working directory, binary mismatch, raft not enabled, or status writer not triggered."
+      fi
+      printf "[WATCH] waiting-for-status-file (attempt %d)\n" "$attempts"
+      sleep "$WATCH_INTERVAL"; continue
+    fi
+    # Use jq if available for robust extraction; otherwise grep/sed fallback.
+    if command -v jq >/dev/null 2>&1; then
+      leader=$(jq -r '.nodes[0].leader_id // empty' "$statusFile" 2>/dev/null || true)
+      isLeader=$(jq -r '.nodes[0].is_leader // empty' "$statusFile" 2>/dev/null || true)
+      applied=$(jq -r '.nodes[0].last_applied_index // 0' "$statusFile" 2>/dev/null || echo 0)
+      snap=$(jq -r '.nodes[0].last_snapshot_index // 0' "$statusFile" 2>/dev/null || echo 0)
+      peersConn=$(jq -r '.nodes[0].transport_peers_connected // 0' "$statusFile" 2>/dev/null || echo 0)
+      peersTot=$(jq -r '.nodes[0].transport_peers_total // 0' "$statusFile" 2>/dev/null || echo 0)
+    else
+      json=$(cat "$statusFile" 2>/dev/null || echo '{}')
+      leader=$(echo "$json" | grep -o '"leader_id"[^"]*"[^"]*"' | head -n1 | sed 's/.*"leader_id":"\([^"]*\)".*/\1/')
+      isLeader=$(echo "$json" | grep -o '"is_leader"[^"]*' | head -n1 | grep -o 'true\|false')
+      applied=$(echo "$json" | grep -o '"last_applied_index"[^"]*[0-9]*' | head -n1 | grep -o '[0-9]*$')
+      snap=$(echo "$json" | grep -o '"last_snapshot_index"[^"]*[0-9]*' | head -n1 | grep -o '[0-9]*$')
+      peersConn=$(echo "$json" | grep -o '"transport_peers_connected"[^"]*[0-9]*' | head -n1 | grep -o '[0-9]*$')
+      peersTot=$(echo "$json" | grep -o '"transport_peers_total"[^"]*[0-9]*' | head -n1 | grep -o '[0-9]*$')
+    fi
+    applied=${applied:-0}; snap=${snap:-0}; peersConn=${peersConn:-0}; peersTot=${peersTot:-0}
+    local aDelta=$(( applied - lastApplied ))
+    local sDelta=$(( snap - lastSnap ))
+    printf "[WATCH] leader=%s node1_isLeader=%s applied=%s(Δ%+d) snapshot=%s(Δ%+d) peers=%s/%s\n" \
+      "${leader:-?}" "${isLeader:-?}" "$applied" "$aDelta" "$snap" "$sDelta" "$peersConn" "$peersTot"
+    lastApplied=$applied; lastSnap=$snap
+    sleep "$WATCH_INTERVAL"
+  done
 }
 
 trap stop_cluster EXIT
@@ -121,7 +185,6 @@ trap stop_cluster EXIT
 for entry in "${NODES[@]}"; do
   read -r id cport rport <<<"$entry"
   start_node "$id" "$cport" "$rport"
-  # tiny stagger to reduce simultaneous elections
   sleep 0.4
 done
 
@@ -146,7 +209,6 @@ prefix_color() {
 
 stream_logs() {
   if [ "$NO_PREFIX_LOGS" = "1" ]; then
-    # Fallback to simple tail of all logs
     tail -F "$BASE_DIR"/logs/node*.log &
     LOG_TAIL_PID=$!
     return
@@ -157,59 +219,6 @@ stream_logs() {
   done
 }
 
-# --- Leader watch loop ---
-leader_watch() {
-  echo "[INFO] Leader watch started (interval ${WATCH_INTERVAL}s). Ctrl+C to exit."
-  local lastApplied1=0 lastSnap1=0
-  local retries=0
-  local fallbackTried=0
-  while true; do
-    local statusFile="$BASE_DIR/node1/status.json"
-    if [ ! -f "$statusFile" ]; then
-      # Try alternate (metadata default) path
-      local altFile="/etc/dicedb/status.json"
-      if [ -f "$altFile" ]; then
-        statusFile="$altFile"
-      else
-        retries=$((retries+1))
-        if [ $retries -eq 5 ]; then
-          echo "[WATCH] still waiting (5 attempts). Checked: $statusFile and $altFile"
-        elif [ $retries -eq 15 ]; then
-          echo "[WATCH] 15 attempts without status file. Possible causes: (1) binary not rebuilt, (2) raft not enabled, (3) write permissions denied." 
-        elif [ $retries -eq 30 ]; then
-          echo "[WATCH] 30 attempts. Running one-time 'raft-status' fallback for visibility." 
-          if [ $fallbackTried -eq 0 ]; then
-            fallbackTried=1
-            ( cd "$BASE_DIR/node1" && "$BIN" raft-status 2>&1 | sed 's/^/[RAFT-STATUS-FALLBACK] /' ) || true
-          fi
-        fi
-        printf "[WATCH] waiting-for-status-file (looking at %s)\n" "$statusFile"
-        sleep "$WATCH_INTERVAL"; continue
-      fi
-    fi
-    local json
-    if ! json=$(cat "$statusFile" 2>/dev/null); then
-      echo "[WATCH] read-error"; sleep "$WATCH_INTERVAL"; continue
-    fi
-    # Structure: { "ts_unix": <int>, "nodes": [ { shard_id,... } ] }
-    # Extract first node object fields.
-    local nodeJson=$(echo "$json" | sed -n '/"nodes"/,$p' )
-    # Grep patterns from first occurrence only.
-    local leader=$(echo "$nodeJson" | grep -o '"leader_id"[^"]*"[^"]*"' | head -n1 | sed 's/.*"leader_id":"\([^"]*\)".*/\1/')
-    local isLeader=$(echo "$nodeJson" | grep -o '"is_leader"[^"]*' | head -n1 | grep -o 'true\|false')
-    local applied=$(echo "$nodeJson" | grep -o '"last_applied_index"[^"]*[0-9]*' | head -n1 | grep -o '[0-9]*$')
-    local snap=$(echo "$nodeJson" | grep -o '"last_snapshot_index"[^"]*[0-9]*' | head -n1 | grep -o '[0-9]*$')
-    local peersConn=$(echo "$nodeJson" | grep -o '"transport_peers_connected"[^"]*[0-9]*' | head -n1 | grep -o '[0-9]*$')
-    local peersTot=$(echo "$nodeJson" | grep -o '"transport_peers_total"[^"]*[0-9]*' | head -n1 | grep -o '[0-9]*$')
-    local appliedDelta=$(( applied - lastApplied1 ))
-    local snapDelta=$(( snap - lastSnap1 ))
-    printf "[WATCH] leader=%s node1_isLeader=%s applied=%s(Δ%+d) snapshot=%s(Δ%+d) peers=%s/%s\n" \
-      "$leader" "$isLeader" "$applied" "$appliedDelta" "$snap" "$snapDelta" "$peersConn" "$peersTot"
-    lastApplied1=$applied; lastSnap1=$snap
-    sleep "$WATCH_INTERVAL"
-  done
-}
-
 stream_logs
 
 if [ "$NO_WATCH" != "1" ]; then
@@ -217,5 +226,4 @@ if [ "$NO_WATCH" != "1" ]; then
   WATCH_PID=$!
 fi
 
-# Wait on background tails (and watch if running)
 wait

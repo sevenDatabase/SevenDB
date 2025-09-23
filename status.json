@@ -1,0 +1,17 @@
+{
+  "nodes": [
+    {
+      "shard_id": "a",
+      "leader_id": "1",
+      "is_leader": true,
+      "last_applied_index": 5,
+      "last_snapshot_index": 0,
+      "committed_since_snapshot": 0,
+      "per_bucket_commit": {},
+      "pruned_through_index": 0,
+      "transport_peers_total": 0,
+      "transport_peers_connected": 0
+    }
+  ],
+  "ts_unix": 1758646995
+}

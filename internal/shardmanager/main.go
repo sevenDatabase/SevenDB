@@ -84,6 +84,27 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 			sm.raftNodes[i] = rn
 		}
 		slog.Info("raft enabled for shards", slog.Int("count", shardCount), slog.Uint64("local_id", sm.localRaftID))
+		// Early best-effort initial status write (honors explicit status-file-path if provided)
+		func() {
+			defer func() { _ = recover() }()
+			snaps := sm.RaftStatusSnapshots(); payload := map[string]interface{}{"ts_unix": time.Now().Unix(), "nodes": snaps}
+			b, err := json.MarshalIndent(payload, "", "  ")
+			if err != nil { return }
+			var primary string
+			if config.Config.StatusFilePath != "" { primary = config.Config.StatusFilePath } else { primary = filepath.Join(config.MetadataDir, "status.json") }
+			tmp := primary + ".tmp"; if err := os.WriteFile(tmp, b, 0o600); err == nil {
+				if err := os.Rename(tmp, primary); err != nil {
+					slog.Error("initial status file rename failed", slog.String("tmp", tmp), slog.String("dest", primary), slog.Any("error", err))
+				} else {
+					slog.Info("initial status file written", slog.String("path", primary), slog.Int("bytes", len(b)))
+				}
+			} else {
+				slog.Error("initial status file write failed", slog.String("path", primary), slog.Any("error", err))
+			}
+			if config.Config.StatusFilePath == "" { // also write alt only when not explicit
+				cwd, _ := os.Getwd(); alt := filepath.Join(cwd, "status.json"); tmpAlt := alt + ".tmp"; if err := os.WriteFile(tmpAlt, b, 0o600); err == nil { _ = os.Rename(tmpAlt, alt) }
+			}
+		}()
 	}
 	return sm
 }
@@ -130,12 +151,54 @@ func (manager *ShardManager) Run(ctx context.Context) {
 
 	// Periodic status writer (local development / external observation). Writes status.json in metadata dir.
 	if manager.raftNodes != nil && config.Config != nil && config.Config.RaftEnabled {
-		statusPath := filepath.Join(config.MetadataDir, "status.json")
-		// secondary path: CWD (process working directory) for tooling/scripts expecting local file
-		cwd, _ := os.Getwd()
-		altPath := filepath.Join(cwd, "status.json")
-		slog.Info("status writer active", slog.String("primary", statusPath), slog.String("alt", altPath), slog.Duration("interval", time.Second))
+		var statusPath string
+		var altPath string
+		if config.Config.StatusFilePath != "" {
+			statusPath = config.Config.StatusFilePath
+			altPath = "" // disable alt when explicit path provided
+		} else {
+			statusPath = filepath.Join(config.MetadataDir, "status.json")
+			cwd, _ := os.Getwd()
+			altPath = filepath.Join(cwd, "status.json")
+		}
+		if altPath != "" {
+			slog.Info("status writer active", slog.String("primary", statusPath), slog.String("alt", altPath), slog.Duration("interval", time.Second))
+		} else {
+			slog.Info("status writer active", slog.String("path", statusPath), slog.Duration("interval", time.Second))
+		}
 		go func() {
+			writeOnce := func() {
+				snaps := manager.RaftStatusSnapshots()
+				payload := map[string]interface{}{"ts_unix": time.Now().Unix(), "nodes": snaps}
+				b, err := json.MarshalIndent(payload, "", "  ")
+				if err != nil { slog.Debug("status marshal failed", slog.Any("error", err)); return }
+				// primary (explicit or metadata)
+				tmp := statusPath + ".tmp"
+				if err := os.WriteFile(tmp, b, 0o600); err != nil {
+					slog.Error("status write failed", slog.String("path", statusPath), slog.Any("error", err))
+				} else {
+					if err := os.Rename(tmp, statusPath); err != nil {
+						slog.Error("status rename failed", slog.String("tmp", tmp), slog.String("dest", statusPath), slog.Any("error", err))
+					} else {
+						// success log includes first shard indexes for quick debugging
+						if len(snaps) > 0 {
+							if m, ok := snaps[0].(map[string]interface{}); ok {
+								la := m["last_applied_index"]; ls := m["last_snapshot_index"]
+								slog.Debug("status write ok", slog.String("path", statusPath), slog.Int("bytes", len(b)), slog.Any("applied", la), slog.Any("snapshot", ls))
+							}
+						}
+					}
+				}
+				// alt only if enabled
+				if altPath != "" {
+					tmpAlt := altPath + ".tmp"
+					if err := os.WriteFile(tmpAlt, b, 0o600); err != nil {
+						slog.Error("status alt write failed", slog.String("path", altPath), slog.Any("error", err))
+					} else { if err := os.Rename(tmpAlt, altPath); err != nil { slog.Error("status alt rename failed", slog.String("tmp", tmpAlt), slog.String("dest", altPath), slog.Any("error", err)) } }
+				}
+			}
+			// Immediate first write
+			writeOnce()
 			ticker := time.NewTicker(1 * time.Second)
 			defer ticker.Stop()
 			for {
@@ -143,23 +206,20 @@ func (manager *ShardManager) Run(ctx context.Context) {
 				case <-shardCtx.Done():
 					return
 				case <-ticker.C:
-					// Collect snapshots
-					snaps := manager.RaftStatusSnapshots()
-					payload := map[string]interface{}{"ts_unix": time.Now().Unix(), "nodes": snaps}
-					b, err := json.MarshalIndent(payload, "", "  ")
-					if err != nil { slog.Debug("status marshal failed", slog.Any("error", err)); continue }
-					// write primary
-					tmp := statusPath + ".tmp"
-					if err := os.WriteFile(tmp, b, 0o600); err != nil {
-						slog.Debug("status write failed", slog.String("path", statusPath), slog.Any("error", err))
-					} else {
-						_ = os.Rename(tmp, statusPath)
-					}
-					// write alternate (best-effort, no atomic rename needed but keep similar pattern)
-					tmpAlt := altPath + ".tmp"
-					if err := os.WriteFile(tmpAlt, b, 0o600); err != nil {
-						slog.Debug("status alt write failed", slog.String("path", altPath), slog.Any("error", err))
-					} else { _ = os.Rename(tmpAlt, altPath) }
+					writeOnce()
+					// Also emit a compact single-line status for log-based observation fallback.
+					func() {
+						defer func() { _ = recover() }()
+						snaps := manager.RaftStatusSnapshots()
+						if len(snaps) == 0 { return }
+						// use only first shard snapshot for concise leader/apply view
+						if first, ok := snaps[0].(interface{}); ok {
+							b, err := json.Marshal(first)
+							if err == nil {
+								slog.Info("raft_status", slog.String("node", fmt.Sprintf("%d", manager.localRaftID)), slog.String("snapshot", string(b)))
+							}
+						}
+					}()
 				}
 			}
 		}()

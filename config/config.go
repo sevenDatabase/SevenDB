@@ -83,6 +83,8 @@ type DiceDBConfig struct {
 	RaftNodeID                   string   `mapstructure:"raft-node-id" description:"local raft node id (uint64 as string); required for multi-node"`
 	RaftListenAddr               string   `mapstructure:"raft-listen-addr" default:":7090" description:"address host:port for local raft gRPC server to listen on"`
 	RaftAdvertiseAddr            string   `mapstructure:"raft-advertise-addr" description:"public address host:port other peers use to reach this node; defaults to raft-listen-addr if empty"`
+
+	StatusFilePath               string   `mapstructure:"status-file-path" description:"optional explicit path for periodic raft status JSON (status.json). If set, writer uses only this path"`
 }
 
 func Load(flags *pflag.FlagSet) {
@@ -113,7 +115,26 @@ func Load(flags *pflag.FlagSet) {
 			return
 		}
 
-		// Only updated parsed configs if the user sets value or viper doesn't have default values for config flags set
+		// For slice/array flags we must set the underlying []string, not the formatted string.
+		// stringSlice and stringArray are distinct in pflag; retrieval helpers differ.
+		if flag.Value.Type() == "stringSlice" || flag.Value.Type() == "stringArray" {
+			if flag.Changed || !viper.IsSet(flag.Name) {
+				var ss []string
+				var err error
+				if flag.Value.Type() == "stringSlice" {
+					ss, err = flags.GetStringSlice(flag.Name)
+				} else { // stringArray
+					ss, err = flags.GetStringArray(flag.Name)
+				}
+				if err == nil {
+					viper.Set(flag.Name, ss)
+				} else {
+					viper.Set(flag.Name, flag.Value.String()) // fallback
+				}
+			}
+			return
+		}
+		// Primitive flags: Only update parsed configs if user set value or viper lacks it
 		if flag.Changed || !viper.IsSet(flag.Name) {
 			viper.Set(flag.Name, flag.Value.String())
 		}
@@ -121,6 +142,10 @@ func Load(flags *pflag.FlagSet) {
 
 	if err := viper.Unmarshal(&Config); err != nil {
 		panic(err)
+	}
+	// Debug log for raft-nodes to troubleshoot parsing (only if set)
+	if len(Config.RaftNodes) > 0 {
+		slog.Info("config loaded raft-nodes", slog.Any("raft-nodes", Config.RaftNodes))
 	}
 }
 
@@ -170,16 +195,16 @@ func InitConfig(flags *pflag.FlagSet) {
 // configureMetadataDir creates the default metadata directory to be used
 // for DiceDB metadataother persistent data
 func configureMetadataDir() {
-	// Creating dir with owner only permission
-	// The reason we are lost logging the warning is because
-	// this is not a hard dependency.
-	// DiceDB can also run without metadata directory.and in that case
-	// current directory will be used as metadata directory.
-	if err := os.MkdirAll(MetadataDir, 0o700); err != nil {
-		fmt.Printf("could not create metadata directory at %s. error: %s\n", MetadataDir, err)
-		fmt.Println("using current directory as metadata directory")
-		MetadataDir = "."
-	}
+    // If MetadataDir is not an absolute path, anchor it to current working directory.
+    if !filepath.IsAbs(MetadataDir) {
+        cwd, _ := os.Getwd()
+        MetadataDir = filepath.Join(cwd, MetadataDir)
+    }
+    if err := os.MkdirAll(MetadataDir, 0o700); err != nil {
+        fmt.Printf("could not create metadata directory at %s. error: %s\n", MetadataDir, err)
+        fmt.Println("using current directory as metadata directory")
+        MetadataDir = "."
+    }
 }
 
 func initDefaultConfig() *DiceDBConfig {
