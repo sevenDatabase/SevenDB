@@ -15,6 +15,17 @@ set -euo pipefail
 #  Raft gRPC port base: 7091 -> 7091, 7092, 7093
 #
 # Data dirs placed under .local-cluster/
+#
+#
+# To use this:
+# make build
+# CLEAN=1 ./scripts/run-local-raft-cluster.sh
+#
+# and to run raft :
+#  make build
+# ./sevendb --raft-enabled=true --raft-engine=etcd --raft-node-id=1 --raft-listen-addr=:7091 --raft-advertise-addr=127.0.0.1:7091
+# --status-file-path=./status.json --num-shards=1
+
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
