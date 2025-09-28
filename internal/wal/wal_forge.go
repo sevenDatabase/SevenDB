@@ -90,13 +90,36 @@ func (wl *walForge) Init() error {
 	}
 	slog.Debug("Loading WAL segments", slog.Any("total_segments", len(sfs)))
 
-	// TODO: Do not assume that the first segment is always 0
-	// Pick the one with the least value of the segment index
-	// Maintain a metadatafile that holds the latest segment index used
-	// and during rotation, it increments the segment index and uses it
-	sf, err := os.OpenFile(
-		filepath.Join(config.Config.WALDir, segmentPrefix+"0"+".wal"),
-		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	// Determine the current active segment. If existing segments are present we
+	// append to the highest numbered one and set wl.csIdx & wl.csSize accordingly.
+	var targetPath string
+	if len(sfs) == 0 { // start fresh at seg-0.wal
+		targetPath = filepath.Join(config.Config.WALDir, segmentPrefix+"0"+".wal")
+		wl.csIdx = 0
+	} else {
+		// segments() already returns sorted ascending by index.
+		last := sfs[len(sfs)-1]
+		// Extract index from filename
+		base := filepath.Base(last)
+		idxStr := strings.TrimSuffix(strings.TrimPrefix(base, segmentPrefix), ".wal")
+		idx, err := strconv.Atoi(idxStr)
+		if err != nil {
+			return fmt.Errorf("invalid wal segment index in %s: %w", base, err)
+		}
+		wl.csIdx = idx
+		// Determine current size so rotateLogIfNeeded works for partial filled segment.
+		fi, err := os.Stat(last)
+		if err != nil {
+			return fmt.Errorf("stat last wal segment: %w", err)
+		}
+		if fi.Size() > 0 {
+			// Safe cast because segment size vs maxSegmentSizeBytes (uint32) check uses uint32.
+			wl.csSize = uint32(fi.Size())
+		}
+		targetPath = last
+	}
+
+	sf, err := os.OpenFile(targetPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
@@ -109,8 +132,6 @@ func (wl *walForge) Init() error {
 	switch config.Config.WALRotationMode {
 	case "time":
 		go wl.periodicRotateSegment()
-	default:
-		return nil
 	}
 	return nil
 }
@@ -287,20 +308,35 @@ func (wl *walForge) periodicRotateSegment() {
 }
 
 func (wl *walForge) segments() ([]string, error) {
-	// Get all segment files matching the pattern
-	files, err := filepath.Glob(filepath.Join(config.Config.WALDir, segmentPrefix+"*"+".wal"))
+	pattern := filepath.Join(config.Config.WALDir, segmentPrefix+"*"+".wal")
+	files, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil, err
 	}
-
+	// Filter out any unexpected names that do not conform to seg-<n>.wal
+	valid := files[:0]
+	for _, f := range files {
+		base := filepath.Base(f)
+		if !strings.HasPrefix(base, segmentPrefix) || !strings.HasSuffix(base, ".wal") {
+			continue
+		}
+		idxStr := strings.TrimSuffix(strings.TrimPrefix(base, segmentPrefix), ".wal")
+		if _, err := strconv.Atoi(idxStr); err != nil {
+			continue
+		}
+		valid = append(valid, f)
+	}
+	files = valid
+	// Sort numerically by extracted index (NOT lexicographically by full path)
 	sort.Slice(files, func(i, j int) bool {
-		s1, _ := strconv.Atoi(strings.Split(strings.TrimPrefix(files[i], segmentPrefix), ".")[0])
-		s2, _ := strconv.Atoi(strings.Split(strings.TrimPrefix(files[i], segmentPrefix), ".")[0])
-		return s1 < s2
+		bi := filepath.Base(files[i])
+		bj := filepath.Base(files[j])
+		iStr := strings.TrimSuffix(strings.TrimPrefix(bi, segmentPrefix), ".wal")
+		jStr := strings.TrimSuffix(strings.TrimPrefix(bj, segmentPrefix), ".wal")
+		iVal, _ := strconv.Atoi(iStr)
+		jVal, _ := strconv.Atoi(jStr)
+		return iVal < jVal
 	})
-
-	// TODO: Check that the segment files are returned in the correct order
-	// The order has to be in ascending order of the segment index.
 	return files, nil
 }
 

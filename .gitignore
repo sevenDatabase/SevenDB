@@ -41,6 +41,8 @@ sevendb.yaml
 dicedb.yaml
 sevendb.conf
 dicedb.conf
-.local-cluster
+.local-cluster/
+local-cluster/
 last_commit.diff
 logs/
+status.json

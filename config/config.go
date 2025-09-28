@@ -143,6 +143,24 @@ func Load(flags *pflag.FlagSet) {
 	if err := viper.Unmarshal(&Config); err != nil {
 		panic(err)
 	}
+
+	// --- Path Normalization ---
+	// WALDir is user-configurable and historically defaulted to a relative path ("logs").
+	// When the server is started from a different working directory than the one it
+	// originally wrote WAL segments to, recovery would look in the new CWD, creating the
+	// appearance of data loss / mismatch. To make behavior deterministic we anchor any
+	// non-absolute WALDir under the resolved MetadataDir (which itself is normalized in
+	// configureMetadataDir). Absolute user-provided paths are respected unchanged.
+	if Config.WALDir == "" { // extremely defensive; default tag should set it
+		Config.WALDir = "logs"
+	}
+	if !filepath.IsAbs(Config.WALDir) {
+		Config.WALDir = filepath.Join(MetadataDir, Config.WALDir)
+	}
+	// Ensure the directory exists early so later components can rely on it.
+	if err := os.MkdirAll(Config.WALDir, 0o755); err != nil {
+		panic(fmt.Errorf("could not create wal-dir '%s': %w", Config.WALDir, err))
+	}
 	// Debug log for raft-nodes to troubleshoot parsing (only if set)
 	if len(Config.RaftNodes) > 0 {
 		slog.Info("config loaded raft-nodes", slog.Any("raft-nodes", Config.RaftNodes))
