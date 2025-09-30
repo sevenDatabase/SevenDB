@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package raftwal;
+
+option go_package = "github.com/sevenDatabase/SevenDB/internal/raftwal;raftwal";
+
+// EntryKind represents the high-level kind of raft log entry.
+enum EntryKind {
+  ENTRY_NORMAL = 0;       // application command
+  ENTRY_CONF_CHANGE = 1;  // raft configuration change
+  ENTRY_NOOP = 2;         // leadership no-op / barrier
+  ENTRY_HARDSTATE = 3;    // persisted raft hardstate snapshot (optional usage)
+}
+
+// AppCommand is the application-level command replicated via raft.
+message AppCommand {
+  string bucket_id = 1;   // logical shard/bucket identifier
+  string cmd       = 2;   // command verb
+  repeated string args = 3; // arguments
+  uint64 client_id = 4;   // optional client identifier
+  uint64 request_id = 5;  // optional request identifier for de-duplication
+}
+
+// Envelope is the canonical WAL record payload for raft-backed replication.
+// It is framed externally by a physical header (crc32,size) at the WAL layer.
+message Envelope {
+  uint64 raft_index = 1;  // raft log index
+  uint64 raft_term  = 2;  // raft term
+  EntryKind kind    = 3;  // kind of entry
+  bytes   app_bytes = 4;  // serialized AppCommand or raft ConfChange / HardState
+  uint32  app_crc   = 5;  // crc32 over app_bytes (logical CRC)
+  uint32  flags     = 6;  // reserved bitmask for future use
+}
