@@ -315,6 +315,8 @@ type RaftConfig struct {
 	// WAL tuning & test knobs
 	WALSegmentMaxBytes int64 // override default 64MiB segment size (<=0 keeps default)
 	WALForceRotateEvery int  // if >0 force rotation after every N appends (test only)
+	// WALStrictSync if true enables strict sync mode on the shadow WAL writer (fsync each append).
+	WALStrictSync bool
 }
 
 // NewShardRaftNode creates a new in-memory stub. Follow-up commits will
@@ -620,7 +622,7 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 		if err := os.MkdirAll(shadowDir, 0o755); err != nil { slog.Warn("wal shadow mkdir failed", slog.Any("error", err)) } else {
 			segSize := cfg.WALSegmentMaxBytes
 			if segSize <= 0 { segSize = 64*1024*1024 }
-			wcfg := raftwalConfigCompat{Dir: shadowDir, BufMB: 4, SidecarFlushEvery: 256, SegmentMaxBytes: segSize, ForceRotateEvery: cfg.WALForceRotateEvery}
+			wcfg := raftwalConfigCompat{Dir: shadowDir, BufMB: 4, SidecarFlushEvery: 256, SegmentMaxBytes: segSize, ForceRotateEvery: cfg.WALForceRotateEvery, StrictSync: cfg.WALStrictSync}
 			if wr, werr := raftwalNewWriterCompat(wcfg); werr != nil { slog.Warn("wal shadow init failed", slog.Any("error", werr)) } else { s.walShadow = wr }
 		}
 		if cfg.ValidatorLastN > 0 { 
@@ -827,6 +829,7 @@ type raftwalConfigCompat struct {
 	SidecarFlushEvery int
 	SegmentMaxBytes int64
 	ForceRotateEvery int
+	StrictSync bool
 }
 
 // raftwalWriterCompat is satisfied by *raftwal.Writer (subset) - defined here for loose coupling.
@@ -835,7 +838,14 @@ type raftwalWriterCompat interface { AppendEnvelope(uint64, []byte) error; Appen
 // raftwalNewWriterCompat uses reflection-free construction by importing the real package.
 // NOTE: we import inside function to avoid unused dependency when shadow disabled.
 func raftwalNewWriterCompat(cfg raftwalConfigCompat) (raftwalWriterCompat, error) {
-	w, err := raftwal.NewWriter(raftwal.Config{Dir: cfg.Dir, BufMB: cfg.BufMB, SidecarFlushEvery: cfg.SidecarFlushEvery, SegmentMaxBytes: cfg.SegmentMaxBytes, ForceRotateEvery: cfg.ForceRotateEvery})
+	w, err := raftwal.NewWriter(raftwal.Config{
+		Dir: cfg.Dir,
+		BufMB: cfg.BufMB,
+		SidecarFlushEvery: cfg.SidecarFlushEvery,
+		SegmentMaxBytes: cfg.SegmentMaxBytes,
+		ForceRotateEvery: cfg.ForceRotateEvery,
+		StrictSync: cfg.StrictSync,
+	})
 	if err != nil { return nil, err }
 	return w, nil
 }
