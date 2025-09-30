@@ -214,5 +214,5 @@ func TestShadowWALLeaderFailoverMultiNode(t *testing.T) {
         var nle *NotLeaderError
         if !errors.As(err, &nle) { t.Fatalf("final proposal failed: %v", err) }
     }
-    for _, n := range nodes { if n.shardID != "_dead" { _ = n.Close() } }
+    closeAll(t, nodes)
 }
