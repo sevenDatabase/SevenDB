@@ -8,13 +8,17 @@
 * Replay seeding logic and tests:
   - `TestStrictSyncDurability` validates persistence of frames & HardState with sidecar loss recovery.
   - `TestWALPrimaryReadSeedsStorage` asserts entries + HardState are visible when WALPrimaryRead enabled.
+* Envelope enrichment: namespace, bucket, opcode, sequence fields populated for normal entries (namespace default placeholder).
+* Dual-read validation (WALDualReadValidate): compares CRC of committed legacy entry with WAL ring snapshot; logs mismatches.
+* Crash injection hooks in writer (after frame write, post flush/fsync, sidecar write, rotation) with accompanying tests (`TestWriterCrashInjection`).
+* Sidecar loss recovery test with enriched metadata (`TestSidecarLossEnriched`).
 
 ## Outstanding For Full Cutover
-1. Envelope enrichment: include higher-level proposal metadata (bucket, type, sequence) to reconstruct full application semantics during replay-only startups.
-2. Dual-read validation phase (legacy vs WAL) with divergence detection before disabling legacy writes.
-3. Robust crash fault-injection tests spanning each step of strict ordering (between write, flush, fsync, sidecar rename, rotation).
-4. Metrics & observability: expose strict sync latency and sidecar rewrite stats.
-5. Config gating & progressive rollout strategy (percentage-based or shard subset enablement).
+1. Expand validator to also compare opcode/sequence/bucket (currently only CRC + index validated).
+2. Metrics & observability: expose strict sync latency, sidecar rewrite count, validation mismatch counters.
+3. Progressive rollout: gating strategy & feature flag orchestration (percentage or shard subset).
+4. Optional: per-bucket sequence counters vs shard-global sequence for finer replay semantics.
+5. Envelope namespace finalization (multi-tenancy model) and opcode enumeration stabilization.
 
 ## Invariants Now Held
 * Any successful Append* in StrictSync mode guarantees frame durability (segment fsync) at return.

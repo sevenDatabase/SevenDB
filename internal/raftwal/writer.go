@@ -86,6 +86,14 @@ type Writer struct {
 	// test/diagnostic knobs (not for production traffic paths)
 	forceRotateEvery int // if >0 rotate after this many successful appends (post-append)
 	appendCount      int // internal counter of appends for forceRotateEvery
+
+	// test-only crash injection hooks (nil in production). Each is invoked AFTER the
+	// associated step succeeds so tests can simulate a crash at deterministic points.
+	// If the func returns an error it is ignored (panic/crash simulation left to test).
+	injAfterFrameWrite func(kind string, raftIndex uint64)
+	injAfterFlushFsync func(kind string, raftIndex uint64)
+	injAfterSidecar    func(segIdx int)
+	injAfterRotation   func(oldSegIdx int)
 }
 
 // Dir returns the base directory the writer operates in.
@@ -177,12 +185,14 @@ func (w *Writer) AppendEnvelope(raftIndex uint64, b []byte) error {
 	copy(frame[8:], b)
 	offsetBefore := w.currentOffsetUnsafe()
 	if _, err := w.buf.Write(frame); err != nil { return err }
+	if w.injAfterFrameWrite != nil { w.injAfterFrameWrite("normal", raftIndex) }
 	w.lastIndex = raftIndex
 	w.entries = append(w.entries, entryMeta{Index: raftIndex, Offset: uint32(offsetBefore), Length: uint32(frameLen)})
 	w.entriesSinceFlush++
 	if w.strictSync { // flush + fsync segment file for each append
 		if err := w.buf.Flush(); err != nil { return err }
 		if err := w.file.Sync(); err != nil { return err }
+		if w.injAfterFlushFsync != nil { w.injAfterFlushFsync("normal", raftIndex) }
 	} else if w.entriesSinceFlush >= w.sidecarFlushEvery { // background sidecar cadence
 		_ = w.writeSidecarLocked()
 	}
@@ -220,12 +230,14 @@ func (w *Writer) AppendHardState(commitIndex uint64, b []byte) error {
 	copy(frame[8:], b)
 	offsetBefore := w.currentOffsetUnsafe()
 	if _, err := w.buf.Write(frame); err != nil { return err }
+	if w.injAfterFrameWrite != nil { w.injAfterFrameWrite("hardstate", commitIndex) }
 	// Index meta stored for completeness; does not alter lastIndex.
 	w.entries = append(w.entries, entryMeta{Index: commitIndex, Offset: uint32(offsetBefore), Length: uint32(frameLen)})
 	w.entriesSinceFlush++
 	if w.strictSync {
 		if err := w.buf.Flush(); err != nil { return err }
 		if err := w.file.Sync(); err != nil { return err }
+		if w.injAfterFlushFsync != nil { w.injAfterFlushFsync("hardstate", commitIndex) }
 	} else if w.entriesSinceFlush >= w.sidecarFlushEvery { _ = w.writeSidecarLocked() }
 	if w.entriesSinceFlush >= w.sidecarFlushEvery { _ = w.writeSidecarLocked() }
 	if w.maxSegmentBytes > 0 && (offsetBefore+int64(frameLen)) >= w.maxSegmentBytes { if err := w.rotateLocked(); err != nil { return err } }
@@ -386,6 +398,7 @@ func (w *Writer) writeSidecarLocked() error {
 	if w.strictSync {
 		if err := w.file.Sync(); err != nil { return err }
 	}
+	if w.injAfterSidecar != nil { w.injAfterSidecar(w.segIdx) }
 	return nil
 }
 
@@ -406,6 +419,7 @@ func (w *Writer) rotateLocked() error {
 	w.entries = w.entries[:0]
 	w.entriesSinceFlush = 0
 	if w.dirFsync { _ = syncDir(w.dir) }
+	if w.injAfterRotation != nil { w.injAfterRotation(w.segIdx-1) }
 	return nil
 }
 

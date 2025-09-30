@@ -154,13 +154,18 @@ func (x *AppCommand) GetRequestId() uint64 {
 // Envelope is the canonical WAL record payload for raft-backed replication.
 // It is framed externally by a physical header (crc32,size) at the WAL layer.
 type Envelope struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RaftIndex     uint64                 `protobuf:"varint,1,opt,name=raft_index,json=raftIndex,proto3" json:"raft_index,omitempty"` // raft log index
-	RaftTerm      uint64                 `protobuf:"varint,2,opt,name=raft_term,json=raftTerm,proto3" json:"raft_term,omitempty"`    // raft term
-	Kind          EntryKind              `protobuf:"varint,3,opt,name=kind,proto3,enum=raftwal.EntryKind" json:"kind,omitempty"`     // kind of entry
-	AppBytes      []byte                 `protobuf:"bytes,4,opt,name=app_bytes,json=appBytes,proto3" json:"app_bytes,omitempty"`     // serialized AppCommand or raft ConfChange / HardState
-	AppCrc        uint32                 `protobuf:"varint,5,opt,name=app_crc,json=appCrc,proto3" json:"app_crc,omitempty"`          // crc32 over app_bytes (logical CRC)
-	Flags         uint32                 `protobuf:"varint,6,opt,name=flags,proto3" json:"flags,omitempty"`                          // reserved bitmask for future use
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	RaftIndex uint64                 `protobuf:"varint,1,opt,name=raft_index,json=raftIndex,proto3" json:"raft_index,omitempty"` // raft log index
+	RaftTerm  uint64                 `protobuf:"varint,2,opt,name=raft_term,json=raftTerm,proto3" json:"raft_term,omitempty"`    // raft term
+	Kind      EntryKind              `protobuf:"varint,3,opt,name=kind,proto3,enum=raftwal.EntryKind" json:"kind,omitempty"`     // kind of entry
+	AppBytes  []byte                 `protobuf:"bytes,4,opt,name=app_bytes,json=appBytes,proto3" json:"app_bytes,omitempty"`     // serialized AppCommand or raft ConfChange / HardState
+	AppCrc    uint32                 `protobuf:"varint,5,opt,name=app_crc,json=appCrc,proto3" json:"app_crc,omitempty"`          // crc32 over app_bytes (logical CRC)
+	Flags     uint32                 `protobuf:"varint,6,opt,name=flags,proto3" json:"flags,omitempty"`                          // reserved bitmask for future use
+	// Enrichment for cutover replay (namespace/bucket scoping + op classification + sequence):
+	Namespace     string `protobuf:"bytes,10,opt,name=namespace,proto3" json:"namespace,omitempty"` // logical tenant / namespace (optional)
+	Bucket        string `protobuf:"bytes,11,opt,name=bucket,proto3" json:"bucket,omitempty"`       // bucket or shard-local bucket id
+	Opcode        uint32 `protobuf:"varint,12,opt,name=opcode,proto3" json:"opcode,omitempty"`      // compact numeric operation code (0 = unknown)
+	Sequence      uint64 `protobuf:"varint,13,opt,name=sequence,proto3" json:"sequence,omitempty"`  // monotonic sequence within bucket/namespace scope (0 if unknown)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -237,6 +242,34 @@ func (x *Envelope) GetFlags() uint32 {
 	return 0
 }
 
+func (x *Envelope) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *Envelope) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *Envelope) GetOpcode() uint32 {
+	if x != nil {
+		return x.Opcode
+	}
+	return 0
+}
+
+func (x *Envelope) GetSequence() uint64 {
+	if x != nil {
+		return x.Sequence
+	}
+	return 0
+}
+
 var File_internal_raftwal_raftwal_proto protoreflect.FileDescriptor
 
 const file_internal_raftwal_raftwal_proto_rawDesc = "" +
@@ -249,7 +282,7 @@ const file_internal_raftwal_raftwal_proto_rawDesc = "" +
 	"\x04args\x18\x03 \x03(\tR\x04args\x12\x1b\n" +
 	"\tclient_id\x18\x04 \x01(\x04R\bclientId\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x05 \x01(\x04R\trequestId\"\xba\x01\n" +
+	"request_id\x18\x05 \x01(\x04R\trequestId\"\xa4\x02\n" +
 	"\bEnvelope\x12\x1d\n" +
 	"\n" +
 	"raft_index\x18\x01 \x01(\x04R\traftIndex\x12\x1b\n" +
@@ -257,7 +290,12 @@ const file_internal_raftwal_raftwal_proto_rawDesc = "" +
 	"\x04kind\x18\x03 \x01(\x0e2\x12.raftwal.EntryKindR\x04kind\x12\x1b\n" +
 	"\tapp_bytes\x18\x04 \x01(\fR\bappBytes\x12\x17\n" +
 	"\aapp_crc\x18\x05 \x01(\rR\x06appCrc\x12\x14\n" +
-	"\x05flags\x18\x06 \x01(\rR\x05flags*Y\n" +
+	"\x05flags\x18\x06 \x01(\rR\x05flags\x12\x1c\n" +
+	"\tnamespace\x18\n" +
+	" \x01(\tR\tnamespace\x12\x16\n" +
+	"\x06bucket\x18\v \x01(\tR\x06bucket\x12\x16\n" +
+	"\x06opcode\x18\f \x01(\rR\x06opcode\x12\x1a\n" +
+	"\bsequence\x18\r \x01(\x04R\bsequence*Y\n" +
 	"\tEntryKind\x12\x10\n" +
 	"\fENTRY_NORMAL\x10\x00\x12\x15\n" +
 	"\x11ENTRY_CONF_CHANGE\x10\x01\x12\x0e\n" +

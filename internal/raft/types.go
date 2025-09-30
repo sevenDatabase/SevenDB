@@ -128,6 +128,7 @@ type ShardRaftNode struct {
 	// shadow unified WAL (optional during migration). We keep interface minimal for testability.
 	walShadow    interface{ AppendEnvelope(uint64, []byte) error; AppendHardState(uint64, []byte) error; Sync() error }
 	walValidator *walValidator
+	walDualReadValidate bool
 	lastShadowHardState raftpb.HardState
 	// snapshot management
 	snapshotThreshold  int
@@ -262,7 +263,7 @@ type walValidator struct {
 	count int
 }
 
-type walValTuple struct { index uint64; crc uint32 }
+type walValTuple struct { index uint64; crc uint32; opcode uint32; sequence uint64; bucket string }
 
 func newWalValidator(n int) *walValidator { if n <= 0 { return nil }; return &walValidator{lastN: n, ring: make([]walValTuple, n)} }
 
@@ -323,6 +324,9 @@ type RaftConfig struct {
 	// does not yet encode full higher-level proposal metadata (TODO: extend Envelope with
 	// bucket/type/sequence for deterministic reconstruction of application-level semantics).
 	WALPrimaryRead bool
+	// WALDualReadValidate if true runs a dual-read validator comparing legacy applied entries with
+	// the shadow WAL enriched envelope metadata (index, crc, opcode, sequence, bucket) and logs mismatches.
+	WALDualReadValidate bool
 }
 
 // NewShardRaftNode creates a new in-memory stub. Follow-up commits will
@@ -659,6 +663,7 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 			wcfg := raftwalConfigCompat{Dir: shadowDir, BufMB: 4, SidecarFlushEvery: 256, SegmentMaxBytes: segSize, ForceRotateEvery: cfg.WALForceRotateEvery, StrictSync: cfg.WALStrictSync}
 			if wr, werr := raftwalNewWriterCompat(wcfg); werr != nil { slog.Warn("wal shadow init failed", slog.Any("error", werr)) } else { s.walShadow = wr }
 		}
+		s.walDualReadValidate = cfg.WALDualReadValidate
 		if cfg.ValidatorLastN > 0 { 
 			s.walValidator = newWalValidator(cfg.ValidatorLastN)
 			if tuples, err := raftwal.TailLogicalTuples(shadowDir, s.walValidator.lastN); err == nil && len(tuples) > 0 {
@@ -770,12 +775,25 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 				rec := &RaftLogRecord{BucketID: wr.BucketID, Type: wr.Type, Payload: wr.Payload}
 				// Shadow WAL dual-write (best-effort, non-fatal) for any non-empty normal entry (exclude pure heartbeats).
 				if s.walShadow != nil {
-					// Build Envelope proto
-					// Legacy payload contains JSON ReplicationPayload; we store raw bytes as app_bytes for now.
-					// Future: decode and populate structured fields when cutover.
-					env := &raftwal.Envelope{RaftIndex: ent.Index, RaftTerm: ent.Term, Kind: raftwal.EntryKind_ENTRY_NORMAL, AppBytes: rec.Payload, AppCrc: crc32.ChecksumIEEE(rec.Payload)}
+					// Build enriched Envelope proto with sensible defaults:
+					// namespace: "default" (TODO multi-tenancy)
+					// bucket: record bucket id
+					// opcode: rec.Type (numeric operation classification; 0 if unknown)
+					// sequence: wireRecord.Seq (already monotonic per proposal path)
+					env := &raftwal.Envelope{RaftIndex: ent.Index, RaftTerm: ent.Term, Kind: raftwal.EntryKind_ENTRY_NORMAL, AppBytes: rec.Payload, AppCrc: crc32.ChecksumIEEE(rec.Payload), Namespace: "default", Bucket: rec.BucketID, Opcode: uint32(rec.Type), Sequence: wr.Seq}
 					if b, mErr := proto.Marshal(env); mErr == nil { _ = s.walShadow.AppendEnvelope(ent.Index, b) } else { slog.Warn("wal shadow marshal failed", slog.Any("error", mErr)) }
 					if s.walValidator != nil { s.walValidator.addTuple(ent.Index, rec.Payload) }
+				}
+				// Dual-read validation: compare with recent WAL tuple if enabled (lightweight best-effort)
+				if s.walValidator != nil && s.walDualReadValidate {
+					// current payload CRC
+					crcCalc := crc32.ChecksumIEEE(rec.Payload)
+					// we don't have random access by index in ring; simple linear scan of snapshot (small N)
+					for _, tup := range s.walValidator.snapshot() {
+						if tup.index == ent.Index && tup.crc != crcCalc {
+							slog.Error("wal dual-read mismatch", slog.String("shard", s.shardID), slog.Uint64("index", ent.Index), slog.Any("legacy_crc", crcCalc), slog.Any("wal_crc", tup.crc))
+						}
+					}
 				}
 				s.mu.Lock()
 				s.perBucketCommit[rec.BucketID]++

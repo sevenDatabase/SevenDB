@@ -30,4 +30,9 @@ message Envelope {
   bytes   app_bytes = 4;  // serialized AppCommand or raft ConfChange / HardState
   uint32  app_crc   = 5;  // crc32 over app_bytes (logical CRC)
   uint32  flags     = 6;  // reserved bitmask for future use
+  // Enrichment for cutover replay (namespace/bucket scoping + op classification + sequence):
+  string namespace = 10;  // logical tenant / namespace (optional)
+  string bucket    = 11;  // bucket or shard-local bucket id
+  uint32 opcode    = 12;  // compact numeric operation code (0 = unknown)
+  uint64 sequence  = 13;  // monotonic sequence within bucket/namespace scope (0 if unknown)
 }
