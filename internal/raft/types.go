@@ -317,6 +317,12 @@ type RaftConfig struct {
 	WALForceRotateEvery int  // if >0 force rotation after every N appends (test only)
 	// WALStrictSync if true enables strict sync mode on the shadow WAL writer (fsync each append).
 	WALStrictSync bool
+	// WALPrimaryRead if true (experimental) seeds in-memory raft storage from the unified WAL
+	// instead of legacy raft entry log on startup. This requires that the WAL already contains
+	// a contiguous prefix of raft entries and HardState. Currently limited because Envelope
+	// does not yet encode full higher-level proposal metadata (TODO: extend Envelope with
+	// bucket/type/sequence for deterministic reconstruction of application-level semantics).
+	WALPrimaryRead bool
 }
 
 // NewShardRaftNode creates a new in-memory stub. Follow-up commits will
@@ -615,6 +621,34 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 	}
 	// record conf state for snapshots
 	s.confState = raftpb.ConfState{Voters: confVoters}
+	// Experimental: seed from unified WAL as primary read path.
+	if cfg.WALPrimaryRead && cfg.EnableWALShadow && !cfg.DisablePersistence {
+		shadowDir := cfg.WALShadowDir
+		if shadowDir == "" { shadowDir = filepath.Join(cfg.DataDir, "raftwal") }
+		// Replay envelopes to build entries slice and locate latest HardState.
+		var entries []raftpb.Entry
+		var hs raftpb.HardState
+		var haveHS bool
+		_ = raftwal.Replay(shadowDir, func(env *raftwal.Envelope) error {
+			if env.Kind == raftwal.EntryKind_ENTRY_NORMAL {
+				entries = append(entries, raftpb.Entry{Index: env.RaftIndex, Term: env.RaftTerm, Type: raftpb.EntryNormal, Data: env.AppBytes})
+			} else if env.Kind == raftwal.EntryKind_ENTRY_HARDSTATE {
+				// store last HardState bytes; decode later once fully collected
+				hs.Unmarshal(env.AppBytes)
+				haveHS = true
+			}
+			return nil
+		})
+		if len(entries) > 0 {
+			// Set to storage (replace any pre-existing data which should be empty at this point)
+			// We assume entries are contiguous; future: validate gaps.
+			for _, e := range entries { _ = s.storage.Append([]raftpb.Entry{e}) }
+		}
+		if haveHS && !etcdraft.IsEmptyHardState(hs) {
+			s.storage.SetHardState(hs)
+			s.lastShadowHardState = hs
+		}
+	}
 	// Shadow WAL setup (non-fatal). Only when enabled and persistence not disabled.
 	if cfg.EnableWALShadow && !cfg.DisablePersistence {
 		shadowDir := cfg.WALShadowDir

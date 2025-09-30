@@ -1,5 +1,40 @@
 package raftwal
 
+// Package raftwal provides a shadow (and future primary) write-ahead log used during
+// migration from the legacy raft persistence. Segments use a simple physical frame:
+//   [4B CRC32(payload)][4B little-endian payload length][Envelope proto bytes]
+// The logical payload (Envelope) contains raft index/term, kind, and application bytes + crc.
+//
+// Durability / Ordering Modes
+// ---------------------------
+// Normal (shadow) mode batches writes in a buffered writer and periodically emits a sidecar
+// index (.idx) containing offsets of frames in the segment. Crashes may lose the tail of
+// buffered frames not yet flushed (acceptable while legacy path is authoritative).
+//
+// StrictSync mode (cfg.StrictSync / RaftConfig.WALStrictSync) enforces an fsync discipline
+// on EVERY append (both normal entries and HardState). Ordering:
+//   1. Append frame bytes to buffer
+//   2. Flush buffer
+//   3. Fsync segment file
+//   4. (If sidecar threshold reached) write sidecar.tmp, rename to .idx, fsync directory
+//   5. (If rotation triggered) flush+fsync old segment (already done), close, create new, fsync directory
+// This provides a crash guarantee that any reported successful Append* call has its frame
+// bytes safely persisted in the segment file. The sidecar may lag by up to (SidecarFlushEvery-1)
+// entries; recovery tolerates a stale sidecar by scanning raw segment frames. A future refinement
+// may fsync the directory on EVERY strict append to tighten rename persistence latency.
+//
+// Crash Recovery Invariants
+// * A partially written frame (torn write) is detected by CRC mismatch and stops replay at
+//   that boundary (subsequent garbage ignored).
+// * Missing / outdated sidecar leads to on-demand segment scan; sidecar is rebuilt opportunistically.
+// * Pruning uses rename-to-.deleted then unlink with directory fsync to avoid resurrecting
+//   entries after crash.
+//
+// Future Cutover
+// The replay path introduced for WALPrimaryRead will seed in-memory raft storage from segments.
+// For full logical reconstruction of higher-level proposal metadata we may extend Envelope to
+// carry bucket/type/sequence fields (TODO in code where relevant).
+
 import (
 	"bufio"
 	"bytes"
@@ -98,6 +133,9 @@ func (w *Writer) openLastOrCreate() error {
 	for _, d := range deleted { _ = os.Remove(d) }
 	deletedIdx, _ := filepath.Glob(filepath.Join(w.dir, "*.wal.idx.deleted"))
 	for _, d := range deletedIdx { _ = os.Remove(d) }
+	// Cleanup any orphan sidecar temp files (crash during sidecar rewrite).
+	tmps, _ := filepath.Glob(filepath.Join(w.dir, "*.wal.idx.tmp"))
+	for _, t := range tmps { _ = os.Remove(t) }
 	highest := -1
 	for _, m := range matches {
 		// parse number between 'seg-' and '.wal'
@@ -342,6 +380,12 @@ func (w *Writer) writeSidecarLocked() error {
 	if err := os.Rename(tmp, sidecar); err != nil { return err }
 	if w.dirFsync { _ = syncDir(w.dir) }
 	w.entriesSinceFlush = 0
+	// In strictSync we also ensure the segment file itself is fsynced after updating the sidecar
+	// to minimize windows where index metadata lags durable data. (Segment data already fsynced
+	// at append time.) This is a light extra call for completeness.
+	if w.strictSync {
+		if err := w.file.Sync(); err != nil { return err }
+	}
 	return nil
 }
 
