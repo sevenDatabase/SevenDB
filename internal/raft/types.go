@@ -468,6 +468,10 @@ func (s *ShardRaftNode) apply(raftIndex uint64, rec *RaftLogRecord) {
 		s.mu.Unlock()
 		return
 	}
+	// Defensive: some tests inject placeholder nodes (e.g. failover replacing crashed leader)
+	// without using NewShardRaftNode, so maps can be nil. Initialize lazily to avoid panics.
+	if s.perBucketCommit == nil { s.perBucketCommit = make(map[string]uint64) }
+	if s.waiters == nil { s.waiters = make(map[uint64]chan *ProposalResult) }
 	// Assign per-bucket commit index
 	s.perBucketCommit[rec.BucketID]++
 	commitIdx := s.perBucketCommit[rec.BucketID]
@@ -496,6 +500,11 @@ func (s *ShardRaftNode) Close() error {
 	s.mu.Lock()
 	if s.closed { s.mu.Unlock(); return nil }
 	s.closed = true
+	// Capture walShadow for closing outside lock if it exposes Close.
+	var walShadowClose func() error
+	if s.walShadow != nil {
+		if c, ok := s.walShadow.(interface{ Close() error }); ok { walShadowClose = c.Close }
+	}
 	waiters := s.waiters; s.waiters = map[uint64]chan *ProposalResult{}
 	waitersSeq := s.waitersSeq; s.waitersSeq = map[uint64]chan *ProposalResult{}
 	if s.engine == "etcd" && s.stopCh != nil { close(s.stopCh) }
@@ -505,6 +514,7 @@ func (s *ShardRaftNode) Close() error {
 	for _, ch := range waiters { func(c chan *ProposalResult){ defer func(){ recover() }(); c <- nil; close(c) }(ch) }
 	for _, ch := range waitersSeq { func(c chan *ProposalResult){ defer func(){ recover() }(); c <- nil; close(c) }(ch) }
 	if s.engine == "etcd" && s.rn != nil { s.rn.Stop() }
+	if walShadowClose != nil { _ = walShadowClose() }
 	return nil
 }
 
@@ -769,7 +779,10 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 	if len(rd.Messages) > 0 && s.transport != nil { s.transport.Send(context.Background(), rd.Messages) }
 	// Advance raft state machine
 	s.rn.Advance()
-	// Auto-campaign convenience: in non-manual single-node mode ensure a leader emerges quickly
+	// Auto-campaign convenience: only for single-node clusters. Broadly auto-campaigning
+	// on every Ready when Lead==0 in multi-node scenarios can trigger repeated pre-vote
+	// storms and very high terms (observed in tests). We revert to the safer single-node
+	// shortcut; multi-node elections rely on tick timeouts.
 	if !s.manual && s.rn.Status().Lead == 0 && len(s.confState.Voters) == 1 { _ = s.rn.Campaign(context.Background()) }
 	// Snapshot / compaction logic
 	if s.snapshotThreshold > 0 && s.committedSinceSnap >= s.snapshotThreshold && s.lastAppliedIndex > s.lastSnapshotIndex {
@@ -783,8 +796,6 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 						if err := s.storage.Compact(compactionIndex); err != nil { slog.Warn("raft storage compact failed", slog.String("shard", s.shardID), slog.Any("error", err)) }
 						if err := s.persist.PruneEntries(compactionIndex); err != nil { slog.Warn("raft prune failed", slog.String("shard", s.shardID), slog.Any("error", err)) } else {
 							s.mu.Lock()
-	// Wait for background goroutines (readyLoop) to exit to avoid races with temp dir cleanup.
-	s.wg.Wait()
 							if compactionIndex > s.prunedThroughIndex { s.prunedThroughIndex = compactionIndex }
 							if snap.Metadata.Index > s.lastSnapshotIndex { s.lastSnapshotIndex = snap.Metadata.Index }
 							s.committedSinceSnap = 0

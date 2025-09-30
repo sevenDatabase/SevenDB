@@ -204,6 +204,8 @@ func TestShadowWALLeaderFailoverMultiNode(t *testing.T) {
         if n.shardID == "_dead" { continue }
         if err := n.ValidateShadowTail(); err != nil { t.Fatalf("node %d tail parity: %v", i+1, err) }
     }
+    // After restart and catch-up there can still be a brief election gap; wait for stable leader.
+    waitUntil(t, 5*time.Second, 50*time.Millisecond, func() bool { _, _, ok := findLeader(nodes); return ok }, "leader after restart")
     // Proposals still succeed
     ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second); defer cancel()
     ln2, _, _ := findLeader(nodes)
