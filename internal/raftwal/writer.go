@@ -78,6 +78,11 @@ func (c *Config) segmentMaxBytesOrDefault() int64 { if c.SegmentMaxBytes > 0 { r
 func (w *Writer) openLastOrCreate() error {
 	// MVP: find highest seg-*.wal and continue; else start at seg-0.
 	matches, _ := filepath.Glob(filepath.Join(w.dir, "seg-*.wal"))
+	// Cleanup any leftover *.deleted from prior interrupted prune operations.
+	deleted, _ := filepath.Glob(filepath.Join(w.dir, "*.wal.deleted"))
+	for _, d := range deleted { _ = os.Remove(d) }
+	deletedIdx, _ := filepath.Glob(filepath.Join(w.dir, "*.wal.idx.deleted"))
+	for _, d := range deletedIdx { _ = os.Remove(d) }
 	highest := -1
 	for _, m := range matches {
 		// parse number between 'seg-' and '.wal'
@@ -189,6 +194,79 @@ func (w *Writer) Close() error {
 	_ = w.file.Sync()
 	w.closed = true
 	return w.file.Close()
+}
+
+// PruneThrough removes whole WAL segments whose max raft index is strictly less than pruneThrough.
+// It never deletes the currently active (open) segment and never performs partial truncation of a segment.
+// Deletion protocol: rename seg-N.wal -> seg-N.wal.deleted (and sidecar) then unlink to allow crash-safe cleanup.
+// Returns number of segments removed.
+func (w *Writer) PruneThrough(pruneThrough uint64) (int, error) {
+	if pruneThrough == 0 { return 0, nil }
+	w.mu.Lock()
+	if w.closed { w.mu.Unlock(); return 0, errors.New("raftwal: writer closed") }
+	activeSeg := w.segIdx
+	w.mu.Unlock()
+	// List segments (outside lock to allow slow IO without blocking appends; active segment index captured)
+	segs, err := filepath.Glob(filepath.Join(w.dir, "seg-*.wal"))
+	if err != nil { return 0, err }
+	sort.Strings(segs)
+	removed := 0
+	for _, seg := range segs {
+		// Determine segment number
+		base := filepath.Base(seg)
+		var idx int
+		if _, err := fmt.Sscanf(base, "seg-%d.wal", &idx); err != nil { continue }
+		if idx == activeSeg { continue } // never delete active
+		// Scan to find max index in this segment
+		maxIdx, scanErr := maxIndexInSegment(seg)
+		if scanErr != nil { return removed, scanErr }
+		if maxIdx < pruneThrough {
+			if err := w.deleteSegmentFiles(seg); err != nil { return removed, err }
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+// maxIndexInSegment scans a segment file and returns the highest envelope RaftIndex found.
+func maxIndexInSegment(path string) (uint64, error) {
+	f, err := os.Open(path)
+	if err != nil { return 0, err }
+	defer f.Close()
+	r := bufio.NewReader(f)
+	header := make([]byte, 8)
+	var max uint64
+	for {
+		if _, err := io.ReadFull(r, header); err != nil {
+			if errors.Is(err, io.EOF) || err == io.ErrUnexpectedEOF { break }
+			return max, err
+		}
+		crc := binary.LittleEndian.Uint32(header[0:4])
+		sz := binary.LittleEndian.Uint32(header[4:8])
+		if sz == 0 { continue }
+		payload := make([]byte, sz)
+		if _, err := io.ReadFull(r, payload); err != nil { return max, err }
+		if crc32.ChecksumIEEE(payload) != crc { return max, fmt.Errorf("wal: crc mismatch during prune scan %s", path) }
+		var env Envelope
+		if err := proto.Unmarshal(payload, &env); err != nil { return max, err }
+		if env.RaftIndex > max { max = env.RaftIndex }
+	}
+	return max, nil
+}
+
+// deleteSegmentFiles performs rename-to-deleted then unlink for the segment and its sidecar.
+func (w *Writer) deleteSegmentFiles(segPath string) error {
+	sidecar := segPath + ".idx"
+	// rename segment
+	if err := os.Rename(segPath, segPath+".deleted"); err != nil { return err }
+	// rename sidecar if exists
+	if _, err := os.Stat(sidecar); err == nil { _ = os.Rename(sidecar, sidecar+".deleted") }
+	if w.dirFsync { _ = syncDir(w.dir) }
+	// unlink renamed
+	_ = os.Remove(segPath+".deleted")
+	_ = os.Remove(sidecar+".deleted")
+	if w.dirFsync { _ = syncDir(w.dir) }
+	return nil
 }
 
 // entryMeta holds simple offset mapping inside a segment.

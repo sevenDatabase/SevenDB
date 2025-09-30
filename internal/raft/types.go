@@ -800,6 +800,16 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 							if snap.Metadata.Index > s.lastSnapshotIndex { s.lastSnapshotIndex = snap.Metadata.Index }
 							s.committedSinceSnap = 0
 							s.mu.Unlock()
+							// WAL segment pruning (shadow): delete fully obsolete segments whose max index < prunedThroughIndex
+							if s.walShadow != nil && s.prunedThroughIndex > 0 {
+								if pw, ok := s.walShadow.(interface{ PruneThrough(uint64) (int, error) }); ok {
+									if removed, perr := pw.PruneThrough(s.prunedThroughIndex); perr != nil {
+										slog.Warn("wal prune failed", slog.String("shard", s.shardID), slog.Any("error", perr))
+									} else if removed > 0 {
+										slog.Info("wal segments pruned", slog.String("shard", s.shardID), slog.Int("removed", removed), slog.Uint64("through", s.prunedThroughIndex))
+									}
+								}
+							}
 						}
 						if s.prunedThroughIndex < compactionIndex { s.mu.Lock(); if snap.Metadata.Index > s.lastSnapshotIndex { s.lastSnapshotIndex = snap.Metadata.Index }; s.committedSinceSnap = 0; s.mu.Unlock() }
 					}
