@@ -38,6 +38,9 @@ type Writer struct {
 
 	maxSegmentBytes int64
 	dirFsync bool // if true fsync directory after metadata updates (rotation, sidecar rename)
+	// test/diagnostic knobs (not for production traffic paths)
+	forceRotateEvery int // if >0 rotate after this many successful appends (post-append)
+	appendCount      int // internal counter of appends for forceRotateEvery
 }
 
 // Dir returns the base directory the writer operates in.
@@ -50,13 +53,19 @@ type Config struct {
     SidecarFlushEvery int // number of entries between sidecar rewrites (>=1)
 	SegmentMaxBytes   int64 // rotate when current segment size exceeds this (>0)
 	DirFsync bool // if true fsync directory after segment create & sidecar rename
+	// ForceRotateEvery is a test-only knob: if >0 a segment rotation is forced
+	// after every N successful AppendEnvelope calls. Rotation happens after the
+	// append (so the just-written entry resides in the completed segment). This
+	// enables deterministic reproduction of crash windows around rotation in
+	// tests without relying on size thresholds.
+	ForceRotateEvery int
 }
 
 // NewWriter creates (or continues) the latest segment in shadow mode.
 func NewWriter(cfg Config) (*Writer, error) {
 	if cfg.Dir == "" { return nil, errors.New("raftwal: empty dir") }
 	if err := os.MkdirAll(cfg.Dir, 0o755); err != nil { return nil, err }
-	w := &Writer{dir: cfg.Dir, bufSize: cfg.BufMB * 1024 * 1024, sidecarFlushEvery: cfg.SidecarFlushEvery, maxSegmentBytes: cfg.segmentMaxBytesOrDefault(), dirFsync: cfg.DirFsync}
+	w := &Writer{dir: cfg.Dir, bufSize: cfg.BufMB * 1024 * 1024, sidecarFlushEvery: cfg.SidecarFlushEvery, maxSegmentBytes: cfg.segmentMaxBytesOrDefault(), dirFsync: cfg.DirFsync, forceRotateEvery: cfg.ForceRotateEvery}
 	if w.bufSize == 0 { w.bufSize = 1 * 1024 * 1024 }
     if w.sidecarFlushEvery <= 0 { w.sidecarFlushEvery = 256 }
 	if err := w.openLastOrCreate(); err != nil { return nil, err }
@@ -114,6 +123,13 @@ func (w *Writer) AppendEnvelope(raftIndex uint64, b []byte) error {
 	// Size-based rotation check
 	if w.maxSegmentBytes > 0 && (offsetBefore+int64(frameLen)) >= w.maxSegmentBytes {
 		if err := w.rotateLocked(); err != nil { return err }
+	}
+	// Deterministic test rotation knob: rotate after N appends
+	if w.forceRotateEvery > 0 {
+		w.appendCount++
+		if (w.appendCount % w.forceRotateEvery) == 0 {
+			if err := w.rotateLocked(); err != nil { return err }
+		}
 	}
 	return nil
 }
