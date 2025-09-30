@@ -18,7 +18,6 @@ import (
 	"time"
 	"path/filepath"
 	"os"
-    "sort"
 
 	"hash/crc32"
 
@@ -85,6 +84,8 @@ type CommittedRecord struct {
 type NotLeaderError struct { LeaderID string }
 func (e *NotLeaderError) Error() string { if e.LeaderID == "" { return "raft: not leader" }; return "raft: not leader (leader="+e.LeaderID+")" }
 var ErrNotLeader = &NotLeaderError{}
+var ErrNodeClosed = errors.New("raft: node closed")
+var ErrProposalAborted = errors.New("raft: proposal aborted")
 
 // ProposalResult represents the outcome of a ProposeAndWait call.
 type ProposalResult struct {
@@ -160,77 +161,27 @@ type ShardRaftNode struct {
 // Returns nil if they match (prefix-match acceptable if WAL longer), or error describing first mismatch.
 func (s *ShardRaftNode) ValidateShadowTail() error {
 	if s.walValidator == nil || s.walShadow == nil { return nil }
-	// Determine WAL directory from config path stored in walShadow (best effort: rely on interface type assertion)
-	// We duck-type *raftwal.Writer by checking for a Dir() string method; if not present, skip.
 	type dirGetter interface{ Dir() string }
-	dg, ok := s.walShadow.(dirGetter)
-	if !ok { return nil }
-	// Best-effort flush buffered data so validation sees latest entries.
+	dg, ok := s.walShadow.(dirGetter); if !ok { return nil }
 	type syncer interface{ Sync() error }
 	if sy, ok := s.walShadow.(syncer); ok { _ = sy.Sync() }
 	walDir := dg.Dir()
 	ring := s.walValidator.snapshot()
 	if len(ring) == 0 { return nil }
-	compare := func(tail []uint32) error {
-		if len(tail) != len(ring) { return fmt.Errorf("validator: length mismatch wal=%d ring=%d", len(tail), len(ring)) }
-		for i := 0; i < len(ring); i++ {
-			if ring[i] != tail[i] {
-				// capture first few for diagnostics
-				limit := 10
-				if len(ring) < limit { limit = len(ring) }
-				var ringStr, walStr string
-				for j:=0; j<limit; j++ { ringStr += fmt.Sprintf("%02d:%08x ", j, ring[j]) }
-				for j:=0; j<limit; j++ { walStr += fmt.Sprintf("%02d:%08x ", j, tail[j]) }
-				return fmt.Errorf("validator: crc mismatch at pos %d ring=%08x wal=%08x ring_head=[%s] wal_head=[%s]", i, ring[i], tail[i], ringStr, walStr)
-			}
-		}
-		return nil
-	}
-	tail, err := raftwal.TailLogicalCRCs(walDir, len(ring))
+	tuples, err := raftwal.TailLogicalTuples(walDir, len(ring))
 	if err != nil { return err }
-	if cmpErr := compare(tail); cmpErr != nil {
-		// Attempt subsequence alignment: ring should appear in-order within tail allowing extra early WAL entries.
-		// (Handles restart where WAL replays more entries than validator ring captured yet.)
-		align := func(tail []uint32) bool {
-			if len(tail) < len(ring) { return false }
-			// try every start position where remaining length >= ring length
-			for start := 0; start <= len(tail)-len(ring); start++ {
-				ok := true
-				for i := 0; i < len(ring); i++ { if tail[start+i] != ring[i] { ok = false; break } }
-				if ok { return true }
-			}
-			return false
+	if len(tuples) != len(ring) { return fmt.Errorf("validator: length mismatch wal=%d ring=%d", len(tuples), len(ring)) }
+	for i:=0; i<len(ring); i++ {
+		if ring[i].index != tuples[i].Index || ring[i].crc != tuples[i].CRC {
+			limit := 10; if len(ring) < limit { limit = len(ring) }
+			var ringHead, walHead string
+			for j:=0; j<limit; j++ { ringHead += fmt.Sprintf("%02d:%d:%08x ", j, ring[j].index, ring[j].crc) }
+			for j:=0; j<limit; j++ { walHead += fmt.Sprintf("%02d:%d:%08x ", j, tuples[j].Index, tuples[j].CRC) }
+			return fmt.Errorf("validator: mismatch at pos %d ring=(idx=%d crc=%08x) wal=(idx=%d crc=%08x) ring_head=[%s] wal_head=[%s]", i, ring[i].index, ring[i].crc, tuples[i].Index, tuples[i].CRC, ringHead, walHead)
 		}
-		if align(tail) { return nil }
-		// Retry once after an additional Sync to reduce flakiness from in-flight appends.
-		if sy, ok := s.walShadow.(syncer); ok { _ = sy.Sync() }
-		if tail2, err2 := raftwal.TailLogicalCRCs(walDir, len(ring)); err2 == nil {
-			if cmpErr2 := compare(tail2); cmpErr2 == nil { return nil }
-			if align(tail2) { return nil }
-		}
-		// Fallback: order-insensitive multiset comparison (temporary during migration debug).
-		orderedRing := append([]uint32(nil), ring...)
-		orderedTail := append([]uint32(nil), tail...)
-		sort.Slice(orderedRing, func(i,j int) bool { return orderedRing[i] < orderedRing[j] })
-		sort.Slice(orderedTail, func(i,j int) bool { return orderedTail[i] < orderedTail[j] })
-		match := len(orderedRing) == len(orderedTail)
-		if match {
-			for i:=0; i<len(orderedRing); i++ { if orderedRing[i] != orderedTail[i] { match = false; break } }
-		}
-		if match {
-			slog.Warn("validator: ordering mismatch but multiset matches (temporary tolerance)")
-			return nil
-		}
-		return cmpErr
 	}
 	return nil
-}
-
-// SetReplicationHandler registers the application state apply callback. If strict
-// is true, any handler error will panic the process to avoid silent divergence
-// between state machines. In non-strict mode errors are logged (WARN) and the
-// raft pipeline continues (suitable only if handler cannot fail or failures are
-// safe to ignore, e.g. metrics side-effects).
+	}
 func (s *ShardRaftNode) SetReplicationHandler(handler func(*ReplicationPayload) error, strict bool) {
 	s.replicationHandler = handler
 	s.replicationStrict = strict
@@ -305,48 +256,45 @@ func (l *etcdLoggerAdapter) Fatalf(format string, args ...interface{}) { slog.Er
 func (l *etcdLoggerAdapter) Panic(args ...interface{})                 { slog.Error(fmt.Sprint(args...)) }
 func (l *etcdLoggerAdapter) Panicf(format string, args ...interface{}) { slog.Error(fmt.Sprintf(format, args...)) }
 
-// walValidator tracks last N raft entries and produces rolling hashes to compare with shadow WAL replay if needed.
+// walValidator (tuple-based) tracks last N (raftIndex, crc32(payload)) for deterministic ordering.
 type walValidator struct {
-	mu     sync.Mutex
-	lastN  int
-	ring   []uint32 // crc32 of each wireRecord payload (logical layer) to avoid large memory
-	idx    int
-	count  int
+	mu    sync.Mutex
+	lastN int
+	ring  []walValTuple
+	idx   int
+	count int
 }
 
-func newWalValidator(n int) *walValidator { if n <= 0 { return nil }; return &walValidator{lastN: n, ring: make([]uint32, n)} }
+type walValTuple struct { index uint64; crc uint32 }
 
-func (v *walValidator) add(payload []byte) {
+func newWalValidator(n int) *walValidator { if n <= 0 { return nil }; return &walValidator{lastN: n, ring: make([]walValTuple, n)} }
+
+func (v *walValidator) addTuple(index uint64, payload []byte) {
 	if v == nil { return }
 	crc := crc32.ChecksumIEEE(payload)
 	v.mu.Lock()
-	v.ring[v.idx] = crc
+	v.ring[v.idx] = walValTuple{index: index, crc: crc}
 	v.idx = (v.idx + 1) % v.lastN
 	if v.count < v.lastN { v.count++ }
 	v.mu.Unlock()
 }
 
-// snapshot returns slice copy of current CRCs in deterministic order (oldest->newest)
-func (v *walValidator) snapshot() []uint32 {
+func (v *walValidator) snapshot() []walValTuple {
 	if v == nil { return nil }
 	v.mu.Lock(); defer v.mu.Unlock()
 	if v.count == 0 { return nil }
-	out := make([]uint32, 0, v.count)
+	out := make([]walValTuple, 0, v.count)
 	start := (v.idx - v.count + v.lastN) % v.lastN
-	for i := 0; i < v.count; i++ { out = append(out, v.ring[(start+i)%v.lastN]) }
+	for i:=0; i<v.count; i++ { out = append(out, v.ring[(start+i)%v.lastN]) }
 	return out
 }
 
-// seed initializes the ring with an ordered slice (oldest->newest). Used at startup to
-// align validator state with existing WAL tail so first validation does not produce
-// false mismatches after restart.
-func (v *walValidator) seed(crcs []uint32) {
-	if v == nil || len(crcs) == 0 { return }
+func (v *walValidator) seedTuples(tuples []struct{Index uint64; CRC uint32}) {
+	if v == nil || len(tuples) == 0 { return }
 	v.mu.Lock()
-	// If more than capacity, keep only the last lastN (oldest truncated).
-	if len(crcs) > v.lastN { crcs = crcs[len(crcs)-v.lastN:] }
-	copy(v.ring, crcs)
-	v.count = len(crcs)
+	if len(tuples) > v.lastN { tuples = tuples[len(tuples)-v.lastN:] }
+	for i, t := range tuples { v.ring[i] = walValTuple{index: t.Index, crc: t.CRC} }
+	v.count = len(tuples)
 	v.idx = v.count % v.lastN
 	v.mu.Unlock()
 }
@@ -485,9 +433,7 @@ func (s *ShardRaftNode) ProposeAndWait(ctx context.Context, rec *RaftLogRecord) 
 		case <-ctx.Done():
 			return 0, 0, ctx.Err()
 		case res := <-ch:
-			if res == nil {
-				return 0, 0, errors.New("raft: proposal aborted")
-			}
+			if res == nil { return 0, 0, ErrProposalAborted }
 			return res.CommitIndex, res.RaftIndex, nil
 		}
 	}
@@ -507,9 +453,7 @@ func (s *ShardRaftNode) ProposeAndWait(ctx context.Context, rec *RaftLogRecord) 
 	case <-ctx.Done():
 		return 0, 0, ctx.Err()
 	case res := <-ch:
-		if res == nil {
-			return 0, 0, errors.New("raft: proposal aborted")
-		}
+		if res == nil { return 0, 0, ErrProposalAborted }
 		return res.CommitIndex, res.RaftIndex, nil
 	}
 }
@@ -553,29 +497,17 @@ func (s *ShardRaftNode) apply(raftIndex uint64, rec *RaftLogRecord) {
 // Close shuts down the shard node (stub). It prevents new proposals and closes channels after draining.
 func (s *ShardRaftNode) Close() error {
 	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return nil
-	}
+	if s.closed { s.mu.Unlock(); return nil }
 	s.closed = true
-	waiters := s.waiters
-	s.waiters = map[uint64]chan *ProposalResult{}
-	waitersSeq := s.waitersSeq
-	s.waitersSeq = map[uint64]chan *ProposalResult{}
-	if s.engine == "etcd" && s.stopCh != nil {
-		close(s.stopCh)
-	}
+	waiters := s.waiters; s.waiters = map[uint64]chan *ProposalResult{}
+	waitersSeq := s.waitersSeq; s.waitersSeq = map[uint64]chan *ProposalResult{}
+	if s.engine == "etcd" && s.stopCh != nil { close(s.stopCh) }
 	close(s.committedCh)
 	s.mu.Unlock()
-	for _, ch := range waiters {
-		close(ch)
-	}
-	for _, ch := range waitersSeq {
-		close(ch)
-	}
-	if s.engine == "etcd" && s.rn != nil {
-		s.rn.Stop()
-	}
+	// Abort all outstanding waiters.
+	for _, ch := range waiters { func(c chan *ProposalResult){ defer func(){ recover() }(); c <- nil; close(c) }(ch) }
+	for _, ch := range waitersSeq { func(c chan *ProposalResult){ defer func(){ recover() }(); c <- nil; close(c) }(ch) }
+	if s.engine == "etcd" && s.rn != nil { s.rn.Stop() }
 	return nil
 }
 
@@ -686,9 +618,8 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 		}
 		if cfg.ValidatorLastN > 0 { 
 			s.walValidator = newWalValidator(cfg.ValidatorLastN)
-			// Seed validator from existing WAL tail (best effort; non-fatal)
-			if crcs, err := raftwal.TailLogicalCRCs(shadowDir, s.walValidator.lastN); err == nil && len(crcs) > 0 {
-				s.walValidator.seed(crcs)
+			if tuples, err := raftwal.TailLogicalTuples(shadowDir, s.walValidator.lastN); err == nil && len(tuples) > 0 {
+				s.walValidator.seedTuples(tuples)
 			}
 		}
 	}
@@ -801,7 +732,7 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 					// Future: decode and populate structured fields when cutover.
 					env := &raftwal.Envelope{RaftIndex: ent.Index, RaftTerm: ent.Term, Kind: raftwal.EntryKind_ENTRY_NORMAL, AppBytes: rec.Payload, AppCrc: crc32.ChecksumIEEE(rec.Payload)}
 					if b, mErr := proto.Marshal(env); mErr == nil { _ = s.walShadow.AppendEnvelope(ent.Index, b) } else { slog.Warn("wal shadow marshal failed", slog.Any("error", mErr)) }
-					if s.walValidator != nil { s.walValidator.add(rec.Payload) }
+					if s.walValidator != nil { s.walValidator.addTuple(ent.Index, rec.Payload) }
 				}
 				s.mu.Lock()
 				s.perBucketCommit[rec.BucketID]++

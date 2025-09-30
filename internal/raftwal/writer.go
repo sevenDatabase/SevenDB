@@ -296,6 +296,55 @@ func TailLogicalCRCs(dir string, limit int) ([]uint32, error) {
 	return out, nil
 }
 
+// TailLogicalTuples returns up to limit tuples (index, crc) for ENTRY_NORMAL envelopes, oldest->newest.
+// This is used by the upgraded validator that tracks raft index ordering explicitly.
+func TailLogicalTuples(dir string, limit int) ([]struct{Index uint64; CRC uint32}, error) {
+	if limit <= 0 { return nil, nil }
+	files, err := filepath.Glob(filepath.Join(dir, "seg-*.wal"))
+	if err != nil { return nil, err }
+	sort.Strings(files)
+	rev := make([]struct{Index uint64; CRC uint32}, 0, limit)
+	for i := len(files)-1; i >=0 && len(rev) < limit; i-- {
+		fpath := files[i]
+		tuples, err := collectSegmentTuples(fpath, limit-len(rev))
+		if err != nil { return nil, err }
+		for j:=len(tuples)-1; j>=0; j-- { rev = append(rev, tuples[j]) }
+	}
+	// reverse
+	out := make([]struct{Index uint64; CRC uint32}, len(rev))
+	for i:=range rev { out[len(rev)-1-i] = rev[i] }
+	return out, nil
+}
+
+func collectSegmentTuples(path string, capLeft int) ([]struct{Index uint64; CRC uint32}, error) {
+	f, err := os.Open(path)
+	if err != nil { return nil, err }
+	defer f.Close()
+	r := bufio.NewReader(f)
+	header := make([]byte, 8)
+	var res []struct{Index uint64; CRC uint32}
+	for {
+		if capLeft <= 0 { break }
+		if _, err := io.ReadFull(r, header); err != nil {
+			if errors.Is(err, io.EOF) || err == io.ErrUnexpectedEOF { break }
+			return res, err
+		}
+		crc := binary.LittleEndian.Uint32(header[0:4])
+		sz := binary.LittleEndian.Uint32(header[4:8])
+		if sz == 0 { continue }
+		payload := make([]byte, sz)
+		if _, err := io.ReadFull(r, payload); err != nil { return res, err }
+		if crc32.ChecksumIEEE(payload) != crc { return res, fmt.Errorf("wal: crc mismatch tail scan %s", path) }
+		var env Envelope
+		if err := proto.Unmarshal(payload, &env); err != nil { return res, err }
+		if env.Kind == EntryKind_ENTRY_NORMAL {
+			res = append(res, struct{Index uint64; CRC uint32}{Index: env.RaftIndex, CRC: env.AppCrc})
+			capLeft--
+		}
+	}
+	return res, nil
+}
+
 func collectSegmentCRCs(path string, capLeft int) ([]uint32, error) {
 	f, err := os.Open(path)
 	if err != nil { return nil, err }
