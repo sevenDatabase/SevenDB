@@ -7,26 +7,25 @@ package raft
 // will plug in a concrete implementation behind ShardRaftNode.
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"log/slog"
-	"strconv"
-	"sync"
-	"sync/atomic"
-	"time"
-	"path/filepath"
-	"os"
+    "context"
+    "encoding/json"
+    "errors"
+    "fmt"
+    "hash/crc32"
+    "log/slog"
+    "os"
+    "path/filepath"
+    "strconv"
+    "sync"
+    "sync/atomic"
+    "time"
 
-	"hash/crc32"
+    "github.com/sevenDatabase/SevenDB/config"
+    "github.com/sevenDatabase/SevenDB/internal/raftwal"
+    "google.golang.org/protobuf/proto"
 
-	"github.com/sevenDatabase/SevenDB/config"
-	"github.com/sevenDatabase/SevenDB/internal/raftwal"
-	"google.golang.org/protobuf/proto"
-
-	etcdraft "go.etcd.io/etcd/raft/v3"
-	"go.etcd.io/etcd/raft/v3/raftpb"
+    etcdraft "go.etcd.io/etcd/raft/v3"
+    "go.etcd.io/etcd/raft/v3/raftpb"
 )
 
 // RaftLogRecord is the logical unit proposed to the shard raft group.
@@ -39,27 +38,25 @@ type RaftLogRecord struct {
 	// TODO: optional client metadata (ClientID, ReqID, TraceID) for tracing.
 }
 
+// ReplicationPayload represents the higher-level application command carried in
+// a RaftLogRecord when Type == RaftRecordTypeAppCommand. This was previously
+// defined elsewhere; reintroducing here after import cleanup.
+type ReplicationPayload struct {
+    Version int      `json:"v"`
+    Cmd     string   `json:"cmd"`
+    Args    []string `json:"args"`
+}
+
+// Raft record type constants.
+const (
+    RaftRecordTypeAppCommand = 1001 // application command replication
+)
+
 // Raft record Type values reserved for higher-level application semantics.
 // Existing tests used Type=1 generically; to avoid accidental decoding of
 // historical test payloads we reserve a distinct high value for application
 // command replication going forward.
-const (
-	RaftRecordTypeAppCommand = 10 // JSON-encoded ReplicationPayload
-)
-
-// ReplicationPayload is the canonical serialized application command envelope
-// carried inside a RaftLogRecord (Type==RaftRecordTypeAppCommand). It is
-// deliberately minimal; version field enables future evolution without
-// breaking old nodes during rolling upgrades.
-type ReplicationPayload struct {
-	Version   int      `json:"v"`
-	Cmd       string   `json:"cmd"`
-	Args      []string `json:"args"`
-	ClientID  string   `json:"cid,omitempty"`
-	RequestID string   `json:"rid,omitempty"`
-}
-
-// BuildReplicationRecord helper constructs a RaftLogRecord suitable for proposal
+// (duplicate import block removed)
 // carrying an application command. BucketID should be the logical bucket or shard-
 // scoping identifier chosen by caller (currently opaque to raft layer).
 func BuildReplicationRecord(bucketID string, cmd string, args []string) (*RaftLogRecord, error) {
@@ -129,7 +126,7 @@ type ShardRaftNode struct {
 	// persistence (etcd engine only)
 	persist *raftPersistence
 	// shadow unified WAL (optional during migration). We keep interface minimal for testability.
-	walShadow    interface{ AppendEnvelope(uint64, []byte) error; Sync() error }
+	walShadow    interface{ AppendEnvelope(uint64, []byte) error; AppendHardState(uint64, []byte) error; Sync() error }
 	walValidator *walValidator
 	lastShadowHardState raftpb.HardState
 	// snapshot management
@@ -697,7 +694,7 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 			if mErr == nil {
 				// HardState has no raft index itself; we record with raft_index = rd.HardState.Commit (best stable monotonic value) and term field for ordering in replay.
 				env := &raftwal.Envelope{RaftIndex: rd.HardState.Commit, RaftTerm: rd.HardState.Term, Kind: raftwal.EntryKind_ENTRY_HARDSTATE, AppBytes: b, AppCrc: crc32.ChecksumIEEE(b)}
-				if pb, perr := proto.Marshal(env); perr == nil { _ = s.walShadow.AppendEnvelope(env.RaftIndex, pb) } else { slog.Warn("wal shadow hardstate marshal envelope failed", slog.Any("error", perr)) }
+				if pb, perr := proto.Marshal(env); perr == nil { _ = s.walShadow.AppendHardState(env.RaftIndex, pb) } else { slog.Warn("wal shadow hardstate marshal envelope failed", slog.Any("error", perr)) }
 				s.lastShadowHardState = rd.HardState
 			} else { slog.Warn("wal shadow hardstate marshal failed", slog.Any("error", mErr)) }
 		}
@@ -725,8 +722,8 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 				var wr wireRecord
 				if err := json.Unmarshal(ent.Data, &wr); err != nil { slog.Error("raft unmarshal", slog.Any("error", err)); continue }
 				rec := &RaftLogRecord{BucketID: wr.BucketID, Type: wr.Type, Payload: wr.Payload}
-				// Shadow WAL dual-write (best-effort, non-fatal). Only for application normal entries.
-				if s.walShadow != nil && rec.Type == RaftRecordTypeAppCommand {
+				// Shadow WAL dual-write (best-effort, non-fatal) for any non-empty normal entry (exclude pure heartbeats).
+				if s.walShadow != nil {
 					// Build Envelope proto
 					// Legacy payload contains JSON ReplicationPayload; we store raw bytes as app_bytes for now.
 					// Future: decode and populate structured fields when cutover.
@@ -812,7 +809,7 @@ type raftwalConfigCompat struct {
 }
 
 // raftwalWriterCompat is satisfied by *raftwal.Writer (subset) - defined here for loose coupling.
-type raftwalWriterCompat interface { AppendEnvelope(uint64, []byte) error; Sync() error }
+type raftwalWriterCompat interface { AppendEnvelope(uint64, []byte) error; AppendHardState(uint64, []byte) error; Sync() error }
 
 // raftwalNewWriterCompat uses reflection-free construction by importing the real package.
 // NOTE: we import inside function to avoid unused dependency when shadow disabled.

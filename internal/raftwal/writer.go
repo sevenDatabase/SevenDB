@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+    "log"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -98,13 +99,17 @@ func (w *Writer) openLastOrCreate() error {
 
 // AppendEnvelope writes an Envelope proto payload already marshaled into b.
 // Caller is responsible for providing the serialized Envelope (future: we will marshal internally).
+// AppendEnvelope appends a normal (index advancing) raft envelope. Sequential enforcement
+// applies: raftIndex must be lastIndex+1 (unless this is the first append) else we rotate
+// the segment for conflict isolation. HardState envelopes should use AppendHardState.
 func (w *Writer) AppendEnvelope(raftIndex uint64, b []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed { return errors.New("raftwal: writer closed") }
 	// Enforce sequential index (shadow mode safety). Allow first append at any index.
 	if w.lastIndex != 0 && raftIndex != w.lastIndex+1 {
-		// Conflict: start conflict rotation path (rotate new segment; later we will delete conflicting ones).
+		// Conflict: rotate segment (diagnostic log for investigation).
+		log.Printf("raftwal: conflict rotate segment=%d lastIndex=%d incoming=%d", w.segIdx, w.lastIndex, raftIndex)
 		if err := w.rotateForConflictLocked(raftIndex); err != nil { return err }
 	}
 	payloadLen := len(b)
@@ -131,6 +136,33 @@ func (w *Writer) AppendEnvelope(raftIndex uint64, b []byte) error {
 			if err := w.rotateLocked(); err != nil { return err }
 		}
 	}
+	return nil
+}
+
+// AppendHardState appends a HARDSTATE envelope. It does NOT participate in the
+// sequential index advancement logic because HardState.Commit may jump forward
+// relative to the last appended normal entry (committed batch). We record it
+// without updating lastIndex so subsequent normal entries still enforce strict
+// +1 continuity. This prevents artificial gaps causing conflict rotations.
+func (w *Writer) AppendHardState(commitIndex uint64, b []byte) error {
+	w.mu.Lock(); defer w.mu.Unlock()
+	if w.closed { return errors.New("raftwal: writer closed") }
+	// We intentionally skip sequential enforcement and lastIndex advancement here.
+	payloadLen := len(b)
+	frameLen := 8 + payloadLen
+	buf := make([]byte, frameLen)
+	crc := crc32.ChecksumIEEE(b)
+	binary.LittleEndian.PutUint32(buf[0:4], crc)
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(payloadLen))
+	copy(buf[8:], b)
+	offsetBefore := w.currentOffsetUnsafe()
+	if _, err := w.buf.Write(buf); err != nil { return err }
+	// Index meta stored for completeness; does not alter lastIndex.
+	w.entries = append(w.entries, entryMeta{Index: commitIndex, Offset: uint32(offsetBefore), Length: uint32(frameLen)})
+	w.entriesSinceFlush++
+	if w.entriesSinceFlush >= w.sidecarFlushEvery { _ = w.writeSidecarLocked() }
+	if w.maxSegmentBytes > 0 && (offsetBefore+int64(frameLen)) >= w.maxSegmentBytes { if err := w.rotateLocked(); err != nil { return err } }
+	if w.forceRotateEvery > 0 { w.appendCount++; if (w.appendCount % w.forceRotateEvery) == 0 { if err := w.rotateLocked(); err != nil { return err } } }
 	return nil
 }
 
@@ -276,24 +308,18 @@ func replaySegment(path string, cb func(*Envelope) error) error {
 // TailLogicalCRCs replays segments from newest backwards until it has collected up to limit
 // logical CRCs (app_crc) of ENTRY_NORMAL envelopes, returned oldest->newest.
 func TailLogicalCRCs(dir string, limit int) ([]uint32, error) {
-	if limit <= 0 { return nil, nil }
-	files, err := filepath.Glob(filepath.Join(dir, "seg-*.wal"))
-	if err != nil { return nil, err }
-	sort.Strings(files)
-	// iterate backwards
-	crcsRev := make([]uint32, 0, limit)
-	for i := len(files) - 1; i >= 0 && len(crcsRev) < limit; i-- {
-		fpath := files[i]
-		// read segment entries sequentially (can't reverse-read easily due to variable length framing)
-		segCRCs, err := collectSegmentCRCs(fpath, limit-len(crcsRev))
-		if err != nil { return nil, err }
-		// prepend by appending to reverse slice
-		for j := len(segCRCs)-1; j >= 0; j-- { crcsRev = append(crcsRev, segCRCs[j]) }
-	}
-	// Now crcsRev holds newest->oldest; invert to oldest->newest limited.
-	out := make([]uint32, len(crcsRev))
-	for i := range crcsRev { out[len(crcsRev)-1-i] = crcsRev[i] }
-	return out, nil
+    if limit <= 0 { return nil, nil }
+    files, err := filepath.Glob(filepath.Join(dir, "seg-*.wal"))
+    if err != nil { return nil, err }
+    sort.Strings(files)
+    var all []uint32
+    for _, f := range files {
+        seg, err := collectSegmentCRCsAll(f)
+        if err != nil { return nil, err }
+        if len(seg) > 0 { all = append(all, seg...) }
+    }
+    if len(all) > limit { return append([]uint32(nil), all[len(all)-limit:]...), nil }
+    return all, nil
 }
 
 // TailLogicalTuples returns up to limit tuples (index, crc) for ENTRY_NORMAL envelopes, oldest->newest.
@@ -303,75 +329,64 @@ func TailLogicalTuples(dir string, limit int) ([]struct{Index uint64; CRC uint32
 	files, err := filepath.Glob(filepath.Join(dir, "seg-*.wal"))
 	if err != nil { return nil, err }
 	sort.Strings(files)
-	rev := make([]struct{Index uint64; CRC uint32}, 0, limit)
-	for i := len(files)-1; i >=0 && len(rev) < limit; i-- {
-		fpath := files[i]
-		tuples, err := collectSegmentTuples(fpath, limit-len(rev))
+	var all []struct{Index uint64; CRC uint32}
+	for _, f := range files {
+		seg, err := collectSegmentTuplesAll(f)
 		if err != nil { return nil, err }
-		for j:=len(tuples)-1; j>=0; j-- { rev = append(rev, tuples[j]) }
+		if len(seg) > 0 { all = append(all, seg...) }
 	}
-	// reverse
-	out := make([]struct{Index uint64; CRC uint32}, len(rev))
-	for i:=range rev { out[len(rev)-1-i] = rev[i] }
-	return out, nil
+	if len(all) > limit { return append([]struct{Index uint64; CRC uint32}(nil), all[len(all)-limit:]...), nil }
+	return all, nil
 }
 
-func collectSegmentTuples(path string, capLeft int) ([]struct{Index uint64; CRC uint32}, error) {
+func collectSegmentTuplesAll(path string) ([]struct{Index uint64; CRC uint32}, error) {
 	f, err := os.Open(path)
 	if err != nil { return nil, err }
 	defer f.Close()
 	r := bufio.NewReader(f)
 	header := make([]byte, 8)
-	var res []struct{Index uint64; CRC uint32}
+	var all []struct{Index uint64; CRC uint32}
 	for {
-		if capLeft <= 0 { break }
 		if _, err := io.ReadFull(r, header); err != nil {
 			if errors.Is(err, io.EOF) || err == io.ErrUnexpectedEOF { break }
-			return res, err
+			return all, nil
 		}
 		crc := binary.LittleEndian.Uint32(header[0:4])
 		sz := binary.LittleEndian.Uint32(header[4:8])
 		if sz == 0 { continue }
 		payload := make([]byte, sz)
-		if _, err := io.ReadFull(r, payload); err != nil { return res, err }
-		if crc32.ChecksumIEEE(payload) != crc { return res, fmt.Errorf("wal: crc mismatch tail scan %s", path) }
+		if _, err := io.ReadFull(r, payload); err != nil { return all, err }
+		if crc32.ChecksumIEEE(payload) != crc { return all, fmt.Errorf("wal: crc mismatch tail scan %s", path) }
 		var env Envelope
-		if err := proto.Unmarshal(payload, &env); err != nil { return res, err }
-		if env.Kind == EntryKind_ENTRY_NORMAL {
-			res = append(res, struct{Index uint64; CRC uint32}{Index: env.RaftIndex, CRC: env.AppCrc})
-			capLeft--
+		if err := proto.Unmarshal(payload, &env); err != nil { return all, err }
+			if env.Kind == EntryKind_ENTRY_NORMAL { all = append(all, struct{Index uint64; CRC uint32}{Index: env.RaftIndex, CRC: env.AppCrc}) }
 		}
-	}
-	return res, nil
+		return all, nil
 }
 
-func collectSegmentCRCs(path string, capLeft int) ([]uint32, error) {
+func collectSegmentCRCsAll(path string) ([]uint32, error) {
 	f, err := os.Open(path)
 	if err != nil { return nil, err }
 	defer f.Close()
 	r := bufio.NewReader(f)
 	header := make([]byte, 8)
-	var res []uint32
+	var all []uint32
 	for {
-		if capLeft <= 0 { break }
 		if _, err := io.ReadFull(r, header); err != nil {
 			if errors.Is(err, io.EOF) || err == io.ErrUnexpectedEOF { break }
-			return res, err
+			return all, nil
 		}
 		crc := binary.LittleEndian.Uint32(header[0:4])
 		sz := binary.LittleEndian.Uint32(header[4:8])
 		if sz == 0 { continue }
 		payload := make([]byte, sz)
-		if _, err := io.ReadFull(r, payload); err != nil { return res, err }
-		if crc32.ChecksumIEEE(payload) != crc { return res, fmt.Errorf("wal: crc mismatch tail scan %s", path) }
+		if _, err := io.ReadFull(r, payload); err != nil { return all, err }
+		if crc32.ChecksumIEEE(payload) != crc { return all, fmt.Errorf("wal: crc mismatch tail scan %s", path) }
 		var env Envelope
-		if err := proto.Unmarshal(payload, &env); err != nil { return res, err }
-		if env.Kind == EntryKind_ENTRY_NORMAL {
-			res = append(res, env.AppCrc)
-			capLeft--
-		}
+		if err := proto.Unmarshal(payload, &env); err != nil { return all, err }
+		if env.Kind == EntryKind_ENTRY_NORMAL { all = append(all, env.AppCrc) }
 	}
-	return res, nil
+    return all, nil
 }
 
 // syncDir fsyncs a directory to persist metadata updates (file create/rename) to stable storage.
