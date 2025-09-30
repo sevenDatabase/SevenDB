@@ -39,6 +39,9 @@ type Writer struct {
 	maxSegmentBytes int64
 }
 
+// Dir returns the base directory the writer operates in.
+func (w *Writer) Dir() string { return w.dir }
+
 // Config for Writer initialization.
 type Config struct {
 	Dir     string
@@ -299,4 +302,35 @@ func collectSegmentCRCs(path string, capLeft int) ([]uint32, error) {
 		}
 	}
 	return res, nil
+}
+
+// ReplayLastHardState scans envelopes in order and returns last HARDSTATE envelope's payload bytes.
+func ReplayLastHardState(dir string) ([]byte, bool, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "seg-*.wal"))
+	if err != nil { return nil, false, err }
+	sort.Strings(files)
+	var hs []byte
+	for _, fpath := range files {
+		f, err := os.Open(fpath); if err != nil { return nil, false, err }
+		r := bufio.NewReader(f)
+		header := make([]byte, 8)
+		for {
+			if _, err := io.ReadFull(r, header); err != nil {
+				if errors.Is(err, io.EOF) || err == io.ErrUnexpectedEOF { break }
+				_ = f.Close(); return nil, false, err
+			}
+			crc := binary.LittleEndian.Uint32(header[0:4])
+			sz := binary.LittleEndian.Uint32(header[4:8])
+			if sz == 0 { continue }
+			payload := make([]byte, sz)
+			if _, err := io.ReadFull(r, payload); err != nil { _ = f.Close(); return nil, false, err }
+			if crc32.ChecksumIEEE(payload) != crc { _ = f.Close(); return nil, false, fmt.Errorf("wal: crc mismatch %s", fpath) }
+			var env Envelope
+			if err := proto.Unmarshal(payload, &env); err != nil { _ = f.Close(); return nil, false, err }
+			if env.Kind == EntryKind_ENTRY_HARDSTATE { hs = env.AppBytes }
+		}
+		_ = f.Close()
+	}
+	if hs == nil { return nil, false, nil }
+	return hs, true, nil
 }

@@ -126,6 +126,7 @@ type ShardRaftNode struct {
 	// shadow unified WAL (optional during migration). We keep interface minimal for testability.
 	walShadow    interface{ AppendEnvelope(uint64, []byte) error; Sync() error }
 	walValidator *walValidator
+	lastShadowHardState raftpb.HardState
 	// snapshot management
 	snapshotThreshold  int
 	committedSinceSnap int
@@ -584,6 +585,21 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 	} else {
 		s.rn = etcdraft.StartNode(c, peers)
 	}
+	// If shadow WAL enabled attempt to replay last HardState envelope (non-fatal). This can override legacy file if newer.
+	if cfg.EnableWALShadow && !cfg.DisablePersistence {
+		shadowDir := cfg.WALShadowDir
+		if shadowDir == "" { shadowDir = filepath.Join(cfg.DataDir, "raftwal") }
+		if hsBytes, ok, herr := raftwal.ReplayLastHardState(shadowDir); herr == nil && ok {
+			var hs raftpb.HardState
+			if uerr := hs.Unmarshal(hsBytes); uerr == nil && !etcdraft.IsEmptyHardState(hs) {
+				// Compare with lastShadowHardState (zero-value if not set). Accept if strictly newer in term or commit.
+				if hs.Term > s.lastShadowHardState.Term || hs.Commit > s.lastShadowHardState.Commit {
+					s.storage.SetHardState(hs)
+					s.lastShadowHardState = hs
+				}
+			}
+		}
+	}
 	// record conf state for snapshots
 	s.confState = raftpb.ConfState{Voters: confVoters}
 	// Shadow WAL setup (non-fatal). Only when enabled and persistence not disabled.
@@ -648,6 +664,20 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 	if s.persist != nil {
 		if err := s.persist.Persist(&rd); err != nil {
 			slog.Warn("raft persist failed", slog.String("shard", s.shardID), slog.Any("error", err))
+		}
+	}
+	// Shadow WAL: write HardState envelope if changed.
+	if s.walShadow != nil && !etcdraft.IsEmptyHardState(rd.HardState) {
+		if rd.HardState.Term != s.lastShadowHardState.Term || rd.HardState.Vote != s.lastShadowHardState.Vote || rd.HardState.Commit != s.lastShadowHardState.Commit {
+			// marshal raft HardState using protobuf (raftpb.HardState implements Marshal via gogoproto but we'll json encode for now for minimal dependency) TODO: switch to direct protobuf bytes.
+			// Use protobuf marshal for fidelity.
+			b, mErr := rd.HardState.Marshal()
+			if mErr == nil {
+				// HardState has no raft index itself; we record with raft_index = rd.HardState.Commit (best stable monotonic value) and term field for ordering in replay.
+				env := &raftwal.Envelope{RaftIndex: rd.HardState.Commit, RaftTerm: rd.HardState.Term, Kind: raftwal.EntryKind_ENTRY_HARDSTATE, AppBytes: b, AppCrc: crc32.ChecksumIEEE(b)}
+				if pb, perr := proto.Marshal(env); perr == nil { _ = s.walShadow.AppendEnvelope(env.RaftIndex, pb) } else { slog.Warn("wal shadow hardstate marshal envelope failed", slog.Any("error", perr)) }
+				s.lastShadowHardState = rd.HardState
+			} else { slog.Warn("wal shadow hardstate marshal failed", slog.Any("error", mErr)) }
 		}
 	}
 	// Apply snapshot (if any) BEFORE appending new entries.
