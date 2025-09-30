@@ -37,6 +37,7 @@ type Writer struct {
     sidecarFlushEvery int // config threshold
 
 	maxSegmentBytes int64
+	dirFsync bool // if true fsync directory after metadata updates (rotation, sidecar rename)
 }
 
 // Dir returns the base directory the writer operates in.
@@ -48,19 +49,21 @@ type Config struct {
 	BufMB   int
     SidecarFlushEvery int // number of entries between sidecar rewrites (>=1)
 	SegmentMaxBytes   int64 // rotate when current segment size exceeds this (>0)
+	DirFsync bool // if true fsync directory after segment create & sidecar rename
 }
 
 // NewWriter creates (or continues) the latest segment in shadow mode.
 func NewWriter(cfg Config) (*Writer, error) {
 	if cfg.Dir == "" { return nil, errors.New("raftwal: empty dir") }
 	if err := os.MkdirAll(cfg.Dir, 0o755); err != nil { return nil, err }
-	w := &Writer{dir: cfg.Dir, bufSize: cfg.BufMB * 1024 * 1024, sidecarFlushEvery: cfg.SidecarFlushEvery, maxSegmentBytes: cfg.SegmentMaxBytes}
+	w := &Writer{dir: cfg.Dir, bufSize: cfg.BufMB * 1024 * 1024, sidecarFlushEvery: cfg.SidecarFlushEvery, maxSegmentBytes: cfg.segmentMaxBytesOrDefault(), dirFsync: cfg.DirFsync}
 	if w.bufSize == 0 { w.bufSize = 1 * 1024 * 1024 }
     if w.sidecarFlushEvery <= 0 { w.sidecarFlushEvery = 256 }
-	if w.maxSegmentBytes <= 0 { w.maxSegmentBytes = 64 * 1024 * 1024 } // default 64MB
 	if err := w.openLastOrCreate(); err != nil { return nil, err }
 	return w, nil
 }
+
+func (c *Config) segmentMaxBytesOrDefault() int64 { if c.SegmentMaxBytes > 0 { return c.SegmentMaxBytes }; return 64 * 1024 * 1024 }
 
 func (w *Writer) openLastOrCreate() error {
 	// MVP: find highest seg-*.wal and continue; else start at seg-0.
@@ -187,6 +190,7 @@ func (w *Writer) writeSidecarLocked() error {
 	buf.Write(tail)
 	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil { return err }
 	if err := os.Rename(tmp, sidecar); err != nil { return err }
+	if w.dirFsync { _ = syncDir(w.dir) }
 	w.entriesSinceFlush = 0
 	return nil
 }
@@ -207,6 +211,7 @@ func (w *Writer) rotateLocked() error {
 	w.buf = bufio.NewWriterSize(f, w.bufSize)
 	w.entries = w.entries[:0]
 	w.entriesSinceFlush = 0
+	if w.dirFsync { _ = syncDir(w.dir) }
 	return nil
 }
 
@@ -302,6 +307,14 @@ func collectSegmentCRCs(path string, capLeft int) ([]uint32, error) {
 		}
 	}
 	return res, nil
+}
+
+// syncDir fsyncs a directory to persist metadata updates (file create/rename) to stable storage.
+func syncDir(dir string) error {
+	df, err := os.Open(dir)
+	if err != nil { return err }
+	defer df.Close()
+	return df.Sync()
 }
 
 // ReplayLastHardState scans envelopes in order and returns last HARDSTATE envelope's payload bytes.
