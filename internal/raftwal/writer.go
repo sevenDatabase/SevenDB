@@ -248,3 +248,55 @@ func replaySegment(path string, cb func(*Envelope) error) error {
 		if err := cb(&env); err != nil { return err }
 	}
 }
+
+// TailLogicalCRCs replays segments from newest backwards until it has collected up to limit
+// logical CRCs (app_crc) of ENTRY_NORMAL envelopes, returned oldest->newest.
+func TailLogicalCRCs(dir string, limit int) ([]uint32, error) {
+	if limit <= 0 { return nil, nil }
+	files, err := filepath.Glob(filepath.Join(dir, "seg-*.wal"))
+	if err != nil { return nil, err }
+	sort.Strings(files)
+	// iterate backwards
+	crcsRev := make([]uint32, 0, limit)
+	for i := len(files) - 1; i >= 0 && len(crcsRev) < limit; i-- {
+		fpath := files[i]
+		// read segment entries sequentially (can't reverse-read easily due to variable length framing)
+		segCRCs, err := collectSegmentCRCs(fpath, limit-len(crcsRev))
+		if err != nil { return nil, err }
+		// prepend by appending to reverse slice
+		for j := len(segCRCs)-1; j >= 0; j-- { crcsRev = append(crcsRev, segCRCs[j]) }
+	}
+	// Now crcsRev holds newest->oldest; invert to oldest->newest limited.
+	out := make([]uint32, len(crcsRev))
+	for i := range crcsRev { out[len(crcsRev)-1-i] = crcsRev[i] }
+	return out, nil
+}
+
+func collectSegmentCRCs(path string, capLeft int) ([]uint32, error) {
+	f, err := os.Open(path)
+	if err != nil { return nil, err }
+	defer f.Close()
+	r := bufio.NewReader(f)
+	header := make([]byte, 8)
+	var res []uint32
+	for {
+		if capLeft <= 0 { break }
+		if _, err := io.ReadFull(r, header); err != nil {
+			if errors.Is(err, io.EOF) || err == io.ErrUnexpectedEOF { break }
+			return res, err
+		}
+		crc := binary.LittleEndian.Uint32(header[0:4])
+		sz := binary.LittleEndian.Uint32(header[4:8])
+		if sz == 0 { continue }
+		payload := make([]byte, sz)
+		if _, err := io.ReadFull(r, payload); err != nil { return res, err }
+		if crc32.ChecksumIEEE(payload) != crc { return res, fmt.Errorf("wal: crc mismatch tail scan %s", path) }
+		var env Envelope
+		if err := proto.Unmarshal(payload, &env); err != nil { return res, err }
+		if env.Kind == EntryKind_ENTRY_NORMAL {
+			res = append(res, env.AppCrc)
+			capLeft--
+		}
+	}
+	return res, nil
+}

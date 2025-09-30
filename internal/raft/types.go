@@ -16,8 +16,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"path/filepath"
+	"os"
+
+	"hash/crc32"
 
 	"github.com/sevenDatabase/SevenDB/config"
+	"github.com/sevenDatabase/SevenDB/internal/raftwal"
+	"google.golang.org/protobuf/proto"
 
 	etcdraft "go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
@@ -117,6 +123,9 @@ type ShardRaftNode struct {
 
 	// persistence (etcd engine only)
 	persist *raftPersistence
+	// shadow unified WAL (optional during migration). We keep interface minimal for testability.
+	walShadow    interface{ AppendEnvelope(uint64, []byte) error; Sync() error }
+	walValidator *walValidator
 	// snapshot management
 	snapshotThreshold  int
 	committedSinceSnap int
@@ -140,6 +149,28 @@ type ShardRaftNode struct {
 	// has been established. It is executed outside the internal mutex.
 	replicationHandler func(*ReplicationPayload) error
 	replicationStrict  bool // if true, handler errors are treated as fatal (panic) to avoid divergence
+}
+
+// ValidateShadowTail compares in-memory validator CRCs (if enabled) with the tail of shadow WAL.
+// Returns nil if they match (prefix-match acceptable if WAL longer), or error describing first mismatch.
+func (s *ShardRaftNode) ValidateShadowTail() error {
+	if s.walValidator == nil || s.walShadow == nil { return nil }
+	// Determine WAL directory from config path stored in walShadow (best effort: rely on interface type assertion)
+	// We duck-type *raftwal.Writer by checking for a Dir() string method; if not present, skip.
+	type dirGetter interface{ Dir() string }
+	dg, ok := s.walShadow.(dirGetter)
+	if !ok { return nil }
+	walDir := dg.Dir()
+	ring := s.walValidator.snapshot()
+	if len(ring) == 0 { return nil }
+	tail, err := raftwal.TailLogicalCRCs(walDir, len(ring))
+	if err != nil { return err }
+	// Align lengths: ring represents newest entries; TailLogicalCRCs returns oldest->newest up to N
+	if len(tail) != len(ring) { return fmt.Errorf("validator: length mismatch wal=%d ring=%d", len(tail), len(ring)) }
+	for i := 0; i < len(ring); i++ {
+		if ring[i] != tail[i] { return fmt.Errorf("validator: crc mismatch at pos %d ring=%08x wal=%08x", i, ring[i], tail[i]) }
+	}
+	return nil
 }
 
 // SetReplicationHandler registers the application state apply callback. If strict
@@ -221,6 +252,38 @@ func (l *etcdLoggerAdapter) Fatalf(format string, args ...interface{}) { slog.Er
 func (l *etcdLoggerAdapter) Panic(args ...interface{})                 { slog.Error(fmt.Sprint(args...)) }
 func (l *etcdLoggerAdapter) Panicf(format string, args ...interface{}) { slog.Error(fmt.Sprintf(format, args...)) }
 
+// walValidator tracks last N raft entries and produces rolling hashes to compare with shadow WAL replay if needed.
+type walValidator struct {
+	mu     sync.Mutex
+	lastN  int
+	ring   []uint32 // crc32 of each wireRecord payload (logical layer) to avoid large memory
+	idx    int
+	count  int
+}
+
+func newWalValidator(n int) *walValidator { if n <= 0 { return nil }; return &walValidator{lastN: n, ring: make([]uint32, n)} }
+
+func (v *walValidator) add(payload []byte) {
+	if v == nil { return }
+	crc := crc32.ChecksumIEEE(payload)
+	v.mu.Lock()
+	v.ring[v.idx] = crc
+	v.idx = (v.idx + 1) % v.lastN
+	if v.count < v.lastN { v.count++ }
+	v.mu.Unlock()
+}
+
+// snapshot returns slice copy of current CRCs in deterministic order (oldest->newest)
+func (v *walValidator) snapshot() []uint32 {
+	if v == nil { return nil }
+	v.mu.Lock(); defer v.mu.Unlock()
+	if v.count == 0 { return nil }
+	out := make([]uint32, 0, v.count)
+	start := (v.idx - v.count + v.lastN) % v.lastN
+	for i := 0; i < v.count; i++ { out = append(out, v.ring[(start+i)%v.lastN]) }
+	return out
+}
+
 // RaftConfig captures initialization parameters required to start a shard node.
 type RaftConfig struct {
 	ShardID               string
@@ -233,6 +296,10 @@ type RaftConfig struct {
 	ForwardProposals      bool   // if true, return NotLeaderError with leader hint (future: internal forwarding)
 	Manual                bool   // if true, do not spawn background loops; tests drive manually
 	DisablePersistence    bool   // if true (tests), skip disk persistence and load; purely in-memory
+	// Migration shadow unified WAL configuration
+	EnableWALShadow bool   // dual-write new WAL envelopes
+	WALShadowDir    string // override directory (default DataDir/raftwal)
+	ValidatorLastN  int    // if >0 track last N entries for parity validation
 }
 
 // NewShardRaftNode creates a new in-memory stub. Follow-up commits will
@@ -397,6 +464,7 @@ func (s *ShardRaftNode) apply(raftIndex uint64, rec *RaftLogRecord) {
 	cr := &CommittedRecord{RaftIndex: raftIndex, Term: 1, CommitIndex: commitIdx, Record: rec}
 	// Apply application-level state mutation (stub engine)
 	s.invokeReplicationHandler(rec)
+	// TODO: optionally mirror shadow WAL here in stub engine to allow deterministic harness parity tests for migration.
 	// Non-blocking send with small timeout to avoid deadlock if consumer slow
 	select {
 	case s.committedCh <- cr:
@@ -518,6 +586,16 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 	}
 	// record conf state for snapshots
 	s.confState = raftpb.ConfState{Voters: confVoters}
+	// Shadow WAL setup (non-fatal). Only when enabled and persistence not disabled.
+	if cfg.EnableWALShadow && !cfg.DisablePersistence {
+		shadowDir := cfg.WALShadowDir
+		if shadowDir == "" { shadowDir = filepath.Join(cfg.DataDir, "raftwal") }
+		if err := os.MkdirAll(shadowDir, 0o755); err != nil { slog.Warn("wal shadow mkdir failed", slog.Any("error", err)) } else {
+			wcfg := raftwalConfigCompat{Dir: shadowDir, BufMB: 4, SidecarFlushEvery: 256, SegmentMaxBytes: 64*1024*1024}
+			if wr, werr := raftwalNewWriterCompat(wcfg); werr != nil { slog.Warn("wal shadow init failed", slog.Any("error", werr)) } else { s.walShadow = wr }
+		}
+		if cfg.ValidatorLastN > 0 { s.walValidator = newWalValidator(cfg.ValidatorLastN) }
+	}
 	s.stopCh = make(chan struct{})
 	s.tickEvery = time.Duration(hb) * time.Millisecond
 	// Install noop transport by default (caller can SetTransport later)
@@ -595,6 +673,15 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 				var wr wireRecord
 				if err := json.Unmarshal(ent.Data, &wr); err != nil { slog.Error("raft unmarshal", slog.Any("error", err)); continue }
 				rec := &RaftLogRecord{BucketID: wr.BucketID, Type: wr.Type, Payload: wr.Payload}
+				// Shadow WAL dual-write (best-effort, non-fatal). Only for application normal entries.
+				if s.walShadow != nil && rec.Type == RaftRecordTypeAppCommand {
+					// Build Envelope proto
+					// Legacy payload contains JSON ReplicationPayload; we store raw bytes as app_bytes for now.
+					// Future: decode and populate structured fields when cutover.
+					env := &raftwal.Envelope{RaftIndex: ent.Index, RaftTerm: ent.Term, Kind: raftwal.EntryKind_ENTRY_NORMAL, AppBytes: rec.Payload, AppCrc: crc32.ChecksumIEEE(rec.Payload)}
+					if b, mErr := proto.Marshal(env); mErr == nil { _ = s.walShadow.AppendEnvelope(ent.Index, b) } else { slog.Warn("wal shadow marshal failed", slog.Any("error", mErr)) }
+					if s.walValidator != nil { s.walValidator.add(rec.Payload) }
+				}
 				s.mu.Lock()
 				s.perBucketCommit[rec.BucketID]++
 				commitIdx := s.perBucketCommit[rec.BucketID]
@@ -653,6 +740,28 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 		}
 	}
 }
+
+// ---- shadow WAL writer compatibility helpers ----
+// Local minimal copy of raftwal.Config to avoid direct import (decouples migration path).
+type raftwalConfigCompat struct {
+	Dir string
+	BufMB int
+	SidecarFlushEvery int
+	SegmentMaxBytes int64
+}
+
+// raftwalWriterCompat is satisfied by *raftwal.Writer (subset) - defined here for loose coupling.
+type raftwalWriterCompat interface { AppendEnvelope(uint64, []byte) error; Sync() error }
+
+// raftwalNewWriterCompat uses reflection-free construction by importing the real package.
+// NOTE: we import inside function to avoid unused dependency when shadow disabled.
+func raftwalNewWriterCompat(cfg raftwalConfigCompat) (raftwalWriterCompat, error) {
+	w, err := raftwal.NewWriter(raftwal.Config{Dir: cfg.Dir, BufMB: cfg.BufMB, SidecarFlushEvery: cfg.SidecarFlushEvery, SegmentMaxBytes: cfg.SegmentMaxBytes})
+	if err != nil { return nil, err }
+	return w, nil
+}
+
+// Remove unused linkname approach.
 
 // ManualTick advances the raft node one logical heartbeat/election tick.
 // Only valid when RaftConfig.Manual = true.
