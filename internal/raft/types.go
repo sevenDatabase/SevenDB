@@ -140,6 +140,9 @@ type ShardRaftNode struct {
 	lastAppliedIndex   uint64
 	prunedThroughIndex uint64 // highest index for which on-disk log has been pruned (>= this index removed)
 
+	// optional deterministic clock for tests (nil => real time ticker)
+	clk clock.Clock
+
 	// current configuration state for snapshot creation
 	confState raftpb.ConfState
 
@@ -150,9 +153,6 @@ type ShardRaftNode struct {
 	// are NOT started. Tests can drive the raft state machine deterministically
 	// by calling ManualTick() and ManualProcessReady(). In production leave false.
 	manual bool
-
-	// optional deterministic clock for tests; nil => real time
-	clk clock.Clock
 
 	// replicationHandler (optional) is invoked for each committed application
 	// command payload (Type == RaftRecordTypeAppCommand) after commit ordering
@@ -333,7 +333,7 @@ type RaftConfig struct {
 	// WALDualReadValidate if true runs a dual-read validator comparing legacy applied entries with
 	// the shadow WAL enriched envelope metadata (index, crc, opcode, sequence, bucket) and logs mismatches.
 	WALDualReadValidate bool
-	// TestDeterministicClock injects a simulated clock (internal/harness/clock) for faster deterministic tests.
+	// TestDeterministicClock (tests only) if non-nil injects a simulated clock used by tickLoop.
 	TestDeterministicClock clock.Clock
 }
 
@@ -353,8 +353,9 @@ func NewShardRaftNode(cfg RaftConfig) (*ShardRaftNode, error) {
 		waitersSeq:      make(map[uint64]chan *ProposalResult),
 		forwardProposals: cfg.ForwardProposals,
 		manual:           cfg.Manual,
-		clk:              cfg.TestDeterministicClock,
 	}
+    // Inject deterministic clock (tests) before launching loops.
+    if cfg.TestDeterministicClock != nil { s.clk = cfg.TestDeterministicClock }
 	if engine == "etcd" {
 		if err := s.initEtcd(cfg); err != nil {
 			return nil, err
@@ -518,26 +519,24 @@ func (s *ShardRaftNode) apply(raftIndex uint64, rec *RaftLogRecord) {
 
 // Close shuts down the shard node (stub). It prevents new proposals and closes channels after draining.
 func (s *ShardRaftNode) Close() error {
-	s.mu.Lock()
-	if s.closed { s.mu.Unlock(); return nil }
-	s.closed = true
-	var walShadowClose func() error
-	if s.walShadow != nil { if c, ok := s.walShadow.(interface{ Close() error }); ok { walShadowClose = c.Close } }
-	waiters := s.waiters; s.waiters = map[uint64]chan *ProposalResult{}
-	waitersSeq := s.waitersSeq; s.waitersSeq = map[uint64]chan *ProposalResult{}
-	// Signal background loops to exit before we close committedCh to avoid send-after-close race.
-	if s.engine == "etcd" && s.stopCh != nil { close(s.stopCh) }
-	s.mu.Unlock()
-	// Wait for goroutines spawned in initEtcd (tickLoop/readyLoop) to finish.
-	s.wg.Wait()
-	// Now safe to close committedCh (no more processReady runs).
-	close(s.committedCh)
-	// Abort outstanding waiters.
-	for _, ch := range waiters { func(c chan *ProposalResult){ defer func(){ recover() }(); c <- nil; close(c) }(ch) }
-	for _, ch := range waitersSeq { func(c chan *ProposalResult){ defer func(){ recover() }(); c <- nil; close(c) }(ch) }
-	if s.engine == "etcd" && s.rn != nil { s.rn.Stop() }
-	if walShadowClose != nil { _ = walShadowClose() }
-	return nil
+    s.mu.Lock()
+    if s.closed { s.mu.Unlock(); return nil }
+    s.closed = true
+    var walShadowClose func() error
+    if s.walShadow != nil { if c, ok := s.walShadow.(interface{ Close() error }); ok { walShadowClose = c.Close } }
+    waiters := s.waiters; s.waiters = map[uint64]chan *ProposalResult{}
+    waitersSeq := s.waitersSeq; s.waitersSeq = map[uint64]chan *ProposalResult{}
+    if s.engine == "etcd" && s.stopCh != nil { close(s.stopCh) }
+    var rn etcdraft.Node
+    if s.engine == "etcd" && s.rn != nil { rn = s.rn }
+    s.mu.Unlock()
+    if rn != nil { rn.Stop() } // unblock Ready()
+    s.wg.Wait()
+    close(s.committedCh)
+    for _, ch := range waiters { func(c chan *ProposalResult){ defer func(){ recover() }(); c <- nil; close(c) }(ch) }
+    for _, ch := range waitersSeq { func(c chan *ProposalResult){ defer func(){ recover() }(); c <- nil; close(c) }(ch) }
+    if walShadowClose != nil { _ = walShadowClose() }
+    return nil
 }
 
 // ---- etcd/raft integration ----
@@ -711,9 +710,8 @@ func (s *ShardRaftNode) tickLoop() {
 			}
 		}
 	}
-	// deterministic clock path: we poll a small real sleep but advance logical ticks only when
-	// the simulated clock has progressed by tickEvery. Tests advance s.clk manually.
-	var last time.Time = s.clk.Now()
+	// simulated clock path: poll until logical time advances by tickEvery
+	last := s.clk.Now()
 	for {
 		select {
 		case <-s.stopCh:
@@ -725,25 +723,24 @@ func (s *ShardRaftNode) tickLoop() {
 			if s.rn != nil { s.rn.Tick() }
 			last = now
 		} else {
-			// yield CPU briefly; logical progress controlled by Advance in tests
 			time.Sleep(50 * time.Microsecond)
 		}
 	}
 }
 
 func (s *ShardRaftNode) readyLoop() {
-	s.wg.Add(1)
-	defer s.wg.Done()
-	for {
-		select {
-		case <-s.stopCh:
-			return
-		default:
-		}
-		rd, ok := <-s.rn.Ready()
-		if !ok { return }
-		s.processReady(rd)
-	}
+    s.wg.Add(1)
+    defer s.wg.Done()
+    for {
+        if s.rn == nil { return }
+        select {
+        case <-s.stopCh:
+            return
+        case rd, ok := <-s.rn.Ready():
+            if !ok { return }
+            s.processReady(rd)
+        }
+    }
 }
 
 // processReady centralizes handling of an etcd raft Ready. It is invoked by both

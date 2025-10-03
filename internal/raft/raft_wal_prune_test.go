@@ -15,6 +15,9 @@ import (
 func TestWALPruneAfterSnapshot(t *testing.T) {
     if testing.Short() { t.Skip("short mode") }
     config.Config = &config.DiceDBConfig{}
+    // Configure low snapshot threshold BEFORE node init to avoid concurrent mutation races.
+    // (Previously the test wrote n.snapshotThreshold directly causing a data race with processReady.)
+    config.Config.RaftSnapshotThresholdEntries = 12
     root := t.TempDir()
     walDir := filepath.Join(root, "wal")
     shardID := "prune-basic"
@@ -30,8 +33,7 @@ func TestWALPruneAfterSnapshot(t *testing.T) {
     type forceSetter interface{ SetForceRotateEvery(int) }
     if fw, ok := n.walShadow.(forceSetter); ok { fw.SetForceRotateEvery(5) }
 
-    // Lower snapshot threshold for test: manually set fields (test-only) to trigger snapshot quickly.
-    n.snapshotThreshold = 12 // after 12 committed entries
+    // Snapshot threshold already set via global config before node creation.
 
     ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second); defer cancel()
     for i:=0; i<25; i++ { // enough to cross threshold and create several segments
