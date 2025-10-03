@@ -2,6 +2,8 @@
 
 This document explains how the raft package tests in SevenDB are structured, how the deterministic clock works, and how to write new fast, race-stable tests without wall-clock sleeps.
 
+> See also: `RAFT_ARCHITECTURE.md` for a full architectural deep dive (elections, WAL, transport, pruning).
+
 ## Goals
 
 - Eliminate flakiness from timing races (leader election, heartbeats, snapshots)
