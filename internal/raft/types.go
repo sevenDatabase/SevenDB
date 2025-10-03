@@ -129,6 +129,8 @@ type ShardRaftNode struct {
 	walShadow    interface{ AppendEnvelope(uint64, []byte) error; AppendHardState(uint64, []byte) error; Sync() error }
 	walValidator *walValidator
 	walDualReadValidate bool
+	// lastShadowHardState is accessed from processReady (background goroutine) and
+	// initialization/replay path; guard with mu to avoid data races under -race.
 	lastShadowHardState raftpb.HardState
 	// snapshot management
 	snapshotThreshold  int
@@ -512,17 +514,18 @@ func (s *ShardRaftNode) Close() error {
 	s.mu.Lock()
 	if s.closed { s.mu.Unlock(); return nil }
 	s.closed = true
-	// Capture walShadow for closing outside lock if it exposes Close.
 	var walShadowClose func() error
-	if s.walShadow != nil {
-		if c, ok := s.walShadow.(interface{ Close() error }); ok { walShadowClose = c.Close }
-	}
+	if s.walShadow != nil { if c, ok := s.walShadow.(interface{ Close() error }); ok { walShadowClose = c.Close } }
 	waiters := s.waiters; s.waiters = map[uint64]chan *ProposalResult{}
 	waitersSeq := s.waitersSeq; s.waitersSeq = map[uint64]chan *ProposalResult{}
+	// Signal background loops to exit before we close committedCh to avoid send-after-close race.
 	if s.engine == "etcd" && s.stopCh != nil { close(s.stopCh) }
-	close(s.committedCh)
 	s.mu.Unlock()
-	// Abort all outstanding waiters.
+	// Wait for goroutines spawned in initEtcd (tickLoop/readyLoop) to finish.
+	s.wg.Wait()
+	// Now safe to close committedCh (no more processReady runs).
+	close(s.committedCh)
+	// Abort outstanding waiters.
 	for _, ch := range waiters { func(c chan *ProposalResult){ defer func(){ recover() }(); c <- nil; close(c) }(ch) }
 	for _, ch := range waitersSeq { func(c chan *ProposalResult){ defer func(){ recover() }(); c <- nil; close(c) }(ch) }
 	if s.engine == "etcd" && s.rn != nil { s.rn.Stop() }
@@ -616,9 +619,10 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 			var hs raftpb.HardState
 			if uerr := hs.Unmarshal(hsBytes); uerr == nil && !etcdraft.IsEmptyHardState(hs) {
 				// Compare with lastShadowHardState (zero-value if not set). Accept if strictly newer in term or commit.
-				if hs.Term > s.lastShadowHardState.Term || hs.Commit > s.lastShadowHardState.Commit {
+				lhs := s.getLastShadowHardState()
+				if hs.Term > lhs.Term || hs.Commit > lhs.Commit {
 					s.storage.SetHardState(hs)
-					s.lastShadowHardState = hs
+					s.setLastShadowHardState(hs)
 				}
 			}
 		}
@@ -648,10 +652,7 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 			// We assume entries are contiguous; future: validate gaps.
 			for _, e := range entries { _ = s.storage.Append([]raftpb.Entry{e}) }
 		}
-		if haveHS && !etcdraft.IsEmptyHardState(hs) {
-			s.storage.SetHardState(hs)
-			s.lastShadowHardState = hs
-		}
+		if haveHS && !etcdraft.IsEmptyHardState(hs) { s.storage.SetHardState(hs); s.setLastShadowHardState(hs) }
 	}
 	// Shadow WAL setup (non-fatal). Only when enabled and persistence not disabled.
 	if cfg.EnableWALShadow && !cfg.DisablePersistence {
@@ -720,6 +721,14 @@ func (s *ShardRaftNode) readyLoop() {
 
 // processReady centralizes handling of an etcd raft Ready. It is invoked by both
 // background and manual deterministic paths to ensure identical semantics.
+func (s *ShardRaftNode) getLastShadowHardState() raftpb.HardState {
+	s.mu.Lock(); defer s.mu.Unlock(); return s.lastShadowHardState
+}
+
+func (s *ShardRaftNode) setLastShadowHardState(hs raftpb.HardState) {
+	s.mu.Lock(); s.lastShadowHardState = hs; s.mu.Unlock()
+}
+
 func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 	// If node is closed, discard any late Ready (can happen after Close races with etcd raft goroutine).
 	s.mu.Lock()
@@ -738,7 +747,8 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 	}
 	// Shadow WAL: write HardState envelope if changed.
 	if s.walShadow != nil && !etcdraft.IsEmptyHardState(rd.HardState) {
-		if rd.HardState.Term != s.lastShadowHardState.Term || rd.HardState.Vote != s.lastShadowHardState.Vote || rd.HardState.Commit != s.lastShadowHardState.Commit {
+		lhs := s.getLastShadowHardState()
+		if rd.HardState.Term != lhs.Term || rd.HardState.Vote != lhs.Vote || rd.HardState.Commit != lhs.Commit {
 			// marshal raft HardState using protobuf (raftpb.HardState implements Marshal via gogoproto but we'll json encode for now for minimal dependency) TODO: switch to direct protobuf bytes.
 			// Use protobuf marshal for fidelity.
 			b, mErr := rd.HardState.Marshal()
@@ -746,7 +756,7 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 				// HardState has no raft index itself; we record with raft_index = rd.HardState.Commit (best stable monotonic value) and term field for ordering in replay.
 				env := &raftwal.Envelope{RaftIndex: rd.HardState.Commit, RaftTerm: rd.HardState.Term, Kind: raftwal.EntryKind_ENTRY_HARDSTATE, AppBytes: b, AppCrc: crc32.ChecksumIEEE(b)}
 				if pb, perr := proto.Marshal(env); perr == nil { _ = s.walShadow.AppendHardState(env.RaftIndex, pb) } else { slog.Warn("wal shadow hardstate marshal envelope failed", slog.Any("error", perr)) }
-				s.lastShadowHardState = rd.HardState
+				s.setLastShadowHardState(rd.HardState)
 			} else { slog.Warn("wal shadow hardstate marshal failed", slog.Any("error", mErr)) }
 		}
 	}
@@ -767,66 +777,72 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 		for _, ent := range rd.CommittedEntries {
 			switch ent.Type {
 			case raftpb.EntryNormal:
-				if len(ent.Data) == 0 { // noop/heartbeat
-					s.mu.Lock(); s.lastAppliedIndex = ent.Index; s.mu.Unlock(); continue
-				}
+				// Always write an envelope (even empty/noop) to maintain contiguous WAL indices and avoid
+				// artificial conflict rotations caused by skipped heartbeat entries.
 				var wr wireRecord
-				if err := json.Unmarshal(ent.Data, &wr); err != nil { slog.Error("raft unmarshal", slog.Any("error", err)); continue }
-				rec := &RaftLogRecord{BucketID: wr.BucketID, Type: wr.Type, Payload: wr.Payload}
-				// Shadow WAL dual-write (best-effort, non-fatal) for any non-empty normal entry (exclude pure heartbeats).
-				if s.walShadow != nil {
-					// Build enriched Envelope proto with sensible defaults:
-					// namespace: "default" (TODO multi-tenancy)
-					// bucket: record bucket id
-					// opcode: rec.Type (numeric operation classification; 0 if unknown)
-					// sequence: wireRecord.Seq (already monotonic per proposal path)
-					env := &raftwal.Envelope{RaftIndex: ent.Index, RaftTerm: ent.Term, Kind: raftwal.EntryKind_ENTRY_NORMAL, AppBytes: rec.Payload, AppCrc: crc32.ChecksumIEEE(rec.Payload), Namespace: "default", Bucket: rec.BucketID, Opcode: uint32(rec.Type), Sequence: wr.Seq}
-					if b, mErr := proto.Marshal(env); mErr == nil { _ = s.walShadow.AppendEnvelope(ent.Index, b) } else { slog.Warn("wal shadow marshal failed", slog.Any("error", mErr)) }
-					if s.walValidator != nil { s.walValidator.addTuple(ent.Index, rec.Payload) }
+				var rec *RaftLogRecord
+				if len(ent.Data) > 0 {
+					if err := json.Unmarshal(ent.Data, &wr); err != nil { slog.Error("raft unmarshal", slog.Any("error", err)); goto afterNormal } // fallback: still advance index
+					rec = &RaftLogRecord{BucketID: wr.BucketID, Type: wr.Type, Payload: wr.Payload}
+				} else {
+					// heartbeat/noop placeholder
+					wr = wireRecord{BucketID: "", Type: RaftRecordTypeAppCommand, Seq: 0}
+					rec = &RaftLogRecord{BucketID: "", Type: RaftRecordTypeAppCommand, Payload: nil}
 				}
-				// Dual-read validation: compare with recent WAL tuple if enabled (lightweight best-effort)
+				if s.walShadow != nil {
+					envPayload := rec.Payload
+					crcVal := crc32.ChecksumIEEE(envPayload)
+					env := &raftwal.Envelope{RaftIndex: ent.Index, RaftTerm: ent.Term, Kind: raftwal.EntryKind_ENTRY_NORMAL, AppBytes: envPayload, AppCrc: crcVal, Namespace: "default", Bucket: rec.BucketID, Opcode: uint32(rec.Type), Sequence: wr.Seq}
+					if b, mErr := proto.Marshal(env); mErr == nil { _ = s.walShadow.AppendEnvelope(ent.Index, b) } else { slog.Warn("wal shadow marshal failed", slog.Any("error", mErr)) }
+					if s.walValidator != nil { s.walValidator.addTuple(ent.Index, envPayload) }
+				}
+				// Dual-read validation
 				if s.walValidator != nil && s.walDualReadValidate {
-					// current payload CRC
 					crcCalc := crc32.ChecksumIEEE(rec.Payload)
-					// we don't have random access by index in ring; simple linear scan of snapshot (small N)
 					for _, tup := range s.walValidator.snapshot() {
-						if tup.index == ent.Index && tup.crc != crcCalc {
-							slog.Error("wal dual-read mismatch", slog.String("shard", s.shardID), slog.Uint64("index", ent.Index), slog.Any("legacy_crc", crcCalc), slog.Any("wal_crc", tup.crc))
-						}
+						if tup.index == ent.Index && tup.crc != crcCalc { slog.Error("wal dual-read mismatch", slog.String("shard", s.shardID), slog.Uint64("index", ent.Index), slog.Any("legacy_crc", crcCalc), slog.Any("wal_crc", tup.crc)) }
 					}
 				}
 				s.mu.Lock()
-				s.perBucketCommit[rec.BucketID]++
-				commitIdx := s.perBucketCommit[rec.BucketID]
+				if rec.BucketID != "" { s.perBucketCommit[rec.BucketID]++; }
+				commitIdx := uint64(0)
+				if rec.BucketID != "" { commitIdx = s.perBucketCommit[rec.BucketID] }
 				waiter := s.waitersSeq[wr.Seq]
 				delete(s.waitersSeq, wr.Seq)
 				s.lastAppliedIndex = ent.Index
 				s.committedSinceSnap++
 				s.mu.Unlock()
-				cr := &CommittedRecord{RaftIndex: ent.Index, Term: ent.Term, CommitIndex: commitIdx, Record: rec}
-				// Apply application mutation
-				s.invokeReplicationHandler(rec)
-				// Non-blocking send; avoid panic if Close closed channel between earlier capture and now by recover guard.
-				if committedCh != nil {
-					func() {
-						defer func(){ if r:=recover(); r!=nil { /* channel closed */ } }()
-						select { case committedCh <- cr: case <-time.After(100 * time.Millisecond): }
-					}()
+				if rec.BucketID != "" { // only invoke handler & channel for real app commands
+					cr := &CommittedRecord{RaftIndex: ent.Index, Term: ent.Term, CommitIndex: commitIdx, Record: rec}
+					s.invokeReplicationHandler(rec)
+					if committedCh != nil {
+						func() { defer func(){ if r:=recover(); r!=nil {} }(); select { case committedCh <- cr: case <-time.After(100 * time.Millisecond): } }()
+					}
+					if waiter != nil { waiter <- &ProposalResult{CommitIndex: commitIdx, RaftIndex: ent.Index}; close(waiter) }
+				} else if waiter != nil { // heartbeat with waiter (unlikely) – signal
+					waiter <- &ProposalResult{CommitIndex: 0, RaftIndex: ent.Index}; close(waiter)
 				}
-				if waiter != nil { waiter <- &ProposalResult{CommitIndex: commitIdx, RaftIndex: ent.Index}; close(waiter) }
 			case raftpb.EntryConfChange:
 				var cc raftpb.ConfChange
 				if len(ent.Data) > 0 { _ = cc.Unmarshal(ent.Data) }
+				// Record envelope to preserve index continuity.
+				if s.walShadow != nil { env := &raftwal.Envelope{RaftIndex: ent.Index, RaftTerm: ent.Term, Kind: raftwal.EntryKind_ENTRY_NORMAL, AppBytes: ent.Data, AppCrc: crc32.ChecksumIEEE(ent.Data), Namespace: "default"}; if b, mErr := proto.Marshal(env); mErr == nil { _ = s.walShadow.AppendEnvelope(ent.Index, b) } }
+				if s.walValidator != nil { s.walValidator.addTuple(ent.Index, ent.Data) }
 				cs := s.rn.ApplyConfChange(cc)
-				s.mu.Lock(); s.confState = *cs; s.lastAppliedIndex = ent.Index; s.mu.Unlock()
+				s.mu.Lock(); s.confState = *cs; s.lastAppliedIndex = ent.Index; s.committedSinceSnap++; s.mu.Unlock()
 			case raftpb.EntryConfChangeV2:
 				var cc raftpb.ConfChangeV2
 				if len(ent.Data) > 0 { _ = cc.Unmarshal(ent.Data) }
+				if s.walShadow != nil { env := &raftwal.Envelope{RaftIndex: ent.Index, RaftTerm: ent.Term, Kind: raftwal.EntryKind_ENTRY_NORMAL, AppBytes: ent.Data, AppCrc: crc32.ChecksumIEEE(ent.Data), Namespace: "default"}; if b, mErr := proto.Marshal(env); mErr == nil { _ = s.walShadow.AppendEnvelope(ent.Index, b) } }
+				if s.walValidator != nil { s.walValidator.addTuple(ent.Index, ent.Data) }
 				cs := s.rn.ApplyConfChange(cc)
-				s.mu.Lock(); s.confState = *cs; s.lastAppliedIndex = ent.Index; s.mu.Unlock()
+				s.mu.Lock(); s.confState = *cs; s.lastAppliedIndex = ent.Index; s.committedSinceSnap++; s.mu.Unlock()
 			default:
-				s.mu.Lock(); s.lastAppliedIndex = ent.Index; s.mu.Unlock()
+				s.mu.Lock(); s.lastAppliedIndex = ent.Index; s.committedSinceSnap++; s.mu.Unlock()
 			}
+			continue
+		afterNormal:
+			// fallback path already advanced index; no further action
 		}
 	}
 	// Send outbound messages (multi-node scenarios)
