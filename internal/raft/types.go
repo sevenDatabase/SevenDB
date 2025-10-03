@@ -22,6 +22,7 @@ import (
 
     "github.com/sevenDatabase/SevenDB/config"
     "github.com/sevenDatabase/SevenDB/internal/raftwal"
+	"github.com/sevenDatabase/SevenDB/internal/harness/clock"
     "google.golang.org/protobuf/proto"
 
     etcdraft "go.etcd.io/etcd/raft/v3"
@@ -149,6 +150,9 @@ type ShardRaftNode struct {
 	// are NOT started. Tests can drive the raft state machine deterministically
 	// by calling ManualTick() and ManualProcessReady(). In production leave false.
 	manual bool
+
+	// optional deterministic clock for tests; nil => real time
+	clk clock.Clock
 
 	// replicationHandler (optional) is invoked for each committed application
 	// command payload (Type == RaftRecordTypeAppCommand) after commit ordering
@@ -329,6 +333,8 @@ type RaftConfig struct {
 	// WALDualReadValidate if true runs a dual-read validator comparing legacy applied entries with
 	// the shadow WAL enriched envelope metadata (index, crc, opcode, sequence, bucket) and logs mismatches.
 	WALDualReadValidate bool
+	// TestDeterministicClock injects a simulated clock (internal/harness/clock) for faster deterministic tests.
+	TestDeterministicClock clock.Clock
 }
 
 // NewShardRaftNode creates a new in-memory stub. Follow-up commits will
@@ -347,6 +353,7 @@ func NewShardRaftNode(cfg RaftConfig) (*ShardRaftNode, error) {
 		waitersSeq:      make(map[uint64]chan *ProposalResult),
 		forwardProposals: cfg.ForwardProposals,
 		manual:           cfg.Manual,
+		clk:              cfg.TestDeterministicClock,
 	}
 	if engine == "etcd" {
 		if err := s.initEtcd(cfg); err != nil {
@@ -692,14 +699,34 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 }
 
 func (s *ShardRaftNode) tickLoop() {
-	ticker := time.NewTicker(s.tickEvery)
-	defer ticker.Stop()
+	if s.clk == nil { // real time path
+		ticker := time.NewTicker(s.tickEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if s.rn != nil { s.rn.Tick() }
+			case <-s.stopCh:
+				return
+			}
+		}
+	}
+	// deterministic clock path: we poll a small real sleep but advance logical ticks only when
+	// the simulated clock has progressed by tickEvery. Tests advance s.clk manually.
+	var last time.Time = s.clk.Now()
 	for {
 		select {
-		case <-ticker.C:
-			if s.rn != nil { s.rn.Tick() }
 		case <-s.stopCh:
 			return
+		default:
+		}
+		now := s.clk.Now()
+		if now.Sub(last) >= s.tickEvery {
+			if s.rn != nil { s.rn.Tick() }
+			last = now
+		} else {
+			// yield CPU briefly; logical progress controlled by Advance in tests
+			time.Sleep(50 * time.Microsecond)
 		}
 	}
 }

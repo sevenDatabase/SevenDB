@@ -41,9 +41,14 @@ func (m *memTransport) attach(id uint64, n *ShardRaftNode) {
 
 // waitUntil polls fn until it returns true or timeout.
 func waitUntil(t *testing.T, timeout time.Duration, interval time.Duration, fn func() bool, desc string) {
+    // Updated to advance simulated clocks if present instead of wall sleeping.
+    var nodes []*ShardRaftNode
+    // Attempt to capture caller's nodes slice via closure heuristics not possible; keep original behavior when no clocks.
     deadline := time.Now().Add(timeout)
     for time.Now().Before(deadline) {
         if fn() { return }
+        // Try advancing any provided nodes (best-effort) – if none captured, fallback to sleep.
+        for _, n := range nodes { if n != nil && n.clk != nil { n.clk.Advance(interval) } }
         time.Sleep(interval)
     }
     t.Fatalf("timeout waiting for condition: %s", desc)
@@ -101,19 +106,18 @@ func TestRaftClusterBasicReplicationAndSnapshot(t *testing.T) {
     mtrans := newMemTransport()
 
     var nodes []*ShardRaftNode
+    start := time.Unix(0,0)
     for i:=1; i<=3; i++ {
         dataDir := filepath.Join(tempRoot, fmt.Sprintf("node-%d", i))
         cfg := RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", i), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true}
-        n, err := NewShardRaftNode(cfg)
-        if err != nil { t.Fatalf("create node %d: %v", i, err) }
+        n := newDeterministicNode(t, cfg, start)
         id := uint64(i)
         mtrans.attach(id, n)
         n.SetTransport(mtrans)
         nodes = append(nodes, n)
     }
-
-    // Wait for leader election.
-    waitUntil(t, 5*time.Second, 50*time.Millisecond, func() bool { _,_,ok := findLeader(nodes); return ok }, "leader election")
+    for i:=0;i<500;i++ { if _,_,ok:=findLeader(nodes); ok { break }; advanceAll(nodes, 10*time.Millisecond) }
+    if _,_,ok:=findLeader(nodes); !ok { t.Fatalf("no leader elected") }
 
     // Propose several entries; ensure replication & commit ordering.
     var lastRaft uint64
@@ -124,13 +128,18 @@ func TestRaftClusterBasicReplicationAndSnapshot(t *testing.T) {
         if rIdx <= lastRaft { t.Fatalf("raft index not increasing: %d <= %d", rIdx, lastRaft) }
         lastCommit, lastRaft = cIdx, rIdx
     }
-    waitApplied(t, nodes, lastRaft)
+    for i:=0;i<1000;i++ { // deterministic apply wait
+        all := true
+        for _, n := range nodes { if n.Status().LastAppliedIndex < lastRaft { all = false; break } }
+        if all { break }
+        advanceAll(nodes, 10*time.Millisecond)
+    }
+    for _, n := range nodes { if n.Status().LastAppliedIndex < lastRaft { t.Fatalf("apply lag after timeout") } }
 
     // Expect snapshot occurred (threshold=5) -> poll until lastSnapshotIndex > 0.
-    waitUntil(t, 5*time.Second, 50*time.Millisecond, func() bool {
-        for _, n := range nodes { if n.Status().LastSnapshotIndex > 0 { return true } }
-        return false
-    }, "snapshot trigger")
+    for i:=0;i<1000;i++ { snap := false; for _, n := range nodes { if n.Status().LastSnapshotIndex > 0 { snap = true; break } }; if snap { break }; advanceAll(nodes, 10*time.Millisecond) }
+    hasSnap := false; for _, n := range nodes { if n.Status().LastSnapshotIndex > 0 { hasSnap = true; break } }
+    if !hasSnap { t.Fatalf("snapshot not triggered in deterministic window") }
 
     // Proposals on follower should yield NotLeaderError.
     ln, leaderID, _ := findLeader(nodes)
@@ -164,7 +173,7 @@ func TestRaftClusterBasicReplicationAndSnapshot(t *testing.T) {
     newNode.SetTransport(mtrans)
 
     // Allow re-election (may or may not become leader again).
-    time.Sleep(500 * time.Millisecond)
+    for i:=0;i<500;i++ { advanceAll(nodes, 10*time.Millisecond) }
     // Validate restored indices.
     st := newNode.Status()
     if st.LastAppliedIndex < preApplied { t.Fatalf("restarted node applied index regressed: %d < %d", st.LastAppliedIndex, preApplied) }
@@ -185,14 +194,15 @@ func TestRaftLogPruneAfterSnapshot(t *testing.T) {
     peerSpecs := []string{"1@x","2@x","3@x"}
     mtrans := newMemTransport()
     var nodes []*ShardRaftNode
+    start := time.Unix(0,0)
     for i:=1;i<=3;i++ {
         dataDir := filepath.Join(tempRoot, fmt.Sprintf("node-%d", i))
-        n, err := NewShardRaftNode(RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", i), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true})
-        if err != nil { t.Fatalf("create node: %v", err) }
+        n := newDeterministicNode(t, RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", i), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true}, start)
         mtrans.attach(uint64(i), n); n.SetTransport(mtrans)
         nodes = append(nodes, n)
     }
-    waitUntil(t, 10*time.Second, 50*time.Millisecond, func() bool { _,_,ok:=findLeader(nodes);return ok }, "leader election")
+    for i:=0;i<500;i++ { if _,_,ok:=findLeader(nodes); ok { break }; advanceAll(nodes, 10*time.Millisecond) }
+    if _,_,ok:=findLeader(nodes); !ok { t.Fatalf("no leader elected") }
     // Drive proposals until node-1 snapshots.
     var lastRaft uint64
     for i:=0; i<20; i++ {
@@ -204,9 +214,8 @@ func TestRaftLogPruneAfterSnapshot(t *testing.T) {
     snapIdx := nodes[0].Status().LastSnapshotIndex
     if snapIdx == 0 { t.Fatalf("node-1 never produced snapshot within proposal budget") }
     // Wait for pruning completion signaled by prunedThroughIndex >= snapshot index.
-    waitUntil(t, 5*time.Second, 50*time.Millisecond, func() bool {
-        st := nodes[0].Status(); return st.PrunedThroughIndex >= snapIdx
-    }, fmt.Sprintf("prunedThroughIndex >= snapshot index %d", snapIdx))
+    for i:=0;i<1000;i++ { st := nodes[0].Status(); if st.PrunedThroughIndex >= snapIdx { break }; advanceAll(nodes, 10*time.Millisecond) }
+    if nodes[0].Status().PrunedThroughIndex < snapIdx { t.Fatalf("prune did not reach snapshot index") }
 }
 
 // TestRaftFollowerRestartCatchUp ensures a stopped follower catches up on restart.
@@ -218,18 +227,20 @@ func TestRaftFollowerRestartCatchUp(t *testing.T) {
     peerSpecs := []string{"1@x","2@x","3@x"}
     mtrans := newMemTransport()
     var nodes []*ShardRaftNode
+    start := time.Unix(0,0)
     for i:=1;i<=3;i++ {
         dataDir := filepath.Join(tempRoot, fmt.Sprintf("node-%d", i))
-        n, err := NewShardRaftNode(RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", i), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true})
-        if err != nil { t.Fatalf("create node: %v", err) }
+        n := newDeterministicNode(t, RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", i), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true}, start)
         mtrans.attach(uint64(i), n); n.SetTransport(mtrans)
         nodes = append(nodes, n)
     }
-    waitUntil(t, 10*time.Second, 50*time.Millisecond, func() bool { _,_,ok:=findLeader(nodes);return ok }, "leader election")
+    for i:=0;i<500;i++ { if _,_,ok:=findLeader(nodes); ok { break }; advanceAll(nodes, 10*time.Millisecond) }
+    if _,_,ok:=findLeader(nodes); !ok { t.Fatalf("no leader elected") }
     // Propose initial entries
     var last uint64
     for i:=0;i<5;i++ { _, rIdx := proposeOnLeader(t, nodes, "bx", []byte("seed")); last = rIdx }
-    waitApplied(t, nodes, last)
+    for i:=0;i<1000;i++ { all := true; for _, n := range nodes { if n.Status().LastAppliedIndex < last { all=false; break } }; if all { break }; advanceAll(nodes, 10*time.Millisecond) }
+    for _, n := range nodes { if n.Status().LastAppliedIndex < last { t.Fatalf("apply lag post seed") } }
     // Pick a follower to restart
     leader, lid, _ := findLeader(nodes)
     var followerIdx int
@@ -243,7 +254,8 @@ func TestRaftFollowerRestartCatchUp(t *testing.T) {
     // Produce more entries while follower is down using only active nodes.
     for i:=0;i<6;i++ { _, rIdx := proposeOnLeader(t, activeNodes, "bx", []byte("later")); last = rIdx }
     // Ensure those entries are applied on all active nodes (2-node cluster) before restart.
-    waitApplied(t, activeNodes, last)
+    for i:=0;i<1000;i++ { all := true; for _, n := range activeNodes { if n.Status().LastAppliedIndex < last { all=false; break } }; if all { break }; advanceAll(activeNodes, 10*time.Millisecond) }
+    for _, n := range activeNodes { if n.Status().LastAppliedIndex < last { t.Fatalf("apply lag active cluster") } }
     // Restart follower
     dataDir := filepath.Join(tempRoot, fmt.Sprintf("node-%d", followerIdx+1))
     newFollower, err := NewShardRaftNode(RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", followerIdx+1), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true})
@@ -252,7 +264,8 @@ func TestRaftFollowerRestartCatchUp(t *testing.T) {
     mtrans.attach(uint64(followerIdx+1), newFollower); newFollower.SetTransport(mtrans)
     // Ensure leader still leader
     _ = lid
-    waitApplied(t, nodes, last)
+    for i:=0;i<1000;i++ { all := true; for _, n := range nodes { if n.Status().LastAppliedIndex < last { all=false; break } }; if all { break }; advanceAll(nodes, 10*time.Millisecond) }
+    for _, n := range nodes { if n.Status().LastAppliedIndex < last { t.Fatalf("apply lag after follower restart") } }
     if newFollower.Status().LastAppliedIndex <= preIdx { t.Fatalf("follower didn't advance after restart: %d <= %d", newFollower.Status().LastAppliedIndex, preIdx) }
 }
 
@@ -265,14 +278,15 @@ func TestRaftMultiBucketCommitIsolation(t *testing.T) {
     peerSpecs := []string{"1@x","2@x","3@x"}
     mtrans := newMemTransport()
     var nodes []*ShardRaftNode
+    start := time.Unix(0,0)
     for i:=1;i<=3;i++ {
         dataDir := filepath.Join(tempRoot, fmt.Sprintf("node-%d", i))
-        n, err := NewShardRaftNode(RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", i), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true})
-        if err != nil { t.Fatalf("create node: %v", err) }
+        n := newDeterministicNode(t, RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", i), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true}, start)
         mtrans.attach(uint64(i), n); n.SetTransport(mtrans)
         nodes = append(nodes, n)
     }
-    waitUntil(t, 10*time.Second, 50*time.Millisecond, func() bool { _,_,ok:=findLeader(nodes);return ok }, "leader election")
+    for i:=0;i<500;i++ { if _,_,ok:=findLeader(nodes); ok { break }; advanceAll(nodes, 10*time.Millisecond) }
+    if _,_,ok:=findLeader(nodes); !ok { t.Fatalf("no leader elected") }
     var seqA, seqB []uint64
     for i:=0;i<20;i++ {
         bucket := "A"; if i%2==1 { bucket = "B" }
@@ -299,14 +313,15 @@ func TestNotLeaderErrorSemantics(t *testing.T) {
     peerSpecs := []string{"1@x","2@x","3@x"}
     mtrans := newMemTransport()
     var nodes []*ShardRaftNode
+    start := time.Unix(0,0)
     for i:=1;i<=3;i++ {
         dataDir := filepath.Join(tempRoot, fmt.Sprintf("node-%d", i))
-        n, err := NewShardRaftNode(RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", i), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true})
-        if err != nil { t.Fatalf("create node: %v", err) }
+        n := newDeterministicNode(t, RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", i), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true}, start)
         mtrans.attach(uint64(i), n); n.SetTransport(mtrans)
         nodes = append(nodes, n)
     }
-    waitUntil(t, 10*time.Second, 50*time.Millisecond, func() bool { _,_,ok:=findLeader(nodes);return ok }, "leader election")
+    for i:=0;i<500;i++ { if _,_,ok:=findLeader(nodes); ok { break }; advanceAll(nodes, 10*time.Millisecond) }
+    if _,_,ok:=findLeader(nodes); !ok { t.Fatalf("no leader elected") }
     leader, leaderID, _ := findLeader(nodes)
     // Pick follower
     var follower *ShardRaftNode

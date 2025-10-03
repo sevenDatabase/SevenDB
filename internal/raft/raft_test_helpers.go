@@ -5,6 +5,9 @@ import (
     "path/filepath"
     "testing"
     "strings"
+    "time"
+
+    "github.com/sevenDatabase/SevenDB/internal/harness/clock"
 )
 
 // local copies of small interfaces from types.go (kept private there) to avoid import cycle
@@ -37,4 +40,18 @@ func closeAll(t *testing.T, nodes []*ShardRaftNode) {
         matches, _ := filepath.Glob(filepath.Join(dir, "*.tmp"))
         if len(matches) > 0 { t.Fatalf("temporary files not cleaned in wal dir %s: %v", dir, matches) }
     }
+}
+
+// newDeterministicNode creates a raft node with a simulated clock (if etcd engine) for fast tests.
+func newDeterministicNode(t *testing.T, cfg RaftConfig, start time.Time) *ShardRaftNode {
+    clk := clock.NewSimulatedClock(start)
+    cfg.TestDeterministicClock = clk
+    n, err := NewShardRaftNode(cfg)
+    if err != nil { t.Fatalf("new deterministic node: %v", err) }
+    return n
+}
+
+// advanceAll advances the simulated clocks for nodes that have one.
+func advanceAll(nodes []*ShardRaftNode, d time.Duration) {
+    for _, n := range nodes { if n != nil && n.clk != nil { n.clk.Advance(d) } }
 }

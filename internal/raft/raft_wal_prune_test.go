@@ -21,11 +21,11 @@ func TestWALPruneAfterSnapshot(t *testing.T) {
     // We will force rotation after every 5 appends to create multiple segments quickly.
     cfg := RaftConfig{ShardID: shardID, NodeID: "1", Engine: "etcd", DataDir: root, ForwardProposals: true,
         EnableWALShadow: true, WALShadowDir: walDir, ValidatorLastN: 64}
-    n, err := NewShardRaftNode(cfg)
-    if err != nil { t.Fatalf("new node: %v", err) }
+    start := time.Unix(0,0)
+    n := newDeterministicNode(t, cfg, start)
     defer n.Close()
-    // Wait leadership
-    time.Sleep(150 * time.Millisecond)
+    for i:=0;i<300 && !n.IsLeader(); i++ { advanceAll([]*ShardRaftNode{n}, 10*time.Millisecond) }
+    if !n.IsLeader() { t.Fatalf("node never became leader") }
     // Access underlying writer (test-only) to force rotation knob if available via interface.
     type forceSetter interface{ SetForceRotateEvery(int) }
     if fw, ok := n.walShadow.(forceSetter); ok { fw.SetForceRotateEvery(5) }
@@ -38,10 +38,9 @@ func TestWALPruneAfterSnapshot(t *testing.T) {
         if _, _, err := n.ProposeAndWait(ctx, &RaftLogRecord{BucketID:"b", Type: RaftRecordTypeAppCommand, Payload: []byte(fmt.Sprintf("k=%d", i))}); err != nil {
             t.Fatalf("proposal %d: %v", i, err)
         }
-        time.Sleep(5 * time.Millisecond)
+        advanceAll([]*ShardRaftNode{n}, 5*time.Millisecond)
     }
-    // Allow snapshot & prune cycle to run
-    time.Sleep(500 * time.Millisecond)
+    for i:=0;i<500; i++ { advanceAll([]*ShardRaftNode{n}, 10*time.Millisecond) }
 
     // Inspect WAL directory: expect at least one segment removed (i.e., fewer than we would have from rotations)
     files, err := filepath.Glob(filepath.Join(walDir, "seg-*.wal"))
@@ -60,9 +59,10 @@ func TestWALPruneNoEligible(t *testing.T) {
     shardID := "prune-none"
     cfg := RaftConfig{ShardID: shardID, NodeID: "1", Engine: "etcd", DataDir: root, ForwardProposals: true,
         EnableWALShadow: true, WALShadowDir: walDir, ValidatorLastN: 32}
-    n, err := NewShardRaftNode(cfg); if err != nil { t.Fatalf("new node: %v", err) }
-    defer n.Close()
-    time.Sleep(120 * time.Millisecond)
+    start := time.Unix(0,0)
+    n := newDeterministicNode(t, cfg, start); defer n.Close()
+    for i:=0;i<300 && !n.IsLeader(); i++ { advanceAll([]*ShardRaftNode{n}, 10*time.Millisecond) }
+    if !n.IsLeader() { t.Fatalf("node never became leader") }
     // Force small number of entries without hitting snapshot threshold.
     ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second); defer cancel()
     for i:=0; i<5; i++ { if _, _, err := n.ProposeAndWait(ctx, &RaftLogRecord{BucketID:"b", Type: RaftRecordTypeAppCommand, Payload: []byte("x")}); err != nil { t.Fatalf("prop %d: %v", i, err) } }
@@ -88,8 +88,8 @@ func TestWALPruneRecoveryDeletedCleanup(t *testing.T) {
     f2, _ := os.Create(filepath.Join(walDir, "seg-0.wal.idx.deleted")); f2.Close()
     cfg := RaftConfig{ShardID: shardID, NodeID: "1", Engine: "etcd", DataDir: root, ForwardProposals: true,
         EnableWALShadow: true, WALShadowDir: walDir, ValidatorLastN: 16}
-    n, err := NewShardRaftNode(cfg); if err != nil { t.Fatalf("new node: %v", err) }
-    defer n.Close()
+    start := time.Unix(0,0)
+    n := newDeterministicNode(t, cfg, start); defer n.Close()
     // Ensure deleted markers are gone
     leftover, _ := filepath.Glob(filepath.Join(walDir, "*.deleted"))
     if len(leftover) != 0 { t.Fatalf("deleted markers not cleaned: %v", leftover) }

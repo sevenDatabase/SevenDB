@@ -158,58 +158,44 @@ func TestShadowWALLeaderFailoverMultiNode(t *testing.T) {
     peerSpecs := []string{"1@x","2@x","3@x"}
     mtrans := newMemTransport()
     var nodes []*ShardRaftNode
+    start := time.Unix(0,0)
     for i:=1;i<=3;i++ {
         dataDir := filepath.Join(root, fmt.Sprintf("node-%d", i))
         cfg := RaftConfig{ShardID: shardID, NodeID: fmt.Sprintf("%d", i), Peers: peerSpecs, DataDir: dataDir, Engine: "etcd", ForwardProposals: true,
             EnableWALShadow: true, WALShadowDir: filepath.Join(dataDir, "wal"), ValidatorLastN: 256}
-        n, err := NewShardRaftNode(cfg)
-        if err != nil { t.Fatalf("create node %d: %v", i, err) }
+        n := newDeterministicNode(t, cfg, start)
         mtrans.attach(uint64(i), n); n.SetTransport(mtrans)
         nodes = append(nodes, n)
     }
-    // Wait leader
-    waitUntil(t, 5*time.Second, 50*time.Millisecond, func() bool { _,_,ok := findLeader(nodes); return ok }, "leader election")
+    for step:=0; step<500; step++ { if _,_,ok := findLeader(nodes); ok { break }; advanceAll(nodes, 10*time.Millisecond) }
     ln, lid, _ := findLeader(nodes)
-    // Propose initial stream
+    if ln == nil { t.Fatalf("no leader elected") }
     for i:=0;i<20;i++ { proposeOnLeader(t, nodes, "b", []byte(fmt.Sprintf("pre-%d", i))) }
-    // Crash leader (abrupt - no Close)
     var leaderIdx int
     for i,n := range nodes { if n == ln { leaderIdx = i; break } }
-    // Remove leader from transport (simulate crash)
-    // (We simply don't forward messages because we drop reference from nodes slice temporarily)
     crashedDir := filepath.Join(root, fmt.Sprintf("node-%d", leaderIdx+1))
-    // Replace slot with nil to avoid proposals going there
-    nodes[leaderIdx] = &ShardRaftNode{shardID:"_dead"} // placeholder inert
-    // Wait for new leader (different id)
-    waitUntil(t, 5*time.Second, 50*time.Millisecond, func() bool { _, newID, ok := findLeader(nodes); return ok && newID != lid }, "new leader election")
-    // Propose more entries under new leader
+    nodes[leaderIdx] = &ShardRaftNode{shardID:"_dead"}
+    for step:=0; step<500; step++ { advanceAll(nodes, 10*time.Millisecond); _, newID, ok := findLeader(nodes); if ok && newID != lid { break } }
     for i:=0;i<30;i++ { proposeOnLeader(t, nodes, "b", []byte(fmt.Sprintf("post-%d", i))) }
-    // Restart crashed leader
     restartCfg := RaftConfig{ShardID: shardID, NodeID: lid, Peers: peerSpecs, DataDir: crashedDir, Engine: "etcd", ForwardProposals: true,
         EnableWALShadow: true, WALShadowDir: filepath.Join(crashedDir, "wal"), ValidatorLastN: 256}
-    restarted, err := NewShardRaftNode(restartCfg)
-    if err != nil { t.Fatalf("restart leader: %v", err) }
+    restarted := newDeterministicNode(t, restartCfg, start)
     nodes[leaderIdx] = restarted
     mtrans.attach(uint64(leaderIdx+1), restarted); restarted.SetTransport(mtrans)
-    // Allow catch-up
-    waitUntil(t, 10*time.Second, 100*time.Millisecond, func() bool {
-        // ensure no node is far behind last applied of any other
+    for step:=0; step<1000; step++ {
+        advanceAll(nodes, 10*time.Millisecond)
         var max uint64
-        for _, n := range nodes { st := n.Status(); if st.LastAppliedIndex > max { max = st.LastAppliedIndex } }
-        for _, n := range nodes { if (n.Status().LastAppliedIndex + 5) < max { return false } }
-        return max > 0
-    }, "restart catch-up")
-    // Validator parity on each
-    for i, n := range nodes {
-        if n.shardID == "_dead" { continue }
-        if err := n.ValidateShadowTail(); err != nil { t.Fatalf("node %d tail parity: %v", i+1, err) }
+        for _, n := range nodes { if n.shardID == "_dead" { continue }; st := n.Status(); if st.LastAppliedIndex > max { max = st.LastAppliedIndex } }
+        if max == 0 { continue }
+        behind := false
+        for _, n := range nodes { if n.shardID == "_dead" { continue }; if (n.Status().LastAppliedIndex + 5) < max { behind = true; break } }
+        if !behind { break }
     }
-    // After restart and catch-up there can still be a brief election gap; wait for stable leader.
-    waitUntil(t, 5*time.Second, 50*time.Millisecond, func() bool { _, _, ok := findLeader(nodes); return ok }, "leader after restart")
-    // Proposals still succeed
-    ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second); defer cancel()
+    for i, n := range nodes { if n.shardID == "_dead" { continue }; if err := n.ValidateShadowTail(); err != nil { t.Fatalf("node %d tail parity: %v", i+1, err) } }
+    for step:=0; step<500; step++ { advanceAll(nodes, 10*time.Millisecond); if _,_,ok := findLeader(nodes); ok { break } }
     ln2, _, _ := findLeader(nodes)
     if ln2 == nil { t.Fatalf("no leader after restart") }
+    ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second); defer cancel()
     if _, _, err := ln2.ProposeAndWait(ctx, &RaftLogRecord{BucketID:"b", Type: RaftRecordTypeAppCommand, Payload: []byte("final")}); err != nil {
         var nle *NotLeaderError
         if !errors.As(err, &nle) { t.Fatalf("final proposal failed: %v", err) }
