@@ -30,5 +30,8 @@
 * Introduce validator extension to compare reconstructed higher-level metadata vs legacy during dual-read phase.
 * Add configuration migration guide to docs (enabling StrictSync and WALPrimaryRead in test/staging).
 
+## Testing Notes (Deterministic Raft)
+Deterministic raft test infrastructure has been introduced (SimulatedClock injection) eliminating real time sleeps in cluster, pruning, and failover tests. See `docs/TESTING_RAFT.md` for guidelines on writing new tests that exercise WAL shadow, pruning, and failover scenarios without flakiness.
+
 ---
 Generated automatically as part of WAL migration iteration.
