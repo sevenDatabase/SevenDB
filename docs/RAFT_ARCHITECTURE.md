@@ -1,6 +1,6 @@
 # SevenDB Raft & Shadow WAL Architecture
 
-> Status: MVP foundation with deterministic testing, dual persistence (legacy + shadow WAL), experimental primary WAL read path.
+> Status: MVP foundation with deterministic testing, dual persistence (legacy + shadow WAL), experimental primary WAL read path. Updated to reflect current codebase analysis (Oct 2025).
 
 ## 1. Goals & Design Principles
 - Deterministic, testable replication core.
@@ -199,7 +199,121 @@ type Transport interface { Send(ctx context.Context, msgs []raftpb.Message) }
 | Dynamic Membership | Static resolver | Integrate ConfChange and resolver update path. |
 | Backpressure Policy | Drop after timeout | Bounded worker pool / configurable commit channel depth. |
 | Per-Bucket Durability | In-memory only | Reconstruct commit indices by scanning WAL on restart. |
+| Read Index / Linearizable Reads | Not implemented | Implement ReadIndex or leader lease optimizations. |
+| Leader Transfer / Graceful Handover | Not implemented | Expose API to trigger leadership transfer & integrate etcd raft TransferLeader. |
+| Joint Consensus Membership | Parsing exists, orchestration incomplete | Wrap ConfChangeV2 flows with safety checks + staged commit UX. |
+| Snapshot Throttling | Simple threshold only | Add rate limiting & size based heuristics. |
+| Log Batching | One proposal per raft entry | Aggregate small commands into batch entries for throughput. |
+| Adaptive Timeouts | Static config | Dynamic tuning based on RTT/variance. |
+| Quorum Health Probing | Implicit via etcd tick | Surface explicit peer liveness metrics & alerts. |
+| WAL Compaction Awareness | Size-only rotation | Integrate space budgeting & archival hooks. |
 
+## 11.1 Current Feature Matrix
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Leader Election (PreVote, CheckQuorum) | Implemented | etcd raft configured with PreVote & CheckQuorum. |
+| Log Replication | Implemented | Normal entries + per-bucket commit indices on apply. |
+| Persistence (Legacy) | Implemented | `raftPersistence` (entries.log + hardstate.json + snapshot.bin). |
+| Shadow WAL Dual-Write | Implemented | Normal + HardState envelopes; strict sync optional. |
+| WAL Primary Read | Experimental | Seeding from envelopes; limited metadata reconstruction. |
+| Snapshots | Implemented (basic) | Threshold-based trigger; compaction + legacy prune + WAL prune. |
+| Log Compaction | Implemented (etcd storage compact) | Paired with persistence & WAL pruning. |
+| Dynamic Membership (single-step) | Partial | ConfChange & ConfChangeV2 entries applied; no orchestration utilities. |
+| Joint Consensus | Partial hooks | Underlying raft supports, higher-level API absent. |
+| Read Index / Linearizable Reads | Missing | Requires ReadIndex or lease-based fast path. |
+| Leader Transfer | Missing | Need wrapper to call raft TransferLeader / campaign policies. |
+| Flow Control / Backpressure | Minimal | Send path fire-and-forget; recv ignores responses. |
+| Metrics & Observability | Minimal | `Status()` snapshot only; no Prom metrics. |
+| WAL Segment Pruning | Implemented | Index-based safe prune after snapshot compaction. |
+| Data Corruption Detection | Partial | CRC at write; replay validates but no quarantine policy. |
+| Deterministic Testing Harness | Implemented | Manual mode + simulated clock + per-step processing. |
+| Per-Bucket Commit Index | Implemented (in-memory) | Not persisted; lost on restart (rebuild plan pending). |
+| Dual-Read Validator | Implemented | Warn-only parity checks. |
+| Leadership Lease Optimization | Missing | Candidate for reducing read latency. |
+| Batching / Coalescing | Missing | Future aggregation layer. |
+| Trace / Client Metadata | Missing | TODO fields in `RaftLogRecord`. |
+
+## 11.2 Implementation Gaps (Detailed)
+1. Linearizable Reads: Without ReadIndex, followers cannot serve consistent reads; all reads must go to leader or risk stale data. Introduce ReadIndex (raft protocol) or lease-based optimization guarded by monotonic term & quorum validation.
+2. Membership Changes: While ConfChange entries are applied, no safety guardrails (e.g., ensuring one change at a time, verifying health before removing last healthy replica). Need a coordinator layer.
+3. WAL Replay Robustness: Primary mode trusts envelopes; add contiguous index & term monotonic validation, reject on gaps, surface alert.
+4. Restart Rebuild of Per-Bucket Commit: Currently volatile; reconstruct by scanning WAL envelopes per bucket, computing commit counters.
+5. Flow Control: Implement outbound queue sizing & ack-based credit system; otherwise large bursts can risk memory growth and latency spikes if peers slow.
+6. Snapshot Policy: Only count-based; add target snapshot size, time since last snapshot, and compaction urgency heuristics.
+7. Metrics & Telemetry: Export Prometheus metrics (proposals/sec, commit latency histogram, snapshot duration, prune counts, WAL fsync latency, validator mismatches, transport reconnects).
+8. Error Handling Policy: Many WAL operations log & continue; define severity tiers (panic, degrade, ignore) configurable per environment.
+9. Security / Auth: gRPC transport unauthenticated; add mTLS + per-shard authorization (limit cross-shard message injection).
+10. Upgrade Safety: Provide offline tool to verify WAL + legacy persistence equivalence before enabling primary read in production.
+
+## 12. Roadmap to Full Multi-Replica Replication
+The following sequenced phases move from MVP single-node / basic multi-node to production-grade replicated state:
+
+### Phase 0 (Done)
+- Stub + etcd/raft integration
+- Dual persistence (legacy + shadow)
+- Basic snapshots & pruning
+- Deterministic test harness
+
+### Phase 1: Core Multi-Node Stability
+1. Transport Hardening: reconnect backoff with jitter, exponential growth, max cap; peer health metrics.
+2. Leadership Lifecycle: implement explicit leader transfer; expose admin API (transfer to peer, step down).
+3. Membership Orchestration: safe add/remove workflow (single joint consensus change at a time, health pre-checks).
+4. Read Index API: add `LinearizableRead(ctx)` which issues ReadIndex barrier and waits for local commit.
+5. Persist Per-Bucket Commit: during apply, emit commit progress to a lightweight KV file (bucket -> last commit index) flushed periodically.
+
+### Phase 2: Performance & Efficiency
+6. Batching Layer: coalesce small application commands into single raft entry (wireRecord slice encoded) to reduce per-entry overhead.
+7. Adaptive Timeouts: measure RTT to majority; adjust election timeout window to reduce unnecessary elections under partitions.
+8. WAL Compression (optional): compress AppBytes in Envelope when > threshold; maintain CRC over uncompressed payload.
+9. Parallel Snapshot Build: create snapshots asynchronously to reduce Ready loop stall; apply with point-in-time fencing.
+10. Read Lease Optimization: once stable leader heartbeat tracking implemented, enable lease-based follower reads (optional flag).
+
+### Phase 3: Operational Robustness
+11. Metrics / Tracing: integrate OpenTelemetry spans for propose->commit latency; Prom metrics for queue depths.
+12. Alerting & Validation: periodic background validator comparing last N WAL entries and in-memory indices; escalate on mismatch.
+13. WAL Archival: ship pruned segments to cold storage before deletion when compliance flag enabled.
+14. Crash Recovery Tooling: offline verifier to rebuild raft state solely from WAL, compare hash to persisted snapshot.
+15. Security: mTLS transport, rotating certs, per-node identity verification.
+
+### Phase 4: Advanced Features
+16. Shard Rebalancing Assistance: use raft membership changes to move shard leadership proactively for load distribution.
+17. Quorum Group Reconfiguration Automation: auto replace unhealthy nodes after grace period.
+18. Multi-Raft Coordination: scheduling fairness across many shard raft groups (tick alignment, batching proposals across shards).
+19. Snapshot Delta Streaming: send incremental snapshot deltas rather than full images for large state.
+20. Pluggable Compression / Encryption: envelope-level transformations negotiated per cluster policy.
+
+### Phase 5: Primary WAL Cutover
+21. Harden WALPrimaryRead: enforce gap checks, reconstruct per-bucket commit map, verify deterministic re-marshalling invariants.
+22. Run dual-read in strict mode (panic on divergence) in staging.
+23. Enable primary read in canary; monitor metrics (commit latency, mismatch count = 0).
+24. Deprecate legacy persistence (entries.log) after multi-week clean run.
+
+## 12.1 Task Breakdown & Dependencies
+| Task | Depends On | Outputs |
+|------|------------|---------|
+| Transport Backoff | None | Stable reconnect, metrics |
+| Membership Orchestrator | Transport backoff | Safe add/remove API |
+| ReadIndex API | Stable election | Linearizable read primitive |
+| Commit Persistence | Apply pipeline stable | Restart reconstruction reliability |
+| Batching Layer | Commit persistence | Throughput uplift |
+| Metrics Suite | None | Observability baseline |
+| WALPrimaryRead Hardening | Commit persistence + validator strict | Production-ready unified log |
+
+## 12.2 Minimal Path to "Complete Replication"
+Definition: multi-node cluster with (a) linearizable writes & reads, (b) safe dynamic membership, (c) durable crash recovery from single WAL, (d) observability & basic performance.
+
+Minimal required tasks from roadmap:
+1. Membership Orchestrator
+2. ReadIndex API
+3. Commit Persistence (replayable)
+4. WALPrimaryRead Hardening (gap checks + commit reconstruction)
+5. Transport Backoff & Peer Health Metrics
+6. Metrics Suite (proposals, commits, leader changes)
+7. Validator Strict Mode in CI
+
+Stretch (adds performance & operational niceties): batching, adaptive timeouts, leader transfer, snapshot parallelism.
+
+## 13. Glossary
 ## 12. Operational Guidance
 - Enable shadow WAL (`EnableWALShadow`) early to accumulate history even before cutover.
 - Keep `WALStrictSync` off in dev unless testing durability cost profile.
@@ -233,4 +347,4 @@ TestDeterministicClock clock.Clock (tests)
 ```
 
 ---
-Generated documentation reflects repository state as of current passing tests. Keep this file updated with each major replication or WAL change.
+Generated documentation reflects repository state as of current passing tests. Keep this file updated with each major replication or WAL change. (Updated Oct 2025)
