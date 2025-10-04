@@ -84,7 +84,7 @@ type DiceDBConfig struct {
 	RaftListenAddr               string   `mapstructure:"raft-listen-addr" default:":7090" description:"address host:port for local raft gRPC server to listen on"`
 	RaftAdvertiseAddr            string   `mapstructure:"raft-advertise-addr" description:"public address host:port other peers use to reach this node; defaults to raft-listen-addr if empty"`
 
-	StatusFilePath               string   `mapstructure:"status-file-path" description:"optional explicit path for periodic raft status JSON (status.json). If set, writer uses only this path"`
+	StatusFilePath string `mapstructure:"status-file-path" description:"optional explicit path for periodic raft status JSON (status.json). If set, writer uses only this path"`
 }
 
 func Load(flags *pflag.FlagSet) {
@@ -213,16 +213,16 @@ func InitConfig(flags *pflag.FlagSet) {
 // configureMetadataDir creates the default metadata directory to be used
 // for DiceDB metadataother persistent data
 func configureMetadataDir() {
-    // If MetadataDir is not an absolute path, anchor it to current working directory.
-    if !filepath.IsAbs(MetadataDir) {
-        cwd, _ := os.Getwd()
-        MetadataDir = filepath.Join(cwd, MetadataDir)
-    }
-    if err := os.MkdirAll(MetadataDir, 0o700); err != nil {
-        fmt.Printf("could not create metadata directory at %s. error: %s\n", MetadataDir, err)
-        fmt.Println("using current directory as metadata directory")
-        MetadataDir = "."
-    }
+	// If MetadataDir is not an absolute path, anchor it to current working directory.
+	if !filepath.IsAbs(MetadataDir) {
+		cwd, _ := os.Getwd()
+		MetadataDir = filepath.Join(cwd, MetadataDir)
+	}
+	if err := os.MkdirAll(MetadataDir, 0o700); err != nil {
+		fmt.Printf("could not create metadata directory at %s. error: %s\n", MetadataDir, err)
+		fmt.Println("using current directory as metadata directory")
+		MetadataDir = "."
+	}
 }
 
 func initDefaultConfig() *DiceDBConfig {

@@ -44,7 +44,9 @@ func init() {
 				if defaultTag != "" {
 					for _, seg := range strings.Split(defaultTag, ",") {
 						trim := strings.TrimSpace(seg)
-						if trim != "" { defVal = append(defVal, trim) }
+						if trim != "" {
+							defVal = append(defVal, trim)
+						}
 					}
 				}
 				if len(defVal) == 0 {
@@ -58,11 +60,10 @@ func init() {
 	}
 }
 
-
 var rootCmd = &cobra.Command{
-	Use:   "sevendb",
+	Use:     "sevendb",
 	Aliases: []string{"dicedb"}, // backward compatibility
-	Short: "SevenDB - an in-memory database;",
+	Short:   "SevenDB - an in-memory database;",
 	Run: func(cmd *cobra.Command, args []string) {
 		config.Load(cmd.Flags())
 		slog.SetDefault(logger.New())

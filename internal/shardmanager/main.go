@@ -25,8 +25,8 @@ import (
 )
 
 type ShardManager struct {
-	shards      []*shard.Shard
-	sigChan     chan os.Signal // sigChan is the signal channel for the shard manager
+	shards  []*shard.Shard
+	sigChan chan os.Signal // sigChan is the signal channel for the shard manager
 	// raftNodes (optional) holds one ShardRaftNode per shard when raft is enabled.
 	raftNodes   []*raft.ShardRaftNode
 	raftSrv     *raft.RaftGRPCServer
@@ -59,7 +59,9 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 			if err != nil {
 				slog.Error("raft peer parse failed", slog.Any("error", err))
 			} else {
-				if config.Config.RaftAdvertiseAddr == "" { config.Config.RaftAdvertiseAddr = config.Config.RaftListenAddr }
+				if config.Config.RaftAdvertiseAddr == "" {
+					config.Config.RaftAdvertiseAddr = config.Config.RaftListenAddr
+				}
 				localID, derr := raft.DetermineLocalID(config.Config.RaftNodeID, config.Config.RaftAdvertiseAddr, peerMap)
 				if derr != nil {
 					slog.Error("raft local id determination failed", slog.Any("error", derr))
@@ -87,12 +89,20 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 		// Early best-effort initial status write (honors explicit status-file-path if provided)
 		func() {
 			defer func() { _ = recover() }()
-			snaps := sm.RaftStatusSnapshots(); payload := map[string]interface{}{"ts_unix": time.Now().Unix(), "nodes": snaps}
+			snaps := sm.RaftStatusSnapshots()
+			payload := map[string]interface{}{"ts_unix": time.Now().Unix(), "nodes": snaps}
 			b, err := json.MarshalIndent(payload, "", "  ")
-			if err != nil { return }
+			if err != nil {
+				return
+			}
 			var primary string
-			if config.Config.StatusFilePath != "" { primary = config.Config.StatusFilePath } else { primary = filepath.Join(config.MetadataDir, "status.json") }
-			tmp := primary + ".tmp"; if err := os.WriteFile(tmp, b, 0o600); err == nil {
+			if config.Config.StatusFilePath != "" {
+				primary = config.Config.StatusFilePath
+			} else {
+				primary = filepath.Join(config.MetadataDir, "status.json")
+			}
+			tmp := primary + ".tmp"
+			if err := os.WriteFile(tmp, b, 0o600); err == nil {
 				if err := os.Rename(tmp, primary); err != nil {
 					slog.Error("initial status file rename failed", slog.String("tmp", tmp), slog.String("dest", primary), slog.Any("error", err))
 				} else {
@@ -102,7 +112,12 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 				slog.Error("initial status file write failed", slog.String("path", primary), slog.Any("error", err))
 			}
 			if config.Config.StatusFilePath == "" { // also write alt only when not explicit
-				cwd, _ := os.Getwd(); alt := filepath.Join(cwd, "status.json"); tmpAlt := alt + ".tmp"; if err := os.WriteFile(tmpAlt, b, 0o600); err == nil { _ = os.Rename(tmpAlt, alt) }
+				cwd, _ := os.Getwd()
+				alt := filepath.Join(cwd, "status.json")
+				tmpAlt := alt + ".tmp"
+				if err := os.WriteFile(tmpAlt, b, 0o600); err == nil {
+					_ = os.Rename(tmpAlt, alt)
+				}
 			}
 		}()
 	}
@@ -122,7 +137,9 @@ func (manager *ShardManager) Run(ctx context.Context) {
 		resolverAddrs := make(map[uint64]string)
 		if len(config.Config.RaftNodes) > 0 {
 			pm, _, err := raft.ParsePeerSpecs(config.Config.RaftNodes)
-			if err == nil { resolverAddrs = pm }
+			if err == nil {
+				resolverAddrs = pm
+			}
 		}
 		if len(resolverAddrs) == 0 { // single node fallback
 			resolverAddrs[manager.localRaftID] = config.Config.RaftAdvertiseAddr
@@ -131,7 +148,11 @@ func (manager *ShardManager) Run(ctx context.Context) {
 		// Register shards in server
 		if len(resolverAddrs) > 1 { // only run server if multi-node
 			manager.raftSrv = raft.NewRaftGRPCServer(manager.localRaftID)
-			for _, rn := range manager.raftNodes { if rn != nil { manager.raftSrv.RegisterShard(rn.ShardID(), rn) } }
+			for _, rn := range manager.raftNodes {
+				if rn != nil {
+					manager.raftSrv.RegisterShard(rn.ShardID(), rn)
+				}
+			}
 			go func() {
 				if err := manager.raftSrv.Serve(config.Config.RaftListenAddr); err != nil {
 					slog.Error("raft grpc server exited", slog.Any("error", err))
@@ -140,7 +161,9 @@ func (manager *ShardManager) Run(ctx context.Context) {
 		}
 		// Attach transports
 		for _, rn := range manager.raftNodes {
-			if rn == nil { continue }
+			if rn == nil {
+				continue
+			}
 			gt := raft.NewGRPCTransport(manager.localRaftID, rn.ShardID(), resolver)
 			rn.SetTransport(gt)
 			go gt.Start(shardCtx)
@@ -171,7 +194,10 @@ func (manager *ShardManager) Run(ctx context.Context) {
 				snaps := manager.RaftStatusSnapshots()
 				payload := map[string]interface{}{"ts_unix": time.Now().Unix(), "nodes": snaps}
 				b, err := json.MarshalIndent(payload, "", "  ")
-				if err != nil { slog.Debug("status marshal failed", slog.Any("error", err)); return }
+				if err != nil {
+					slog.Debug("status marshal failed", slog.Any("error", err))
+					return
+				}
 				// primary (explicit or metadata)
 				tmp := statusPath + ".tmp"
 				if err := os.WriteFile(tmp, b, 0o600); err != nil {
@@ -183,7 +209,8 @@ func (manager *ShardManager) Run(ctx context.Context) {
 						// success log includes first shard indexes for quick debugging
 						if len(snaps) > 0 {
 							if m, ok := snaps[0].(map[string]interface{}); ok {
-								la := m["last_applied_index"]; ls := m["last_snapshot_index"]
+								la := m["last_applied_index"]
+								ls := m["last_snapshot_index"]
 								slog.Debug("status write ok", slog.String("path", statusPath), slog.Int("bytes", len(b)), slog.Any("applied", la), slog.Any("snapshot", ls))
 							}
 						}
@@ -194,7 +221,11 @@ func (manager *ShardManager) Run(ctx context.Context) {
 					tmpAlt := altPath + ".tmp"
 					if err := os.WriteFile(tmpAlt, b, 0o600); err != nil {
 						slog.Error("status alt write failed", slog.String("path", altPath), slog.Any("error", err))
-					} else { if err := os.Rename(tmpAlt, altPath); err != nil { slog.Error("status alt rename failed", slog.String("tmp", tmpAlt), slog.String("dest", altPath), slog.Any("error", err)) } }
+					} else {
+						if err := os.Rename(tmpAlt, altPath); err != nil {
+							slog.Error("status alt rename failed", slog.String("tmp", tmpAlt), slog.String("dest", altPath), slog.Any("error", err))
+						}
+					}
 				}
 			}
 			// Immediate first write
@@ -211,7 +242,9 @@ func (manager *ShardManager) Run(ctx context.Context) {
 					func() {
 						defer func() { _ = recover() }()
 						snaps := manager.RaftStatusSnapshots()
-						if len(snaps) == 0 { return }
+						if len(snaps) == 0 {
+							return
+						}
 						// use only first shard snapshot for concise leader/apply view
 						if first, ok := snaps[0].(interface{}); ok {
 							b, err := json.Marshal(first)
@@ -278,14 +311,16 @@ func (manager *ShardManager) BucketLogFor(shardIdx int) bucket.BucketLog {
 
 // RaftStatusSnapshots returns a slice of raft.StatusSnapshot for each shard raft node (if enabled).
 func (manager *ShardManager) RaftStatusSnapshots() []interface{} { // using interface{} to avoid import cycle; CLI marshals raw
-    if manager == nil || manager.raftNodes == nil {
-        return nil
-    }
-    out := make([]interface{}, 0, len(manager.raftNodes))
-    for _, rn := range manager.raftNodes {
-        if rn == nil { continue }
-        snap := rn.Status() // StatusSnapshot is a plain struct
-        out = append(out, snap)
-    }
-    return out
+	if manager == nil || manager.raftNodes == nil {
+		return nil
+	}
+	out := make([]interface{}, 0, len(manager.raftNodes))
+	for _, rn := range manager.raftNodes {
+		if rn == nil {
+			continue
+		}
+		snap := rn.Status() // StatusSnapshot is a plain struct
+		out = append(out, snap)
+	}
+	return out
 }

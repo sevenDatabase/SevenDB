@@ -7,26 +7,26 @@ package raft
 // will plug in a concrete implementation behind ShardRaftNode.
 
 import (
-    "context"
-    "encoding/json"
-    "errors"
-    "fmt"
-    "hash/crc32"
-    "log/slog"
-    "os"
-    "path/filepath"
-    "strconv"
-    "sync"
-    "sync/atomic"
-    "time"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"hash/crc32"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
 
-    "github.com/sevenDatabase/SevenDB/config"
-    "github.com/sevenDatabase/SevenDB/internal/raftwal"
+	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/sevenDatabase/SevenDB/internal/harness/clock"
-    "google.golang.org/protobuf/proto"
+	"github.com/sevenDatabase/SevenDB/internal/raftwal"
+	"google.golang.org/protobuf/proto"
 
-    etcdraft "go.etcd.io/etcd/raft/v3"
-    "go.etcd.io/etcd/raft/v3/raftpb"
+	etcdraft "go.etcd.io/etcd/raft/v3"
+	"go.etcd.io/etcd/raft/v3/raftpb"
 )
 
 // RaftLogRecord is the logical unit proposed to the shard raft group.
@@ -43,14 +43,14 @@ type RaftLogRecord struct {
 // a RaftLogRecord when Type == RaftRecordTypeAppCommand. This was previously
 // defined elsewhere; reintroducing here after import cleanup.
 type ReplicationPayload struct {
-    Version int      `json:"v"`
-    Cmd     string   `json:"cmd"`
-    Args    []string `json:"args"`
+	Version int      `json:"v"`
+	Cmd     string   `json:"cmd"`
+	Args    []string `json:"args"`
 }
 
 // Raft record type constants.
 const (
-    RaftRecordTypeAppCommand = 1001 // application command replication
+	RaftRecordTypeAppCommand = 1001 // application command replication
 )
 
 // Raft record Type values reserved for higher-level application semantics.
@@ -63,7 +63,9 @@ const (
 func BuildReplicationRecord(bucketID string, cmd string, args []string) (*RaftLogRecord, error) {
 	pl := &ReplicationPayload{Version: 1, Cmd: cmd, Args: args}
 	b, err := json.Marshal(pl)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	return &RaftLogRecord{BucketID: bucketID, Type: RaftRecordTypeAppCommand, Payload: b}, nil
 }
 
@@ -79,8 +81,15 @@ type CommittedRecord struct {
 
 // ErrNotLeader is returned when a proposal is attempted on a follower.
 // NotLeaderError provides leader hint for clients to redirect proposals.
-type NotLeaderError struct { LeaderID string }
-func (e *NotLeaderError) Error() string { if e.LeaderID == "" { return "raft: not leader" }; return "raft: not leader (leader="+e.LeaderID+")" }
+type NotLeaderError struct{ LeaderID string }
+
+func (e *NotLeaderError) Error() string {
+	if e.LeaderID == "" {
+		return "raft: not leader"
+	}
+	return "raft: not leader (leader=" + e.LeaderID + ")"
+}
+
 var ErrNotLeader = &NotLeaderError{}
 var ErrNodeClosed = errors.New("raft: node closed")
 var ErrProposalAborted = errors.New("raft: proposal aborted")
@@ -127,8 +136,12 @@ type ShardRaftNode struct {
 	// persistence (etcd engine only)
 	persist *raftPersistence
 	// shadow unified WAL (optional during migration). We keep interface minimal for testability.
-	walShadow    interface{ AppendEnvelope(uint64, []byte) error; AppendHardState(uint64, []byte) error; Sync() error }
-	walValidator *walValidator
+	walShadow interface {
+		AppendEnvelope(uint64, []byte) error
+		AppendHardState(uint64, []byte) error
+		Sync() error
+	}
+	walValidator        *walValidator
 	walDualReadValidate bool
 	// lastShadowHardState is accessed from processReady (background goroutine) and
 	// initialization/replay path; guard with mu to avoid data races under -race.
@@ -164,28 +177,48 @@ type ShardRaftNode struct {
 // ValidateShadowTail compares in-memory validator CRCs (if enabled) with the tail of shadow WAL.
 // Returns nil if they match (prefix-match acceptable if WAL longer), or error describing first mismatch.
 func (s *ShardRaftNode) ValidateShadowTail() error {
-	if s.walValidator == nil || s.walShadow == nil { return nil }
+	if s.walValidator == nil || s.walShadow == nil {
+		return nil
+	}
 	type dirGetter interface{ Dir() string }
-	dg, ok := s.walShadow.(dirGetter); if !ok { return nil }
+	dg, ok := s.walShadow.(dirGetter)
+	if !ok {
+		return nil
+	}
 	type syncer interface{ Sync() error }
-	if sy, ok := s.walShadow.(syncer); ok { _ = sy.Sync() }
+	if sy, ok := s.walShadow.(syncer); ok {
+		_ = sy.Sync()
+	}
 	walDir := dg.Dir()
 	ring := s.walValidator.snapshot()
-	if len(ring) == 0 { return nil }
+	if len(ring) == 0 {
+		return nil
+	}
 	tuples, err := raftwal.TailLogicalTuples(walDir, len(ring))
-	if err != nil { return err }
-	if len(tuples) != len(ring) { return fmt.Errorf("validator: length mismatch wal=%d ring=%d", len(tuples), len(ring)) }
-	for i:=0; i<len(ring); i++ {
+	if err != nil {
+		return err
+	}
+	if len(tuples) != len(ring) {
+		return fmt.Errorf("validator: length mismatch wal=%d ring=%d", len(tuples), len(ring))
+	}
+	for i := 0; i < len(ring); i++ {
 		if ring[i].index != tuples[i].Index || ring[i].crc != tuples[i].CRC {
-			limit := 10; if len(ring) < limit { limit = len(ring) }
+			limit := 10
+			if len(ring) < limit {
+				limit = len(ring)
+			}
 			var ringHead, walHead string
-			for j:=0; j<limit; j++ { ringHead += fmt.Sprintf("%02d:%d:%08x ", j, ring[j].index, ring[j].crc) }
-			for j:=0; j<limit; j++ { walHead += fmt.Sprintf("%02d:%d:%08x ", j, tuples[j].Index, tuples[j].CRC) }
+			for j := 0; j < limit; j++ {
+				ringHead += fmt.Sprintf("%02d:%d:%08x ", j, ring[j].index, ring[j].crc)
+			}
+			for j := 0; j < limit; j++ {
+				walHead += fmt.Sprintf("%02d:%d:%08x ", j, tuples[j].Index, tuples[j].CRC)
+			}
 			return fmt.Errorf("validator: mismatch at pos %d ring=(idx=%d crc=%08x) wal=(idx=%d crc=%08x) ring_head=[%s] wal_head=[%s]", i, ring[i].index, ring[i].crc, tuples[i].Index, tuples[i].CRC, ringHead, walHead)
 		}
 	}
 	return nil
-	}
+}
 func (s *ShardRaftNode) SetReplicationHandler(handler func(*ReplicationPayload) error, strict bool) {
 	s.replicationHandler = handler
 	s.replicationStrict = strict
@@ -194,7 +227,9 @@ func (s *ShardRaftNode) SetReplicationHandler(handler func(*ReplicationPayload) 
 // invokeReplicationHandler centralizes decoding & error policy for application
 // command entries.
 func (s *ShardRaftNode) invokeReplicationHandler(rec *RaftLogRecord) {
-	if rec == nil || rec.Type != RaftRecordTypeAppCommand || s.replicationHandler == nil || len(rec.Payload) == 0 { return }
+	if rec == nil || rec.Type != RaftRecordTypeAppCommand || s.replicationHandler == nil || len(rec.Payload) == 0 {
+		return
+	}
 	var pl ReplicationPayload
 	if err := json.Unmarshal(rec.Payload, &pl); err != nil {
 		slog.Warn("replication payload decode failed", slog.String("shard", s.shardID), slog.Any("error", err))
@@ -211,26 +246,31 @@ func (s *ShardRaftNode) invokeReplicationHandler(rec *RaftLogRecord) {
 
 // StatusSnapshot is a lightweight snapshot of raft node state for observability.
 type StatusSnapshot struct {
-	ShardID              string            `json:"shard_id"`
-	LeaderID             string            `json:"leader_id"`
-	IsLeader             bool              `json:"is_leader"`
-	LastAppliedIndex     uint64            `json:"last_applied_index"`
-	LastSnapshotIndex    uint64            `json:"last_snapshot_index"`
-	CommittedSinceSnap   int               `json:"committed_since_snapshot"`
-	PerBucketCommit      map[string]uint64 `json:"per_bucket_commit"`
-	PrunedThroughIndex   uint64            `json:"pruned_through_index"`
-	TransportPeersTotal  int               `json:"transport_peers_total"`
-	TransportPeersConnected int            `json:"transport_peers_connected"`
+	ShardID                 string            `json:"shard_id"`
+	LeaderID                string            `json:"leader_id"`
+	IsLeader                bool              `json:"is_leader"`
+	LastAppliedIndex        uint64            `json:"last_applied_index"`
+	LastSnapshotIndex       uint64            `json:"last_snapshot_index"`
+	CommittedSinceSnap      int               `json:"committed_since_snapshot"`
+	PerBucketCommit         map[string]uint64 `json:"per_bucket_commit"`
+	PrunedThroughIndex      uint64            `json:"pruned_through_index"`
+	TransportPeersTotal     int               `json:"transport_peers_total"`
+	TransportPeersConnected int               `json:"transport_peers_connected"`
 }
 
 // Status returns an immutable snapshot of internal counters useful for debug/metrics.
 func (s *ShardRaftNode) Status() StatusSnapshot {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	copyMap := make(map[string]uint64, len(s.perBucketCommit))
-	for k, v := range s.perBucketCommit { copyMap[k] = v }
+	for k, v := range s.perBucketCommit {
+		copyMap[k] = v
+	}
 	ss := StatusSnapshot{ShardID: s.shardID, LeaderID: s.LeaderID(), IsLeader: s.IsLeader(), LastAppliedIndex: s.lastAppliedIndex, LastSnapshotIndex: s.lastSnapshotIndex, CommittedSinceSnap: s.committedSinceSnap, PerBucketCommit: copyMap, PrunedThroughIndex: s.prunedThroughIndex}
 	if gt, ok := s.transport.(*GRPCTransport); ok && gt != nil {
-		ps := gt.Stats(); ss.TransportPeersTotal = ps.Total; ss.TransportPeersConnected = ps.Connected
+		ps := gt.Stats()
+		ss.TransportPeersTotal = ps.Total
+		ss.TransportPeersConnected = ps.Connected
 	}
 	return ss
 }
@@ -243,22 +283,36 @@ type Transport interface {
 
 // noopTransport satisfies Transport for single-node or tests where we ignore outbound messages.
 type noopTransport struct{}
+
 func (n *noopTransport) Send(ctx context.Context, msgs []raftpb.Message) {}
 
 // etcdLoggerAdapter adapts slog to etcd/raft Logger interface (fmt-like methods).
 type etcdLoggerAdapter struct{}
-func (l *etcdLoggerAdapter) Debug(args ...interface{})                 { slog.Debug(fmt.Sprint(args...)) }
-func (l *etcdLoggerAdapter) Debugf(format string, args ...interface{}) { slog.Debug(fmt.Sprintf(format, args...)) }
-func (l *etcdLoggerAdapter) Info(args ...interface{})                  { slog.Info(fmt.Sprint(args...)) }
-func (l *etcdLoggerAdapter) Infof(format string, args ...interface{})  { slog.Info(fmt.Sprintf(format, args...)) }
-func (l *etcdLoggerAdapter) Warning(args ...interface{})               { slog.Warn(fmt.Sprint(args...)) }
-func (l *etcdLoggerAdapter) Warningf(format string, args ...interface{}) { slog.Warn(fmt.Sprintf(format, args...)) }
-func (l *etcdLoggerAdapter) Error(args ...interface{})                 { slog.Error(fmt.Sprint(args...)) }
-func (l *etcdLoggerAdapter) Errorf(format string, args ...interface{}) { slog.Error(fmt.Sprintf(format, args...)) }
-func (l *etcdLoggerAdapter) Fatal(args ...interface{})                 { slog.Error(fmt.Sprint(args...)) }
-func (l *etcdLoggerAdapter) Fatalf(format string, args ...interface{}) { slog.Error(fmt.Sprintf(format, args...)) }
-func (l *etcdLoggerAdapter) Panic(args ...interface{})                 { slog.Error(fmt.Sprint(args...)) }
-func (l *etcdLoggerAdapter) Panicf(format string, args ...interface{}) { slog.Error(fmt.Sprintf(format, args...)) }
+
+func (l *etcdLoggerAdapter) Debug(args ...interface{}) { slog.Debug(fmt.Sprint(args...)) }
+func (l *etcdLoggerAdapter) Debugf(format string, args ...interface{}) {
+	slog.Debug(fmt.Sprintf(format, args...))
+}
+func (l *etcdLoggerAdapter) Info(args ...interface{}) { slog.Info(fmt.Sprint(args...)) }
+func (l *etcdLoggerAdapter) Infof(format string, args ...interface{}) {
+	slog.Info(fmt.Sprintf(format, args...))
+}
+func (l *etcdLoggerAdapter) Warning(args ...interface{}) { slog.Warn(fmt.Sprint(args...)) }
+func (l *etcdLoggerAdapter) Warningf(format string, args ...interface{}) {
+	slog.Warn(fmt.Sprintf(format, args...))
+}
+func (l *etcdLoggerAdapter) Error(args ...interface{}) { slog.Error(fmt.Sprint(args...)) }
+func (l *etcdLoggerAdapter) Errorf(format string, args ...interface{}) {
+	slog.Error(fmt.Sprintf(format, args...))
+}
+func (l *etcdLoggerAdapter) Fatal(args ...interface{}) { slog.Error(fmt.Sprint(args...)) }
+func (l *etcdLoggerAdapter) Fatalf(format string, args ...interface{}) {
+	slog.Error(fmt.Sprintf(format, args...))
+}
+func (l *etcdLoggerAdapter) Panic(args ...interface{}) { slog.Error(fmt.Sprint(args...)) }
+func (l *etcdLoggerAdapter) Panicf(format string, args ...interface{}) {
+	slog.Error(fmt.Sprintf(format, args...))
+}
 
 // walValidator (tuple-based) tracks last N (raftIndex, crc32(payload)) for deterministic ordering.
 type walValidator struct {
@@ -269,35 +323,66 @@ type walValidator struct {
 	count int
 }
 
-type walValTuple struct { index uint64; crc uint32; opcode uint32; sequence uint64; bucket string }
+type walValTuple struct {
+	index    uint64
+	crc      uint32
+	opcode   uint32
+	sequence uint64
+	bucket   string
+}
 
-func newWalValidator(n int) *walValidator { if n <= 0 { return nil }; return &walValidator{lastN: n, ring: make([]walValTuple, n)} }
+func newWalValidator(n int) *walValidator {
+	if n <= 0 {
+		return nil
+	}
+	return &walValidator{lastN: n, ring: make([]walValTuple, n)}
+}
 
 func (v *walValidator) addTuple(index uint64, payload []byte) {
-	if v == nil { return }
+	if v == nil {
+		return
+	}
 	crc := crc32.ChecksumIEEE(payload)
 	v.mu.Lock()
 	v.ring[v.idx] = walValTuple{index: index, crc: crc}
 	v.idx = (v.idx + 1) % v.lastN
-	if v.count < v.lastN { v.count++ }
+	if v.count < v.lastN {
+		v.count++
+	}
 	v.mu.Unlock()
 }
 
 func (v *walValidator) snapshot() []walValTuple {
-	if v == nil { return nil }
-	v.mu.Lock(); defer v.mu.Unlock()
-	if v.count == 0 { return nil }
+	if v == nil {
+		return nil
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.count == 0 {
+		return nil
+	}
 	out := make([]walValTuple, 0, v.count)
 	start := (v.idx - v.count + v.lastN) % v.lastN
-	for i:=0; i<v.count; i++ { out = append(out, v.ring[(start+i)%v.lastN]) }
+	for i := 0; i < v.count; i++ {
+		out = append(out, v.ring[(start+i)%v.lastN])
+	}
 	return out
 }
 
-func (v *walValidator) seedTuples(tuples []struct{Index uint64; CRC uint32}) {
-	if v == nil || len(tuples) == 0 { return }
+func (v *walValidator) seedTuples(tuples []struct {
+	Index uint64
+	CRC   uint32
+}) {
+	if v == nil || len(tuples) == 0 {
+		return
+	}
 	v.mu.Lock()
-	if len(tuples) > v.lastN { tuples = tuples[len(tuples)-v.lastN:] }
-	for i, t := range tuples { v.ring[i] = walValTuple{index: t.Index, crc: t.CRC} }
+	if len(tuples) > v.lastN {
+		tuples = tuples[len(tuples)-v.lastN:]
+	}
+	for i, t := range tuples {
+		v.ring[i] = walValTuple{index: t.Index, crc: t.CRC}
+	}
 	v.count = len(tuples)
 	v.idx = v.count % v.lastN
 	v.mu.Unlock()
@@ -320,8 +405,8 @@ type RaftConfig struct {
 	WALShadowDir    string // override directory (default DataDir/raftwal)
 	ValidatorLastN  int    // if >0 track last N entries for parity validation
 	// WAL tuning & test knobs
-	WALSegmentMaxBytes int64 // override default 64MiB segment size (<=0 keeps default)
-	WALForceRotateEvery int  // if >0 force rotation after every N appends (test only)
+	WALSegmentMaxBytes  int64 // override default 64MiB segment size (<=0 keeps default)
+	WALForceRotateEvery int   // if >0 force rotation after every N appends (test only)
 	// WALStrictSync if true enables strict sync mode on the shadow WAL writer (fsync each append).
 	WALStrictSync bool
 	// WALPrimaryRead if true (experimental) seeds in-memory raft storage from the unified WAL
@@ -345,17 +430,19 @@ func NewShardRaftNode(cfg RaftConfig) (*ShardRaftNode, error) {
 		engine = "stub"
 	}
 	s := &ShardRaftNode{
-		shardID:         cfg.ShardID,
-		committedCh:     make(chan *CommittedRecord, 1024),
-		waiters:         make(map[uint64]chan *ProposalResult),
-		perBucketCommit: make(map[string]uint64),
-		engine:          engine,
-		waitersSeq:      make(map[uint64]chan *ProposalResult),
+		shardID:          cfg.ShardID,
+		committedCh:      make(chan *CommittedRecord, 1024),
+		waiters:          make(map[uint64]chan *ProposalResult),
+		perBucketCommit:  make(map[string]uint64),
+		engine:           engine,
+		waitersSeq:       make(map[uint64]chan *ProposalResult),
 		forwardProposals: cfg.ForwardProposals,
 		manual:           cfg.Manual,
 	}
-    // Inject deterministic clock (tests) before launching loops.
-    if cfg.TestDeterministicClock != nil { s.clk = cfg.TestDeterministicClock }
+	// Inject deterministic clock (tests) before launching loops.
+	if cfg.TestDeterministicClock != nil {
+		s.clk = cfg.TestDeterministicClock
+	}
 	if engine == "etcd" {
 		if err := s.initEtcd(cfg); err != nil {
 			return nil, err
@@ -373,7 +460,9 @@ func (s *ShardRaftNode) IsLeader() bool {
 }
 
 func (s *ShardRaftNode) LeaderID() string {
-	if s.engine == "etcd" && s.rn != nil { return strconv.FormatUint(uint64(s.rn.Status().Lead), 10) }
+	if s.engine == "etcd" && s.rn != nil {
+		return strconv.FormatUint(uint64(s.rn.Status().Lead), 10)
+	}
 	return "stub"
 }
 
@@ -382,7 +471,9 @@ func (s *ShardRaftNode) ShardID() string { return s.shardID }
 
 // Step injects an incoming raft message (used by transport) into the raft state machine.
 func (s *ShardRaftNode) Step(ctx context.Context, m raftpb.Message) error {
-	if s.engine == "etcd" && s.rn != nil { return s.rn.Step(ctx, m) }
+	if s.engine == "etcd" && s.rn != nil {
+		return s.rn.Step(ctx, m)
+	}
 	return nil
 }
 
@@ -393,21 +484,32 @@ func (s *ShardRaftNode) SetTransport(t Transport) {
 
 // Propose submits a record asynchronously.
 func (s *ShardRaftNode) Propose(ctx context.Context, rec *RaftLogRecord) (uint64, error) {
-	if rec == nil { return 0, errors.New("nil raft record") }
+	if rec == nil {
+		return 0, errors.New("nil raft record")
+	}
 	if s.engine == "etcd" && s.rn != nil && !s.IsLeader() {
-		if s.forwardProposals { return 0, &NotLeaderError{LeaderID: s.LeaderID()} }
+		if s.forwardProposals {
+			return 0, &NotLeaderError{LeaderID: s.LeaderID()}
+		}
 		return 0, &NotLeaderError{LeaderID: s.LeaderID()}
 	}
 	if s.engine == "etcd" && s.rn != nil {
 		seq := atomic.AddUint64(&s.nextSeq, 1)
 		wr := wireRecord{Seq: seq, BucketID: rec.BucketID, Type: rec.Type, Payload: rec.Payload}
 		data, err := json.Marshal(&wr)
-		if err != nil { return 0, err }
-		if err = s.rn.Propose(ctx, data); err != nil { return 0, err }
+		if err != nil {
+			return 0, err
+		}
+		if err = s.rn.Propose(ctx, data); err != nil {
+			return 0, err
+		}
 		return 0, nil
 	}
 	s.mu.Lock()
-	if s.closed { s.mu.Unlock(); return 0, errors.New("raft: node closed") }
+	if s.closed {
+		s.mu.Unlock()
+		return 0, errors.New("raft: node closed")
+	}
 	s.nextRaftIndex++
 	idx := s.nextRaftIndex
 	s.mu.Unlock()
@@ -436,8 +538,12 @@ func (s *ShardRaftNode) ProposeAndWait(ctx context.Context, rec *RaftLogRecord) 
 			s.mu.Unlock()
 			return 0, 0, errors.New("raft: node closed")
 		}
-		if s.waitersSeq == nil { s.waitersSeq = make(map[uint64]chan *ProposalResult) }
-		if s.waitersSeq == nil { s.waitersSeq = make(map[uint64]chan *ProposalResult) }
+		if s.waitersSeq == nil {
+			s.waitersSeq = make(map[uint64]chan *ProposalResult)
+		}
+		if s.waitersSeq == nil {
+			s.waitersSeq = make(map[uint64]chan *ProposalResult)
+		}
 		s.waitersSeq[seq] = ch
 		s.mu.Unlock()
 		wr := wireRecord{Seq: seq, BucketID: rec.BucketID, Type: rec.Type, Payload: rec.Payload}
@@ -452,7 +558,9 @@ func (s *ShardRaftNode) ProposeAndWait(ctx context.Context, rec *RaftLogRecord) 
 		case <-ctx.Done():
 			return 0, 0, ctx.Err()
 		case res := <-ch:
-			if res == nil { return 0, 0, ErrProposalAborted }
+			if res == nil {
+				return 0, 0, ErrProposalAborted
+			}
 			return res.CommitIndex, res.RaftIndex, nil
 		}
 	}
@@ -462,7 +570,9 @@ func (s *ShardRaftNode) ProposeAndWait(ctx context.Context, rec *RaftLogRecord) 
 		s.mu.Unlock()
 		return 0, 0, errors.New("raft: node closed")
 	}
-	if s.waiters == nil { s.waiters = make(map[uint64]chan *ProposalResult) }
+	if s.waiters == nil {
+		s.waiters = make(map[uint64]chan *ProposalResult)
+	}
 	s.nextRaftIndex++
 	idx := s.nextRaftIndex
 	s.waiters[idx] = ch
@@ -472,7 +582,9 @@ func (s *ShardRaftNode) ProposeAndWait(ctx context.Context, rec *RaftLogRecord) 
 	case <-ctx.Done():
 		return 0, 0, ctx.Err()
 	case res := <-ch:
-		if res == nil { return 0, 0, ErrProposalAborted }
+		if res == nil {
+			return 0, 0, ErrProposalAborted
+		}
 		return res.CommitIndex, res.RaftIndex, nil
 	}
 }
@@ -492,8 +604,12 @@ func (s *ShardRaftNode) apply(raftIndex uint64, rec *RaftLogRecord) {
 	}
 	// Defensive: some tests inject placeholder nodes (e.g. failover replacing crashed leader)
 	// without using NewShardRaftNode, so maps can be nil. Initialize lazily to avoid panics.
-	if s.perBucketCommit == nil { s.perBucketCommit = make(map[string]uint64) }
-	if s.waiters == nil { s.waiters = make(map[uint64]chan *ProposalResult) }
+	if s.perBucketCommit == nil {
+		s.perBucketCommit = make(map[string]uint64)
+	}
+	if s.waiters == nil {
+		s.waiters = make(map[uint64]chan *ProposalResult)
+	}
 	// Assign per-bucket commit index
 	s.perBucketCommit[rec.BucketID]++
 	commitIdx := s.perBucketCommit[rec.BucketID]
@@ -519,24 +635,45 @@ func (s *ShardRaftNode) apply(raftIndex uint64, rec *RaftLogRecord) {
 
 // Close shuts down the shard node (stub). It prevents new proposals and closes channels after draining.
 func (s *ShardRaftNode) Close() error {
-    s.mu.Lock()
-    if s.closed { s.mu.Unlock(); return nil }
-    s.closed = true
-    var walShadowClose func() error
-    if s.walShadow != nil { if c, ok := s.walShadow.(interface{ Close() error }); ok { walShadowClose = c.Close } }
-    waiters := s.waiters; s.waiters = map[uint64]chan *ProposalResult{}
-    waitersSeq := s.waitersSeq; s.waitersSeq = map[uint64]chan *ProposalResult{}
-    if s.engine == "etcd" && s.stopCh != nil { close(s.stopCh) }
-    var rn etcdraft.Node
-    if s.engine == "etcd" && s.rn != nil { rn = s.rn }
-    s.mu.Unlock()
-    if rn != nil { rn.Stop() } // unblock Ready()
-    s.wg.Wait()
-    close(s.committedCh)
-    for _, ch := range waiters { func(c chan *ProposalResult){ defer func(){ recover() }(); c <- nil; close(c) }(ch) }
-    for _, ch := range waitersSeq { func(c chan *ProposalResult){ defer func(){ recover() }(); c <- nil; close(c) }(ch) }
-    if walShadowClose != nil { _ = walShadowClose() }
-    return nil
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	var walShadowClose func() error
+	if s.walShadow != nil {
+		if c, ok := s.walShadow.(interface{ Close() error }); ok {
+			walShadowClose = c.Close
+		}
+	}
+	waiters := s.waiters
+	s.waiters = map[uint64]chan *ProposalResult{}
+	waitersSeq := s.waitersSeq
+	s.waitersSeq = map[uint64]chan *ProposalResult{}
+	if s.engine == "etcd" && s.stopCh != nil {
+		close(s.stopCh)
+	}
+	var rn etcdraft.Node
+	if s.engine == "etcd" && s.rn != nil {
+		rn = s.rn
+	}
+	s.mu.Unlock()
+	if rn != nil {
+		rn.Stop()
+	} // unblock Ready()
+	s.wg.Wait()
+	close(s.committedCh)
+	for _, ch := range waiters {
+		func(c chan *ProposalResult) { defer func() { recover() }(); c <- nil; close(c) }(ch)
+	}
+	for _, ch := range waitersSeq {
+		func(c chan *ProposalResult) { defer func() { recover() }(); c <- nil; close(c) }(ch)
+	}
+	if walShadowClose != nil {
+		_ = walShadowClose()
+	}
+	return nil
 }
 
 // ---- etcd/raft integration ----
@@ -572,9 +709,13 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 	var loaded bool
 	if !cfg.DisablePersistence {
 		persistDir := cfg.DataDir
-		if persistDir == "" { persistDir = "raftdata" }
+		if persistDir == "" {
+			persistDir = "raftdata"
+		}
 		p, err := newRaftPersistence(persistDir, cfg.ShardID)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		persist = p
 		// Attempt load of prior state (snapshot, hard state, entries)
 		var snapIdx, lastEntryIdx uint64
@@ -583,7 +724,11 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 			slog.Warn("raft persistence load failed", slog.String("shard", cfg.ShardID), slog.Any("error", err))
 		} else if loaded {
 			s.lastSnapshotIndex = snapIdx
-			if lastEntryIdx > snapIdx { s.lastAppliedIndex = lastEntryIdx } else { s.lastAppliedIndex = snapIdx }
+			if lastEntryIdx > snapIdx {
+				s.lastAppliedIndex = lastEntryIdx
+			} else {
+				s.lastAppliedIndex = snapIdx
+			}
 		}
 	}
 	c := &etcdraft.Config{ID: id, ElectionTick: int(electionTicks), HeartbeatTick: heartbeatTicks, Storage: storage, MaxSizePerMsg: 1 << 20, MaxInflightMsgs: 256, CheckQuorum: true, PreVote: true, Logger: &etcdLoggerAdapter{}}
@@ -599,9 +744,14 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 			parts := spec
 			at := -1
 			for i, ch := range spec {
-				if ch == '@' { at = i; break }
+				if ch == '@' {
+					at = i
+					break
+				}
 			}
-			if at != -1 { parts = spec[:at] }
+			if at != -1 {
+				parts = spec[:at]
+			}
 			if pid, err := strconv.ParseUint(parts, 10, 64); err == nil {
 				peers = append(peers, etcdraft.Peer{ID: pid})
 				confVoters = append(confVoters, pid)
@@ -609,8 +759,16 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 		}
 		// Ensure self id is included.
 		found := false
-		for _, p := range peers { if p.ID == id { found = true; break } }
-		if !found { peers = append(peers, etcdraft.Peer{ID: id}); confVoters = append(confVoters, id) }
+		for _, p := range peers {
+			if p.ID == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			peers = append(peers, etcdraft.Peer{ID: id})
+			confVoters = append(confVoters, id)
+		}
 	}
 	if loaded { // restart path
 		s.rn = etcdraft.RestartNode(c)
@@ -620,7 +778,9 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 	// If shadow WAL enabled attempt to replay last HardState envelope (non-fatal). This can override legacy file if newer.
 	if cfg.EnableWALShadow && !cfg.DisablePersistence {
 		shadowDir := cfg.WALShadowDir
-		if shadowDir == "" { shadowDir = filepath.Join(cfg.DataDir, "raftwal") }
+		if shadowDir == "" {
+			shadowDir = filepath.Join(cfg.DataDir, "raftwal")
+		}
 		if hsBytes, ok, herr := raftwal.ReplayLastHardState(shadowDir); herr == nil && ok {
 			var hs raftpb.HardState
 			if uerr := hs.Unmarshal(hsBytes); uerr == nil && !etcdraft.IsEmptyHardState(hs) {
@@ -638,7 +798,9 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 	// Experimental: seed from unified WAL as primary read path.
 	if cfg.WALPrimaryRead && cfg.EnableWALShadow && !cfg.DisablePersistence {
 		shadowDir := cfg.WALShadowDir
-		if shadowDir == "" { shadowDir = filepath.Join(cfg.DataDir, "raftwal") }
+		if shadowDir == "" {
+			shadowDir = filepath.Join(cfg.DataDir, "raftwal")
+		}
 		// Replay envelopes to build entries slice and locate latest HardState.
 		var entries []raftpb.Entry
 		var hs raftpb.HardState
@@ -656,22 +818,37 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 		if len(entries) > 0 {
 			// Set to storage (replace any pre-existing data which should be empty at this point)
 			// We assume entries are contiguous; future: validate gaps.
-			for _, e := range entries { _ = s.storage.Append([]raftpb.Entry{e}) }
+			for _, e := range entries {
+				_ = s.storage.Append([]raftpb.Entry{e})
+			}
 		}
-		if haveHS && !etcdraft.IsEmptyHardState(hs) { s.storage.SetHardState(hs); s.setLastShadowHardState(hs) }
+		if haveHS && !etcdraft.IsEmptyHardState(hs) {
+			s.storage.SetHardState(hs)
+			s.setLastShadowHardState(hs)
+		}
 	}
 	// Shadow WAL setup (non-fatal). Only when enabled and persistence not disabled.
 	if cfg.EnableWALShadow && !cfg.DisablePersistence {
 		shadowDir := cfg.WALShadowDir
-		if shadowDir == "" { shadowDir = filepath.Join(cfg.DataDir, "raftwal") }
-		if err := os.MkdirAll(shadowDir, 0o755); err != nil { slog.Warn("wal shadow mkdir failed", slog.Any("error", err)) } else {
+		if shadowDir == "" {
+			shadowDir = filepath.Join(cfg.DataDir, "raftwal")
+		}
+		if err := os.MkdirAll(shadowDir, 0o755); err != nil {
+			slog.Warn("wal shadow mkdir failed", slog.Any("error", err))
+		} else {
 			segSize := cfg.WALSegmentMaxBytes
-			if segSize <= 0 { segSize = 64*1024*1024 }
+			if segSize <= 0 {
+				segSize = 64 * 1024 * 1024
+			}
 			wcfg := raftwalConfigCompat{Dir: shadowDir, BufMB: 4, SidecarFlushEvery: 256, SegmentMaxBytes: segSize, ForceRotateEvery: cfg.WALForceRotateEvery, StrictSync: cfg.WALStrictSync}
-			if wr, werr := raftwalNewWriterCompat(wcfg); werr != nil { slog.Warn("wal shadow init failed", slog.Any("error", werr)) } else { s.walShadow = wr }
+			if wr, werr := raftwalNewWriterCompat(wcfg); werr != nil {
+				slog.Warn("wal shadow init failed", slog.Any("error", werr))
+			} else {
+				s.walShadow = wr
+			}
 		}
 		s.walDualReadValidate = cfg.WALDualReadValidate
-		if cfg.ValidatorLastN > 0 { 
+		if cfg.ValidatorLastN > 0 {
 			s.walValidator = newWalValidator(cfg.ValidatorLastN)
 			if tuples, err := raftwal.TailLogicalTuples(shadowDir, s.walValidator.lastN); err == nil && len(tuples) > 0 {
 				s.walValidator.seedTuples(tuples)
@@ -704,7 +881,9 @@ func (s *ShardRaftNode) tickLoop() {
 		for {
 			select {
 			case <-ticker.C:
-				if s.rn != nil { s.rn.Tick() }
+				if s.rn != nil {
+					s.rn.Tick()
+				}
 			case <-s.stopCh:
 				return
 			}
@@ -720,7 +899,9 @@ func (s *ShardRaftNode) tickLoop() {
 		}
 		now := s.clk.Now()
 		if now.Sub(last) >= s.tickEvery {
-			if s.rn != nil { s.rn.Tick() }
+			if s.rn != nil {
+				s.rn.Tick()
+			}
 			last = now
 		} else {
 			time.Sleep(50 * time.Microsecond)
@@ -729,28 +910,36 @@ func (s *ShardRaftNode) tickLoop() {
 }
 
 func (s *ShardRaftNode) readyLoop() {
-    s.wg.Add(1)
-    defer s.wg.Done()
-    for {
-        if s.rn == nil { return }
-        select {
-        case <-s.stopCh:
-            return
-        case rd, ok := <-s.rn.Ready():
-            if !ok { return }
-            s.processReady(rd)
-        }
-    }
+	s.wg.Add(1)
+	defer s.wg.Done()
+	for {
+		if s.rn == nil {
+			return
+		}
+		select {
+		case <-s.stopCh:
+			return
+		case rd, ok := <-s.rn.Ready():
+			if !ok {
+				return
+			}
+			s.processReady(rd)
+		}
+	}
 }
 
 // processReady centralizes handling of an etcd raft Ready. It is invoked by both
 // background and manual deterministic paths to ensure identical semantics.
 func (s *ShardRaftNode) getLastShadowHardState() raftpb.HardState {
-	s.mu.Lock(); defer s.mu.Unlock(); return s.lastShadowHardState
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastShadowHardState
 }
 
 func (s *ShardRaftNode) setLastShadowHardState(hs raftpb.HardState) {
-	s.mu.Lock(); s.lastShadowHardState = hs; s.mu.Unlock()
+	s.mu.Lock()
+	s.lastShadowHardState = hs
+	s.mu.Unlock()
 }
 
 func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
@@ -779,9 +968,15 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 			if mErr == nil {
 				// HardState has no raft index itself; we record with raft_index = rd.HardState.Commit (best stable monotonic value) and term field for ordering in replay.
 				env := &raftwal.Envelope{RaftIndex: rd.HardState.Commit, RaftTerm: rd.HardState.Term, Kind: raftwal.EntryKind_ENTRY_HARDSTATE, AppBytes: b, AppCrc: crc32.ChecksumIEEE(b)}
-				if pb, perr := proto.Marshal(env); perr == nil { _ = s.walShadow.AppendHardState(env.RaftIndex, pb) } else { slog.Warn("wal shadow hardstate marshal envelope failed", slog.Any("error", perr)) }
+				if pb, perr := proto.Marshal(env); perr == nil {
+					_ = s.walShadow.AppendHardState(env.RaftIndex, pb)
+				} else {
+					slog.Warn("wal shadow hardstate marshal envelope failed", slog.Any("error", perr))
+				}
 				s.setLastShadowHardState(rd.HardState)
-			} else { slog.Warn("wal shadow hardstate marshal failed", slog.Any("error", mErr)) }
+			} else {
+				slog.Warn("wal shadow hardstate marshal failed", slog.Any("error", mErr))
+			}
 		}
 	}
 	// Apply snapshot (if any) BEFORE appending new entries.
@@ -806,7 +1001,10 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 				var wr wireRecord
 				var rec *RaftLogRecord
 				if len(ent.Data) > 0 {
-					if err := json.Unmarshal(ent.Data, &wr); err != nil { slog.Error("raft unmarshal", slog.Any("error", err)); goto afterNormal } // fallback: still advance index
+					if err := json.Unmarshal(ent.Data, &wr); err != nil {
+						slog.Error("raft unmarshal", slog.Any("error", err))
+						goto afterNormal
+					} // fallback: still advance index
 					rec = &RaftLogRecord{BucketID: wr.BucketID, Type: wr.Type, Payload: wr.Payload}
 				} else {
 					// heartbeat/noop placeholder
@@ -817,20 +1015,32 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 					envPayload := rec.Payload
 					crcVal := crc32.ChecksumIEEE(envPayload)
 					env := &raftwal.Envelope{RaftIndex: ent.Index, RaftTerm: ent.Term, Kind: raftwal.EntryKind_ENTRY_NORMAL, AppBytes: envPayload, AppCrc: crcVal, Namespace: "default", Bucket: rec.BucketID, Opcode: uint32(rec.Type), Sequence: wr.Seq}
-					if b, mErr := proto.Marshal(env); mErr == nil { _ = s.walShadow.AppendEnvelope(ent.Index, b) } else { slog.Warn("wal shadow marshal failed", slog.Any("error", mErr)) }
-					if s.walValidator != nil { s.walValidator.addTuple(ent.Index, envPayload) }
+					if b, mErr := proto.Marshal(env); mErr == nil {
+						_ = s.walShadow.AppendEnvelope(ent.Index, b)
+					} else {
+						slog.Warn("wal shadow marshal failed", slog.Any("error", mErr))
+					}
+					if s.walValidator != nil {
+						s.walValidator.addTuple(ent.Index, envPayload)
+					}
 				}
 				// Dual-read validation
 				if s.walValidator != nil && s.walDualReadValidate {
 					crcCalc := crc32.ChecksumIEEE(rec.Payload)
 					for _, tup := range s.walValidator.snapshot() {
-						if tup.index == ent.Index && tup.crc != crcCalc { slog.Error("wal dual-read mismatch", slog.String("shard", s.shardID), slog.Uint64("index", ent.Index), slog.Any("legacy_crc", crcCalc), slog.Any("wal_crc", tup.crc)) }
+						if tup.index == ent.Index && tup.crc != crcCalc {
+							slog.Error("wal dual-read mismatch", slog.String("shard", s.shardID), slog.Uint64("index", ent.Index), slog.Any("legacy_crc", crcCalc), slog.Any("wal_crc", tup.crc))
+						}
 					}
 				}
 				s.mu.Lock()
-				if rec.BucketID != "" { s.perBucketCommit[rec.BucketID]++; }
+				if rec.BucketID != "" {
+					s.perBucketCommit[rec.BucketID]++
+				}
 				commitIdx := uint64(0)
-				if rec.BucketID != "" { commitIdx = s.perBucketCommit[rec.BucketID] }
+				if rec.BucketID != "" {
+					commitIdx = s.perBucketCommit[rec.BucketID]
+				}
 				waiter := s.waitersSeq[wr.Seq]
 				delete(s.waitersSeq, wr.Seq)
 				s.lastAppliedIndex = ent.Index
@@ -840,29 +1050,71 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 					cr := &CommittedRecord{RaftIndex: ent.Index, Term: ent.Term, CommitIndex: commitIdx, Record: rec}
 					s.invokeReplicationHandler(rec)
 					if committedCh != nil {
-						func() { defer func(){ if r:=recover(); r!=nil {} }(); select { case committedCh <- cr: case <-time.After(100 * time.Millisecond): } }()
+						func() {
+							defer func() {
+								if r := recover(); r != nil {
+								}
+							}()
+							select {
+							case committedCh <- cr:
+							case <-time.After(100 * time.Millisecond):
+							}
+						}()
 					}
-					if waiter != nil { waiter <- &ProposalResult{CommitIndex: commitIdx, RaftIndex: ent.Index}; close(waiter) }
+					if waiter != nil {
+						waiter <- &ProposalResult{CommitIndex: commitIdx, RaftIndex: ent.Index}
+						close(waiter)
+					}
 				} else if waiter != nil { // heartbeat with waiter (unlikely) – signal
-					waiter <- &ProposalResult{CommitIndex: 0, RaftIndex: ent.Index}; close(waiter)
+					waiter <- &ProposalResult{CommitIndex: 0, RaftIndex: ent.Index}
+					close(waiter)
 				}
 			case raftpb.EntryConfChange:
 				var cc raftpb.ConfChange
-				if len(ent.Data) > 0 { _ = cc.Unmarshal(ent.Data) }
+				if len(ent.Data) > 0 {
+					_ = cc.Unmarshal(ent.Data)
+				}
 				// Record envelope to preserve index continuity.
-				if s.walShadow != nil { env := &raftwal.Envelope{RaftIndex: ent.Index, RaftTerm: ent.Term, Kind: raftwal.EntryKind_ENTRY_NORMAL, AppBytes: ent.Data, AppCrc: crc32.ChecksumIEEE(ent.Data), Namespace: "default"}; if b, mErr := proto.Marshal(env); mErr == nil { _ = s.walShadow.AppendEnvelope(ent.Index, b) } }
-				if s.walValidator != nil { s.walValidator.addTuple(ent.Index, ent.Data) }
+				if s.walShadow != nil {
+					env := &raftwal.Envelope{RaftIndex: ent.Index, RaftTerm: ent.Term, Kind: raftwal.EntryKind_ENTRY_NORMAL, AppBytes: ent.Data, AppCrc: crc32.ChecksumIEEE(ent.Data), Namespace: "default"}
+					if b, mErr := proto.Marshal(env); mErr == nil {
+						_ = s.walShadow.AppendEnvelope(ent.Index, b)
+					}
+				}
+				if s.walValidator != nil {
+					s.walValidator.addTuple(ent.Index, ent.Data)
+				}
 				cs := s.rn.ApplyConfChange(cc)
-				s.mu.Lock(); s.confState = *cs; s.lastAppliedIndex = ent.Index; s.committedSinceSnap++; s.mu.Unlock()
+				s.mu.Lock()
+				s.confState = *cs
+				s.lastAppliedIndex = ent.Index
+				s.committedSinceSnap++
+				s.mu.Unlock()
 			case raftpb.EntryConfChangeV2:
 				var cc raftpb.ConfChangeV2
-				if len(ent.Data) > 0 { _ = cc.Unmarshal(ent.Data) }
-				if s.walShadow != nil { env := &raftwal.Envelope{RaftIndex: ent.Index, RaftTerm: ent.Term, Kind: raftwal.EntryKind_ENTRY_NORMAL, AppBytes: ent.Data, AppCrc: crc32.ChecksumIEEE(ent.Data), Namespace: "default"}; if b, mErr := proto.Marshal(env); mErr == nil { _ = s.walShadow.AppendEnvelope(ent.Index, b) } }
-				if s.walValidator != nil { s.walValidator.addTuple(ent.Index, ent.Data) }
+				if len(ent.Data) > 0 {
+					_ = cc.Unmarshal(ent.Data)
+				}
+				if s.walShadow != nil {
+					env := &raftwal.Envelope{RaftIndex: ent.Index, RaftTerm: ent.Term, Kind: raftwal.EntryKind_ENTRY_NORMAL, AppBytes: ent.Data, AppCrc: crc32.ChecksumIEEE(ent.Data), Namespace: "default"}
+					if b, mErr := proto.Marshal(env); mErr == nil {
+						_ = s.walShadow.AppendEnvelope(ent.Index, b)
+					}
+				}
+				if s.walValidator != nil {
+					s.walValidator.addTuple(ent.Index, ent.Data)
+				}
 				cs := s.rn.ApplyConfChange(cc)
-				s.mu.Lock(); s.confState = *cs; s.lastAppliedIndex = ent.Index; s.committedSinceSnap++; s.mu.Unlock()
+				s.mu.Lock()
+				s.confState = *cs
+				s.lastAppliedIndex = ent.Index
+				s.committedSinceSnap++
+				s.mu.Unlock()
 			default:
-				s.mu.Lock(); s.lastAppliedIndex = ent.Index; s.committedSinceSnap++; s.mu.Unlock()
+				s.mu.Lock()
+				s.lastAppliedIndex = ent.Index
+				s.committedSinceSnap++
+				s.mu.Unlock()
 			}
 			continue
 		afterNormal:
@@ -870,14 +1122,18 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 		}
 	}
 	// Send outbound messages (multi-node scenarios)
-	if len(rd.Messages) > 0 && s.transport != nil { s.transport.Send(context.Background(), rd.Messages) }
+	if len(rd.Messages) > 0 && s.transport != nil {
+		s.transport.Send(context.Background(), rd.Messages)
+	}
 	// Advance raft state machine
 	s.rn.Advance()
 	// Auto-campaign convenience: only for single-node clusters. Broadly auto-campaigning
 	// on every Ready when Lead==0 in multi-node scenarios can trigger repeated pre-vote
 	// storms and very high terms (observed in tests). We revert to the safer single-node
 	// shortcut; multi-node elections rely on tick timeouts.
-	if !s.manual && s.rn.Status().Lead == 0 && len(s.confState.Voters) == 1 { _ = s.rn.Campaign(context.Background()) }
+	if !s.manual && s.rn.Status().Lead == 0 && len(s.confState.Voters) == 1 {
+		_ = s.rn.Campaign(context.Background())
+	}
 	// Snapshot / compaction logic
 	if s.snapshotThreshold > 0 && s.committedSinceSnap >= s.snapshotThreshold && s.lastAppliedIndex > s.lastSnapshotIndex {
 		if s.storage != nil {
@@ -887,11 +1143,19 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 						slog.Warn("raft snapshot persist failed", slog.String("shard", s.shardID), slog.Any("error", err))
 					} else {
 						compactionIndex := snap.Metadata.Index
-						if err := s.storage.Compact(compactionIndex); err != nil { slog.Warn("raft storage compact failed", slog.String("shard", s.shardID), slog.Any("error", err)) }
-						if err := s.persist.PruneEntries(compactionIndex); err != nil { slog.Warn("raft prune failed", slog.String("shard", s.shardID), slog.Any("error", err)) } else {
+						if err := s.storage.Compact(compactionIndex); err != nil {
+							slog.Warn("raft storage compact failed", slog.String("shard", s.shardID), slog.Any("error", err))
+						}
+						if err := s.persist.PruneEntries(compactionIndex); err != nil {
+							slog.Warn("raft prune failed", slog.String("shard", s.shardID), slog.Any("error", err))
+						} else {
 							s.mu.Lock()
-							if compactionIndex > s.prunedThroughIndex { s.prunedThroughIndex = compactionIndex }
-							if snap.Metadata.Index > s.lastSnapshotIndex { s.lastSnapshotIndex = snap.Metadata.Index }
+							if compactionIndex > s.prunedThroughIndex {
+								s.prunedThroughIndex = compactionIndex
+							}
+							if snap.Metadata.Index > s.lastSnapshotIndex {
+								s.lastSnapshotIndex = snap.Metadata.Index
+							}
 							s.committedSinceSnap = 0
 							s.mu.Unlock()
 							// WAL segment pruning (shadow): delete fully obsolete segments whose max index < prunedThroughIndex
@@ -905,10 +1169,19 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 								}
 							}
 						}
-						if s.prunedThroughIndex < compactionIndex { s.mu.Lock(); if snap.Metadata.Index > s.lastSnapshotIndex { s.lastSnapshotIndex = snap.Metadata.Index }; s.committedSinceSnap = 0; s.mu.Unlock() }
+						if s.prunedThroughIndex < compactionIndex {
+							s.mu.Lock()
+							if snap.Metadata.Index > s.lastSnapshotIndex {
+								s.lastSnapshotIndex = snap.Metadata.Index
+							}
+							s.committedSinceSnap = 0
+							s.mu.Unlock()
+						}
 					}
 				}
-			} else if err != nil { slog.Warn("raft create snapshot failed", slog.String("shard", s.shardID), slog.Any("error", err)) }
+			} else if err != nil {
+				slog.Warn("raft create snapshot failed", slog.String("shard", s.shardID), slog.Any("error", err))
+			}
 		}
 	}
 }
@@ -916,29 +1189,35 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 // ---- shadow WAL writer compatibility helpers ----
 // Local minimal copy of raftwal.Config to avoid direct import (decouples migration path).
 type raftwalConfigCompat struct {
-	Dir string
-	BufMB int
+	Dir               string
+	BufMB             int
 	SidecarFlushEvery int
-	SegmentMaxBytes int64
-	ForceRotateEvery int
-	StrictSync bool
+	SegmentMaxBytes   int64
+	ForceRotateEvery  int
+	StrictSync        bool
 }
 
 // raftwalWriterCompat is satisfied by *raftwal.Writer (subset) - defined here for loose coupling.
-type raftwalWriterCompat interface { AppendEnvelope(uint64, []byte) error; AppendHardState(uint64, []byte) error; Sync() error }
+type raftwalWriterCompat interface {
+	AppendEnvelope(uint64, []byte) error
+	AppendHardState(uint64, []byte) error
+	Sync() error
+}
 
 // raftwalNewWriterCompat uses reflection-free construction by importing the real package.
 // NOTE: we import inside function to avoid unused dependency when shadow disabled.
 func raftwalNewWriterCompat(cfg raftwalConfigCompat) (raftwalWriterCompat, error) {
 	w, err := raftwal.NewWriter(raftwal.Config{
-		Dir: cfg.Dir,
-		BufMB: cfg.BufMB,
+		Dir:               cfg.Dir,
+		BufMB:             cfg.BufMB,
 		SidecarFlushEvery: cfg.SidecarFlushEvery,
-		SegmentMaxBytes: cfg.SegmentMaxBytes,
-		ForceRotateEvery: cfg.ForceRotateEvery,
-		StrictSync: cfg.StrictSync,
+		SegmentMaxBytes:   cfg.SegmentMaxBytes,
+		ForceRotateEvery:  cfg.ForceRotateEvery,
+		StrictSync:        cfg.StrictSync,
 	})
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	return w, nil
 }
 
@@ -947,25 +1226,33 @@ func raftwalNewWriterCompat(cfg raftwalConfigCompat) (raftwalWriterCompat, error
 // ManualTick advances the raft node one logical heartbeat/election tick.
 // Only valid when RaftConfig.Manual = true.
 func (s *ShardRaftNode) ManualTick() {
-	if !s.manual || s.rn == nil { return }
+	if !s.manual || s.rn == nil {
+		return
+	}
 	s.rn.Tick()
 }
 
 // ManualForceCampaign forces a leadership campaign (single-node deterministic tests).
 // Safe only in manual mode; ignores errors.
 func (s *ShardRaftNode) ManualForceCampaign() {
-    if !s.manual || s.rn == nil { return }
-    _ = s.rn.Campaign(context.Background())
+	if !s.manual || s.rn == nil {
+		return
+	}
+	_ = s.rn.Campaign(context.Background())
 }
 
 // ManualProcessReady drains a single Ready from the raft node and processes it
 // identically to the background readyLoop. Returns false if no Ready was
 // available immediately. Only valid in manual mode.
 func (s *ShardRaftNode) ManualProcessReady() bool {
-	if !s.manual || s.rn == nil { return false }
+	if !s.manual || s.rn == nil {
+		return false
+	}
 	select {
 	case rd, ok := <-s.rn.Ready():
-		if !ok { return false }
+		if !ok {
+			return false
+		}
 		s.processReady(rd)
 		return true
 	default:
@@ -976,60 +1263,123 @@ func (s *ShardRaftNode) ManualProcessReady() bool {
 // ManualProcessNextReady blocks until a Ready is available (or the raft node closes)
 // and processes it. Returns true if a Ready was processed. Only valid in manual mode.
 func (s *ShardRaftNode) ManualProcessNextReady() bool {
-	if !s.manual || s.rn == nil { return false }
+	if !s.manual || s.rn == nil {
+		return false
+	}
 	rd, ok := <-s.rn.Ready()
-	if !ok { return false }
+	if !ok {
+		return false
+	}
 	if s.persist != nil {
-		if err := s.persist.Persist(&rd); err != nil { slog.Warn("raft persist failed", slog.String("shard", s.shardID), slog.Any("error", err)) }
+		if err := s.persist.Persist(&rd); err != nil {
+			slog.Warn("raft persist failed", slog.String("shard", s.shardID), slog.Any("error", err))
+		}
 	}
 	if !etcdraft.IsEmptySnap(rd.Snapshot) && s.storage != nil {
-		if err := s.storage.ApplySnapshot(rd.Snapshot); err != nil { slog.Warn("raft storage apply snapshot failed", slog.String("shard", s.shardID), slog.Any("error", err)) }
+		if err := s.storage.ApplySnapshot(rd.Snapshot); err != nil {
+			slog.Warn("raft storage apply snapshot failed", slog.String("shard", s.shardID), slog.Any("error", err))
+		}
 	}
 	if len(rd.Entries) > 0 && s.storage != nil {
-		if err := s.storage.Append(rd.Entries); err != nil { slog.Warn("raft storage append failed", slog.String("shard", s.shardID), slog.Any("error", err)) }
+		if err := s.storage.Append(rd.Entries); err != nil {
+			slog.Warn("raft storage append failed", slog.String("shard", s.shardID), slog.Any("error", err))
+		}
 	}
 	if len(rd.CommittedEntries) > 0 {
 		for _, ent := range rd.CommittedEntries {
 			if ent.Type == raftpb.EntryNormal && len(ent.Data) > 0 {
 				var wr wireRecord
-				if err := json.Unmarshal(ent.Data, &wr); err != nil { slog.Error("raft unmarshal", slog.Any("error", err)); continue }
+				if err := json.Unmarshal(ent.Data, &wr); err != nil {
+					slog.Error("raft unmarshal", slog.Any("error", err))
+					continue
+				}
 				rec := &RaftLogRecord{BucketID: wr.BucketID, Type: wr.Type, Payload: wr.Payload}
-				s.mu.Lock(); s.perBucketCommit[rec.BucketID]++; commitIdx := s.perBucketCommit[rec.BucketID]; waiter := s.waitersSeq[wr.Seq]; delete(s.waitersSeq, wr.Seq); s.lastAppliedIndex = ent.Index; s.committedSinceSnap++; s.mu.Unlock()
+				s.mu.Lock()
+				s.perBucketCommit[rec.BucketID]++
+				commitIdx := s.perBucketCommit[rec.BucketID]
+				waiter := s.waitersSeq[wr.Seq]
+				delete(s.waitersSeq, wr.Seq)
+				s.lastAppliedIndex = ent.Index
+				s.committedSinceSnap++
+				s.mu.Unlock()
 				cr := &CommittedRecord{RaftIndex: ent.Index, Term: ent.Term, CommitIndex: commitIdx, Record: rec}
 				// Apply application mutation
 				s.invokeReplicationHandler(rec)
-				select { case s.committedCh <- cr: case <-time.After(100 * time.Millisecond): }
-				if waiter != nil { waiter <- &ProposalResult{CommitIndex: commitIdx, RaftIndex: ent.Index}; close(waiter) }
+				select {
+				case s.committedCh <- cr:
+				case <-time.After(100 * time.Millisecond):
+				}
+				if waiter != nil {
+					waiter <- &ProposalResult{CommitIndex: commitIdx, RaftIndex: ent.Index}
+					close(waiter)
+				}
 			} else if ent.Type == raftpb.EntryConfChange {
 				var cc raftpb.ConfChange
-				if len(ent.Data) > 0 { _ = cc.Unmarshal(ent.Data) }
+				if len(ent.Data) > 0 {
+					_ = cc.Unmarshal(ent.Data)
+				}
 				cs := s.rn.ApplyConfChange(cc)
-				s.mu.Lock(); s.confState = *cs; s.lastAppliedIndex = ent.Index; s.mu.Unlock()
+				s.mu.Lock()
+				s.confState = *cs
+				s.lastAppliedIndex = ent.Index
+				s.mu.Unlock()
 			} else if ent.Type == raftpb.EntryConfChangeV2 {
 				var cc raftpb.ConfChangeV2
-				if len(ent.Data) > 0 { _ = cc.Unmarshal(ent.Data) }
+				if len(ent.Data) > 0 {
+					_ = cc.Unmarshal(ent.Data)
+				}
 				cs := s.rn.ApplyConfChange(cc)
-				s.mu.Lock(); s.confState = *cs; s.lastAppliedIndex = ent.Index; s.mu.Unlock()
+				s.mu.Lock()
+				s.confState = *cs
+				s.lastAppliedIndex = ent.Index
+				s.mu.Unlock()
 			}
 		}
 	}
-	if len(rd.Messages) > 0 && s.transport != nil { s.transport.Send(context.Background(), rd.Messages) }
+	if len(rd.Messages) > 0 && s.transport != nil {
+		s.transport.Send(context.Background(), rd.Messages)
+	}
 	s.rn.Advance()
-	if s.rn.Status().Lead == 0 && len(s.confState.Voters) == 1 { _ = s.rn.Campaign(context.Background()) }
+	if s.rn.Status().Lead == 0 && len(s.confState.Voters) == 1 {
+		_ = s.rn.Campaign(context.Background())
+	}
 	if s.snapshotThreshold > 0 && s.committedSinceSnap >= s.snapshotThreshold && s.lastAppliedIndex > s.lastSnapshotIndex {
 		if s.storage != nil {
 			if snap, err := s.storage.CreateSnapshot(s.lastAppliedIndex, &s.confState, nil); err == nil && !etcdraft.IsEmptySnap(snap) {
 				if s.persist != nil {
-					if err := s.persist.PersistSnapshot(&snap); err != nil { slog.Warn("raft snapshot persist failed", slog.String("shard", s.shardID), slog.Any("error", err)) } else {
+					if err := s.persist.PersistSnapshot(&snap); err != nil {
+						slog.Warn("raft snapshot persist failed", slog.String("shard", s.shardID), slog.Any("error", err))
+					} else {
 						compactionIndex := snap.Metadata.Index
-						if err := s.storage.Compact(compactionIndex); err != nil { slog.Warn("raft storage compact failed", slog.String("shard", s.shardID), slog.Any("error", err)) }
-						if err := s.persist.PruneEntries(compactionIndex); err != nil { slog.Warn("raft prune failed", slog.String("shard", s.shardID), slog.Any("error", err)) } else {
-							s.mu.Lock(); if compactionIndex > s.prunedThroughIndex { s.prunedThroughIndex = compactionIndex }; if snap.Metadata.Index > s.lastSnapshotIndex { s.lastSnapshotIndex = snap.Metadata.Index }; s.committedSinceSnap = 0; s.mu.Unlock()
+						if err := s.storage.Compact(compactionIndex); err != nil {
+							slog.Warn("raft storage compact failed", slog.String("shard", s.shardID), slog.Any("error", err))
 						}
-						if s.prunedThroughIndex < compactionIndex { s.mu.Lock(); if snap.Metadata.Index > s.lastSnapshotIndex { s.lastSnapshotIndex = snap.Metadata.Index }; s.committedSinceSnap = 0; s.mu.Unlock() }
+						if err := s.persist.PruneEntries(compactionIndex); err != nil {
+							slog.Warn("raft prune failed", slog.String("shard", s.shardID), slog.Any("error", err))
+						} else {
+							s.mu.Lock()
+							if compactionIndex > s.prunedThroughIndex {
+								s.prunedThroughIndex = compactionIndex
+							}
+							if snap.Metadata.Index > s.lastSnapshotIndex {
+								s.lastSnapshotIndex = snap.Metadata.Index
+							}
+							s.committedSinceSnap = 0
+							s.mu.Unlock()
+						}
+						if s.prunedThroughIndex < compactionIndex {
+							s.mu.Lock()
+							if snap.Metadata.Index > s.lastSnapshotIndex {
+								s.lastSnapshotIndex = snap.Metadata.Index
+							}
+							s.committedSinceSnap = 0
+							s.mu.Unlock()
+						}
 					}
 				}
-			} else if err != nil { slog.Warn("raft create snapshot failed", slog.String("shard", s.shardID), slog.Any("error", err)) }
+			} else if err != nil {
+				slog.Warn("raft create snapshot failed", slog.String("shard", s.shardID), slog.Any("error", err))
+			}
 		}
 	}
 	return true

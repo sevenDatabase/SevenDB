@@ -7,8 +7,8 @@ import (
 	"net"
 	"sync"
 
-	"google.golang.org/grpc"
 	gogoproto "github.com/gogo/protobuf/proto"
+	"google.golang.org/grpc"
 
 	"go.etcd.io/etcd/raft/v3/raftpb"
 )
@@ -18,10 +18,10 @@ import (
 // them into the appropriate shard's ShardRaftNode via Step().
 type RaftGRPCServer struct {
 	UnimplementedRaftTransportServer
-    localID uint64
+	localID uint64
 
-    mu     sync.RWMutex
-    shards map[string]*ShardRaftNode // shardID -> node
+	mu     sync.RWMutex
+	shards map[string]*ShardRaftNode // shardID -> node
 }
 
 // NewRaftGRPCServer creates a new transport server for the given local raft node ID.
