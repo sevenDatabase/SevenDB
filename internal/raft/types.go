@@ -141,6 +141,10 @@ type ShardRaftNode struct {
 		AppendHardState(uint64, []byte) error
 		Sync() error
 	}
+	// wal (new) is the abstracted write-ahead log interface (superset use-case). During
+	// migration both walShadow (legacy shadow writer) and wal may coexist; future cleanup
+	// will remove walShadow once all call sites are switched to wal.
+	wal WAL
 	walValidator        *walValidator
 	walDualReadValidate bool
 	// lastShadowHardState is accessed from processReady (background goroutine) and
@@ -420,6 +424,10 @@ type RaftConfig struct {
 	WALDualReadValidate bool
 	// TestDeterministicClock (tests only) if non-nil injects a simulated clock used by tickLoop.
 	TestDeterministicClock clock.Clock
+	// WALFactory (optional) allows callers to inject a custom WAL implementation. If nil
+	// and EnableWALShadow is true, the built-in shadow WAL adapter will be created. If both
+	// are nil/false, no WAL dual-write occurs (legacy persistence only).
+	WALFactory func(cfg RaftConfig) (WAL, error)
 }
 
 // NewShardRaftNode creates a new in-memory stub. Follow-up commits will
@@ -446,6 +454,13 @@ func NewShardRaftNode(cfg RaftConfig) (*ShardRaftNode, error) {
 	if engine == "etcd" {
 		if err := s.initEtcd(cfg); err != nil {
 			return nil, err
+		}
+	}
+	// Initialize abstract WAL (non-fatal on error, logs inside initEtcd if needed for shadow path).
+	// We only construct here if engine!=etcd? For now we allow stub engine to also have a WAL for tests.
+	if s.wal == nil && cfg.WALFactory != nil {
+		if w, err := cfg.WALFactory(cfg); err == nil {
+			s.wal = w
 		}
 	}
 	return s, nil
