@@ -186,6 +186,33 @@ type ShardRaftNode struct {
 	replicationStrict  bool // if true, handler errors are treated as fatal (panic) to avoid divergence
 }
 
+// Crash simulates an abrupt process crash for test scenarios. It attempts a minimal
+// shutdown without flushing or closing WALs gracefully. Background goroutines are
+// stopped and the node is marked closed so subsequent Status/IsLeader calls become
+// no-ops. Unlike Close(), Crash() purposefully skips WAL Close() to mimic a crash.
+// It is idempotent.
+func (s *ShardRaftNode) Crash() {
+	s.mu.Lock()
+	if s.closed { // already closed/crashed
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
+	s.closedAtomic.Store(true)
+	if s.engine == "etcd" && s.stopCh != nil {
+		close(s.stopCh)
+	}
+	var rn etcdraft.Node
+	if s.engine == "etcd" && s.rn != nil {
+		rn = s.rn
+	}
+	s.mu.Unlock()
+	if rn != nil { rn.Stop() }
+	s.wg.Wait()
+	// Intentionally DO NOT close committedCh or waiters; mimic abrupt termination where
+	// in-flight proposals observe ErrProposalAborted on channel close later (ignored here).
+}
+
 // waitForLeaderHint spins briefly (bounded) to obtain a non-empty leader ID after an election.
 // This reduces racy empty hints just after leadership changes. It does not block more than
 // attempts * 200µs (~5ms for 25 attempts).
@@ -1098,7 +1125,7 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 	// Update lastKnownLeader from SoftState (if present) before unlocking so proposals racing
 	// with elections get an accurate leader hint.
 	if rd.SoftState != nil && rd.SoftState.Lead != 0 {
-		s.lastKnownLeader = rd.SoftState.Lead
+		atomic.StoreUint64(&s.lastKnownLeader, rd.SoftState.Lead)
 	}
 	// capture committed channel safely (channel itself will be closed after we release lock, we guard sends later by re-checking closed state indirectly)
 	committedCh := s.committedCh

@@ -246,6 +246,9 @@ func TestShadowWALLeaderFailoverMultiNode(t *testing.T) {
 		}
 	}
 	crashedDir := filepath.Join(root, fmt.Sprintf("node-%d", leaderIdx+1))
+	// Simulate crash: invoke Crash() to stop goroutines without graceful WAL close,
+	// then detach the node logically by setting a _dead placeholder for indexing.
+	ln.Crash()
 	nodes[leaderIdx] = &ShardRaftNode{shardID: "_dead"}
 	for step := 0; step < 500; step++ {
 		advanceAll(nodes, 10*time.Millisecond)
