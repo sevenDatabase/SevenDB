@@ -180,20 +180,32 @@ type ShardRaftNode struct {
 
 // ValidateShadowTail compares in-memory validator CRCs (if enabled) with the tail of shadow WAL.
 // Returns nil if they match (prefix-match acceptable if WAL longer), or error describing first mismatch.
+
+// ValidateShadowTail validates the recent logical WAL entries against the validator ring.
+// Migration NOTE: This function primarily targets the legacy shadow WAL; if an abstract WAL
+// is present it will prefer its directory. Once cutover completes, rename to ValidateWALTail.
 func (s *ShardRaftNode) ValidateShadowTail() error {
-	if s.walValidator == nil || s.walShadow == nil {
+	if s.walValidator == nil {
 		return nil
 	}
-	type dirGetter interface{ Dir() string }
-	dg, ok := s.walShadow.(dirGetter)
-	if !ok {
+	walDir := ""
+	// Prefer abstract WAL if available.
+	if s.wal != nil {
+		walDir = s.wal.Dir()
+	} else if s.walShadow != nil {
+		type dirGetter interface{ Dir() string }
+		if dg, ok := s.walShadow.(dirGetter); ok {
+			walDir = dg.Dir()
+		}
+		// Attempt sync for legacy writer to flush buffers before tail read.
+		type syncer interface{ Sync() error }
+		if sy, ok := s.walShadow.(syncer); ok {
+			_ = sy.Sync()
+		}
+	}
+	if walDir == "" {
 		return nil
 	}
-	type syncer interface{ Sync() error }
-	if sy, ok := s.walShadow.(syncer); ok {
-		_ = sy.Sync()
-	}
-	walDir := dg.Dir()
 	ring := s.walValidator.snapshot()
 	if len(ring) == 0 {
 		return nil
@@ -662,6 +674,7 @@ func (s *ShardRaftNode) Close() error {
 			walShadowClose = c.Close
 		}
 	}
+	walClose := s.wal
 	waiters := s.waiters
 	s.waiters = map[uint64]chan *ProposalResult{}
 	waitersSeq := s.waitersSeq
@@ -687,6 +700,9 @@ func (s *ShardRaftNode) Close() error {
 	}
 	if walShadowClose != nil {
 		_ = walShadowClose()
+	}
+	if walClose != nil {
+		_ = walClose.Close()
 	}
 	return nil
 }
@@ -973,24 +989,29 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 			slog.Warn("raft persist failed", slog.String("shard", s.shardID), slog.Any("error", err))
 		}
 	}
-	// Shadow WAL: write HardState envelope if changed.
-	if s.walShadow != nil && !etcdraft.IsEmptyHardState(rd.HardState) {
+	// HardState persistence to abstract WAL (and legacy shadow writer for migration).
+	if !etcdraft.IsEmptyHardState(rd.HardState) {
 		lhs := s.getLastShadowHardState()
 		if rd.HardState.Term != lhs.Term || rd.HardState.Vote != lhs.Vote || rd.HardState.Commit != lhs.Commit {
-			// marshal raft HardState using protobuf (raftpb.HardState implements Marshal via gogoproto but we'll json encode for now for minimal dependency) TODO: switch to direct protobuf bytes.
-			// Use protobuf marshal for fidelity.
-			b, mErr := rd.HardState.Marshal()
-			if mErr == nil {
-				// HardState has no raft index itself; we record with raft_index = rd.HardState.Commit (best stable monotonic value) and term field for ordering in replay.
-				env := &raftwal.Envelope{RaftIndex: rd.HardState.Commit, RaftTerm: rd.HardState.Term, Kind: raftwal.EntryKind_ENTRY_HARDSTATE, AppBytes: b, AppCrc: crc32.ChecksumIEEE(b)}
-				if pb, perr := proto.Marshal(env); perr == nil {
-					_ = s.walShadow.AppendHardState(env.RaftIndex, pb)
-				} else {
-					slog.Warn("wal shadow hardstate marshal envelope failed", slog.Any("error", perr))
+			if b, mErr := rd.HardState.Marshal(); mErr == nil {
+				// Abstract WAL path
+				if s.wal != nil {
+					if err := s.wal.AppendEntry(rd.HardState.Commit, rd.HardState.Term, EntryKindHardState, nil, WALMetadata{}, b); err != nil {
+						slog.Warn("wal append hardstate failed", slog.String("shard", s.shardID), slog.Any("error", err))
+					}
+				}
+				// Legacy shadow path retained for compatibility until full cutover.
+				if s.walShadow != nil {
+					env := &raftwal.Envelope{RaftIndex: rd.HardState.Commit, RaftTerm: rd.HardState.Term, Kind: raftwal.EntryKind_ENTRY_HARDSTATE, AppBytes: b, AppCrc: crc32.ChecksumIEEE(b)}
+					if pb, perr := proto.Marshal(env); perr == nil {
+						_ = s.walShadow.AppendHardState(env.RaftIndex, pb)
+					} else {
+						slog.Warn("wal shadow hardstate marshal envelope failed", slog.Any("error", perr))
+					}
 				}
 				s.setLastShadowHardState(rd.HardState)
 			} else {
-				slog.Warn("wal shadow hardstate marshal failed", slog.Any("error", mErr))
+				slog.Warn("wal hardstate marshal failed", slog.Any("error", mErr))
 			}
 		}
 	}
@@ -1006,7 +1027,9 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 			slog.Warn("raft storage append failed", slog.String("shard", s.shardID), slog.Any("error", err))
 		}
 	}
-	// Process committed entries.
+	// Process committed entries (NORMAL + configuration changes). Each NORMAL entry is written
+	// through the abstract WAL first (if configured) then legacy shadow WAL (migration period),
+	// followed by replication handler invocation and waiter signaling.
 	if len(rd.CommittedEntries) > 0 {
 		for _, ent := range rd.CommittedEntries {
 			switch ent.Type {
@@ -1026,6 +1049,14 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 					wr = wireRecord{BucketID: "", Type: RaftRecordTypeAppCommand, Seq: 0}
 					rec = &RaftLogRecord{BucketID: "", Type: RaftRecordTypeAppCommand, Payload: nil}
 				}
+				// Abstract WAL write (normal entry).
+				if s.wal != nil {
+					meta := WALMetadata{Bucket: rec.BucketID, Opcode: uint32(rec.Type), Sequence: wr.Seq}
+					if err := s.wal.AppendEntry(ent.Index, ent.Term, EntryKindNormal, rec.Payload, meta, nil); err != nil {
+						slog.Warn("wal append entry failed", slog.String("shard", s.shardID), slog.Uint64("index", ent.Index), slog.Any("error", err))
+					}
+				}
+				// Legacy shadow WAL path retained for migration.
 				if s.walShadow != nil {
 					envPayload := rec.Payload
 					crcVal := crc32.ChecksumIEEE(envPayload)
@@ -1089,7 +1120,13 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 				if len(ent.Data) > 0 {
 					_ = cc.Unmarshal(ent.Data)
 				}
-				// Record envelope to preserve index continuity.
+				// WAL: store config change like a normal entry (no bucket semantics).
+				if s.wal != nil {
+					meta := WALMetadata{}
+					if err := s.wal.AppendEntry(ent.Index, ent.Term, EntryKindNormal, ent.Data, meta, nil); err != nil {
+						slog.Warn("wal append confchange failed", slog.String("shard", s.shardID), slog.Uint64("index", ent.Index), slog.Any("error", err))
+					}
+				}
 				if s.walShadow != nil {
 					env := &raftwal.Envelope{RaftIndex: ent.Index, RaftTerm: ent.Term, Kind: raftwal.EntryKind_ENTRY_NORMAL, AppBytes: ent.Data, AppCrc: crc32.ChecksumIEEE(ent.Data), Namespace: "default"}
 					if b, mErr := proto.Marshal(env); mErr == nil {
@@ -1109,6 +1146,12 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 				var cc raftpb.ConfChangeV2
 				if len(ent.Data) > 0 {
 					_ = cc.Unmarshal(ent.Data)
+				}
+				if s.wal != nil {
+					meta := WALMetadata{}
+					if err := s.wal.AppendEntry(ent.Index, ent.Term, EntryKindNormal, ent.Data, meta, nil); err != nil {
+						slog.Warn("wal append confchangeV2 failed", slog.String("shard", s.shardID), slog.Uint64("index", ent.Index), slog.Any("error", err))
+					}
 				}
 				if s.walShadow != nil {
 					env := &raftwal.Envelope{RaftIndex: ent.Index, RaftTerm: ent.Term, Kind: raftwal.EntryKind_ENTRY_NORMAL, AppBytes: ent.Data, AppCrc: crc32.ChecksumIEEE(ent.Data), Namespace: "default"}
@@ -1149,7 +1192,7 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 	if !s.manual && s.rn.Status().Lead == 0 && len(s.confState.Voters) == 1 {
 		_ = s.rn.Campaign(context.Background())
 	}
-	// Snapshot / compaction logic
+	// Snapshot / compaction logic (pruning prefers abstract WAL if present; falls back to legacy shadow WAL).
 	if s.snapshotThreshold > 0 && s.committedSinceSnap >= s.snapshotThreshold && s.lastAppliedIndex > s.lastSnapshotIndex {
 		if s.storage != nil {
 			if snap, err := s.storage.CreateSnapshot(s.lastAppliedIndex, &s.confState, nil); err == nil && !etcdraft.IsEmptySnap(snap) {
@@ -1173,14 +1216,20 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 							}
 							s.committedSinceSnap = 0
 							s.mu.Unlock()
-							// WAL segment pruning (shadow): delete fully obsolete segments whose max index < prunedThroughIndex
-							if s.walShadow != nil && s.prunedThroughIndex > 0 {
-								if pw, ok := s.walShadow.(interface{ PruneThrough(uint64) (int, error) }); ok {
-									if removed, perr := pw.PruneThrough(s.prunedThroughIndex); perr != nil {
-										slog.Warn("wal prune failed", slog.String("shard", s.shardID), slog.Any("error", perr))
-									} else if removed > 0 {
-										slog.Info("wal segments pruned", slog.String("shard", s.shardID), slog.Int("removed", removed), slog.Uint64("through", s.prunedThroughIndex))
+							// WAL pruning (prefer abstract WAL, fallback to legacy shadow). Only prune if we have a positive watermark.
+							if s.prunedThroughIndex > 0 {
+								pruneFunc := func(upto uint64) (int, error) { return 0, nil }
+								if s.wal != nil {
+									pruneFunc = s.wal.PruneThrough
+								} else if s.walShadow != nil {
+									if pw, ok := s.walShadow.(interface{ PruneThrough(uint64) (int, error) }); ok {
+										pruneFunc = pw.PruneThrough
 									}
+								}
+								if removed, perr := pruneFunc(s.prunedThroughIndex); perr != nil {
+									slog.Warn("wal prune failed", slog.String("shard", s.shardID), slog.Any("error", perr))
+								} else if removed > 0 {
+									slog.Info("wal segments pruned", slog.String("shard", s.shardID), slog.Int("removed", removed), slog.Uint64("through", s.prunedThroughIndex))
 								}
 							}
 						}
