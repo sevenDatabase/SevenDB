@@ -60,6 +60,10 @@ func newDeterministicNode(t *testing.T, cfg RaftConfig, start time.Time) *ShardR
 	if err != nil {
 		t.Fatalf("new deterministic node: %v", err)
 	}
+	// Ensure the node is always closed even if a test forgets to explicitly call closeAll/Close.
+	// This prevents background raft goroutines (ready/tick) or WAL segment writers from
+	// racing with the testing package's TempDir cleanup (which led to ENOTEMPTY errors).
+	t.Cleanup(func() { _ = n.Close() })
 	return n
 }
 

@@ -118,6 +118,7 @@ type ShardRaftNode struct {
 	nextRaftIndex   uint64
 	perBucketCommit map[string]uint64 // last assigned per-bucket commit index
 	closed          bool
+	closedAtomic    atomic.Bool // duplicate of closed for fast, lock-free checks in hot paths
 
 	// engine selection ("stub" default, or "etcd")
 	engine string
@@ -129,6 +130,13 @@ type ShardRaftNode struct {
 	tickEvery  time.Duration
 	waitersSeq map[uint64]chan *ProposalResult // sequence -> waiter (etcd engine)
 	nextSeq    uint64                          // atomic sequence counter for proposals under etcd engine
+	// lastKnownLeader caches the most recent non-zero leader ID observed via Ready.SoftState.
+	// This helps followers surface an up-to-date leader hint in NotLeaderError even if their
+	// own etcd Status() snapshot still shows Lead=0 due to a race between election and proposal.
+	// lastKnownLeader caches latest leader ID observed. Accessed atomically to avoid
+	// taking s.mu inside hot-path status queries (prevents subtle self-deadlock patterns
+	// when Status() is called while holding s.mu elsewhere or during test harness loops).
+	lastKnownLeader uint64
 
 	// transport (only used for multi-node etcd raft). For single-node or stub it's nil or noop.
 	transport Transport
@@ -176,6 +184,26 @@ type ShardRaftNode struct {
 	// has been established. It is executed outside the internal mutex.
 	replicationHandler func(*ReplicationPayload) error
 	replicationStrict  bool // if true, handler errors are treated as fatal (panic) to avoid divergence
+}
+
+// waitForLeaderHint spins briefly (bounded) to obtain a non-empty leader ID after an election.
+// This reduces racy empty hints just after leadership changes. It does not block more than
+// attempts * 200µs (~5ms for 25 attempts).
+func (s *ShardRaftNode) waitForLeaderHint(attempts int) string {
+	if attempts <= 0 { return "" }
+	for i := 0; i < attempts; i++ {
+		lid := s.leaderHint()
+		if lid != "" { return lid }
+		if s.engine == "etcd" && s.rn != nil {
+			st := s.rn.Status()
+			if st.Lead != 0 {
+				atomic.StoreUint64(&s.lastKnownLeader, st.Lead)
+				return strconv.FormatUint(uint64(st.Lead), 10)
+			}
+		}
+		time.Sleep(200 * time.Microsecond)
+	}
+	return ""
 }
 
 // ValidateShadowTail compares in-memory validator CRCs (if enabled) with the tail of shadow WAL.
@@ -277,16 +305,35 @@ type StatusSnapshot struct {
 // Status returns an immutable snapshot of internal counters useful for debug/metrics.
 func (s *ShardRaftNode) Status() StatusSnapshot {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	copyMap := make(map[string]uint64, len(s.perBucketCommit))
-	for k, v := range s.perBucketCommit {
-		copyMap[k] = v
+	for k, v := range s.perBucketCommit { copyMap[k] = v }
+	lastApplied := s.lastAppliedIndex
+	lastSnap := s.lastSnapshotIndex
+	commSince := s.committedSinceSnap
+	pruned := s.prunedThroughIndex
+	shard := s.shardID
+	engine := s.engine
+	closed := s.closedAtomic.Load()
+	rn := s.rn
+	s.mu.Unlock()
+
+	leaderID := ""
+	isLeader := false
+	if engine == "etcd" && rn != nil && !closed {
+		st := rn.Status()
+		lead := st.Lead
+		if lead != 0 { leaderID = strconv.FormatUint(uint64(lead), 10); atomic.StoreUint64(&s.lastKnownLeader, lead) }
+		isLeader = st.ID == lead && lead != 0
+		if leaderID == "" { // fallback cache
+			if cached := atomic.LoadUint64(&s.lastKnownLeader); cached != 0 { leaderID = strconv.FormatUint(cached, 10) }
+		}
+	} else if engine != "etcd" { // stub
+		leaderID = "stub"
+		isLeader = true
 	}
-	ss := StatusSnapshot{ShardID: s.shardID, LeaderID: s.LeaderID(), IsLeader: s.IsLeader(), LastAppliedIndex: s.lastAppliedIndex, LastSnapshotIndex: s.lastSnapshotIndex, CommittedSinceSnap: s.committedSinceSnap, PerBucketCommit: copyMap, PrunedThroughIndex: s.prunedThroughIndex}
+	ss := StatusSnapshot{ShardID: shard, LeaderID: leaderID, IsLeader: isLeader, LastAppliedIndex: lastApplied, LastSnapshotIndex: lastSnap, CommittedSinceSnap: commSince, PerBucketCommit: copyMap, PrunedThroughIndex: pruned}
 	if gt, ok := s.transport.(*GRPCTransport); ok && gt != nil {
-		ps := gt.Stats()
-		ss.TransportPeersTotal = ps.Total
-		ss.TransportPeersConnected = ps.Connected
+		ps := gt.Stats(); ss.TransportPeersTotal = ps.Total; ss.TransportPeersConnected = ps.Connected
 	}
 	return ss
 }
@@ -480,18 +527,34 @@ func NewShardRaftNode(cfg RaftConfig) (*ShardRaftNode, error) {
 
 func (s *ShardRaftNode) IsLeader() bool {
 	if s.engine == "etcd" && s.rn != nil {
+		if s.closedAtomic.Load() { // avoid calling into raft after shutdown
+			return false
+		}
 		st := s.rn.Status()
-		return st.ID == st.Lead
+		lead := st.Lead
+		isLead := st.ID == lead
+		if lead != 0 { atomic.StoreUint64(&s.lastKnownLeader, lead) }
+		return isLead
 	}
 	return true
 }
 
 func (s *ShardRaftNode) LeaderID() string {
 	if s.engine == "etcd" && s.rn != nil {
-		return strconv.FormatUint(uint64(s.rn.Status().Lead), 10)
+		if s.closedAtomic.Load() { return "" }
+		st := s.rn.Status()
+		lead := st.Lead
+		if lead == 0 { lead = atomic.LoadUint64(&s.lastKnownLeader) }
+		if lead == 0 { // still unknown
+			return ""
+		}
+		return strconv.FormatUint(uint64(lead), 10)
 	}
 	return "stub"
 }
+
+// leaderHint returns the best-effort current leader ID string, favoring live status then cache.
+func (s *ShardRaftNode) leaderHint() string { return s.LeaderID() }
 
 // ShardID returns the identifier of this shard raft node (exported accessor).
 func (s *ShardRaftNode) ShardID() string { return s.shardID }
@@ -516,9 +579,36 @@ func (s *ShardRaftNode) Propose(ctx context.Context, rec *RaftLogRecord) (uint64
 	}
 	if s.engine == "etcd" && s.rn != nil && !s.IsLeader() {
 		if s.forwardProposals {
-			return 0, &NotLeaderError{LeaderID: s.LeaderID()}
+			lid := s.leaderHint()
+			if lid == "" { lid = s.waitForLeaderHint(25) }
+			if lid == "" { // one more attempt: direct status read
+				st := s.rn.Status()
+				if st.Lead != 0 {
+					lid = strconv.FormatUint(uint64(st.Lead), 10)
+				} else if len(st.Progress) > 0 { // guess: smallest peer ID other than self
+					var best uint64 = ^uint64(0)
+					for id := range st.Progress {
+						if id == st.ID { continue }
+						if id < best { best = id }
+					}
+					if best != ^uint64(0) { lid = strconv.FormatUint(best, 10) }
+				}
+			}
+			return 0, &NotLeaderError{LeaderID: lid}
 		}
-		return 0, &NotLeaderError{LeaderID: s.LeaderID()}
+		lid := s.leaderHint()
+		if lid == "" { lid = s.waitForLeaderHint(25) }
+		if lid == "" {
+			st := s.rn.Status()
+			if st.Lead != 0 {
+				lid = strconv.FormatUint(uint64(st.Lead), 10)
+			} else if len(st.Progress) > 0 {
+				var best uint64 = ^uint64(0)
+				for id := range st.Progress { if id == st.ID { continue }; if id < best { best = id } }
+				if best != ^uint64(0) { lid = strconv.FormatUint(best, 10) }
+			}
+		}
+		return 0, &NotLeaderError{LeaderID: lid}
 	}
 	if s.engine == "etcd" && s.rn != nil {
 		seq := atomic.AddUint64(&s.nextSeq, 1)
@@ -553,9 +643,33 @@ func (s *ShardRaftNode) ProposeAndWait(ctx context.Context, rec *RaftLogRecord) 
 	}
 	if s.engine == "etcd" && s.rn != nil && !s.IsLeader() {
 		if s.forwardProposals {
-			return 0, 0, &NotLeaderError{LeaderID: s.LeaderID()}
+			lid := s.leaderHint()
+			if lid == "" { lid = s.waitForLeaderHint(25) }
+			if lid == "" {
+				st := s.rn.Status()
+				if st.Lead != 0 {
+					lid = strconv.FormatUint(uint64(st.Lead), 10)
+				} else if len(st.Progress) > 0 {
+					var best uint64 = ^uint64(0)
+					for id := range st.Progress { if id == st.ID { continue }; if id < best { best = id } }
+					if best != ^uint64(0) { lid = strconv.FormatUint(best, 10) }
+				}
+			}
+			return 0, 0, &NotLeaderError{LeaderID: lid}
 		}
-		return 0, 0, &NotLeaderError{LeaderID: s.LeaderID()}
+		lid := s.leaderHint()
+		if lid == "" { lid = s.waitForLeaderHint(25) }
+		if lid == "" {
+			st := s.rn.Status()
+			if st.Lead != 0 {
+				lid = strconv.FormatUint(uint64(st.Lead), 10)
+			} else if len(st.Progress) > 0 {
+				var best uint64 = ^uint64(0)
+				for id := range st.Progress { if id == st.ID { continue }; if id < best { best = id } }
+				if best != ^uint64(0) { lid = strconv.FormatUint(best, 10) }
+			}
+		}
+		return 0, 0, &NotLeaderError{LeaderID: lid}
 	}
 	if s.engine == "etcd" && s.rn != nil {
 		ch := make(chan *ProposalResult, 1)
@@ -668,6 +782,7 @@ func (s *ShardRaftNode) Close() error {
 		return nil
 	}
 	s.closed = true
+	s.closedAtomic.Store(true)
 	var walShadowClose func() error
 	if s.walShadow != nil {
 		if c, ok := s.walShadow.(interface{ Close() error }); ok {
@@ -979,6 +1094,11 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 	if s.closed {
 		s.mu.Unlock()
 		return
+	}
+	// Update lastKnownLeader from SoftState (if present) before unlocking so proposals racing
+	// with elections get an accurate leader hint.
+	if rd.SoftState != nil && rd.SoftState.Lead != 0 {
+		s.lastKnownLeader = rd.SoftState.Lead
 	}
 	// capture committed channel safely (channel itself will be closed after we release lock, we guard sends later by re-checking closed state indirectly)
 	committedCh := s.committedCh

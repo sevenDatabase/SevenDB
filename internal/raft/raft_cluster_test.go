@@ -71,8 +71,12 @@ func waitUntil(t *testing.T, timeout time.Duration, interval time.Duration, fn f
 // findLeader returns (leaderNode, leaderID,boolFound)
 func findLeader(nodes []*ShardRaftNode) (*ShardRaftNode, string, bool) {
 	for _, n := range nodes {
-		if n.IsLeader() {
-			return n, n.LeaderID(), true
+		if n == nil || n.shardID == "_dead" || n.closedAtomic.Load() { // skip crashed or closed
+			continue
+		}
+		st := n.Status()
+		if st.IsLeader && st.LeaderID != "" {
+			return n, st.LeaderID, true
 		}
 	}
 	return nil, "", false
