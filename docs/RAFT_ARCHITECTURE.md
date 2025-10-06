@@ -1,6 +1,6 @@
 # SevenDB Raft & Shadow WAL Architecture
 
-> Status: MVP foundation with deterministic testing, dual persistence (legacy + shadow WAL), experimental primary WAL read path. Updated to reflect current codebase analysis (Oct 2025).
+> Status: MVP foundation with deterministic testing, dual persistence (legacy + shadow WAL), experimental primary WAL read path. Updated to reflect current codebase analysis (Oct 2025). Concurrency/race hardening section added (Oct 7 2025).
 
 ## 1. Goals & Design Principles
 - Deterministic, testable replication core.
@@ -186,10 +186,26 @@ type Transport interface { Send(ctx context.Context, msgs []raftpb.Message) }
 - Tick loop respects `stopCh` early to avoid goroutine leaks.
 - Shadow WAL writes best-effort; failures logged (don’t block raft progress) during migration phase.
 
+### 10.1 Recent Concurrency / Race Hardening (Oct 7 2025)
+The following adjustments were introduced after observing intermittent test stalls and race detector warnings:
+
+| Change | Rationale | Effect |
+|--------|-----------|--------|
+| Atomic `lastKnownLeader` cache | Avoid holding `s.mu` while calling `rn.Status()` repeatedly in hot paths (Status / IsLeader / leader hint). | Eliminates potential self-deadlock & reduces contention under proposal storms. |
+| `closedAtomic` flag (duplicate of `closed`) | Fast lock-free rejection of operations after shutdown / crash without contending on mutex. | Prevents races where `Status()` queried after `Close()` or `Crash()`. |
+| Single-call capture of `rn.Status()` | Some code previously issued multiple Status calls per public method, creating window for inconsistent reads. | Provides coherent leader/isLeader snapshot; reduces syscall / locking overhead inside etcd. |
+| `Crash()` method (abrupt termination) | Tests needed to simulate ungraceful leader failure without WAL flush/close to validate recovery logic & dual-write safety. | Ensures background goroutines are halted quickly while mimicking real crash (no channel close ordering). |
+| Guarded waiter signaling on shutdown | Ensures waiter channels receive `nil` (interpreted as aborted) instead of panic when node closes mid-flight. | Deterministic proposal abort semantics. |
+| Atomic store of leader on Ready SoftState | SoftState leader updates now captured before unlocking in `processReady`. | Reduces race window between election and subsequent leadership hint queries. |
+| Defensive early return in `processReady` if closed | Avoids processing stale Ready structs that arrive after shutdown sequence started. | Prevents spurious WAL writes & waiter signaling after close. |
+
+Guidance: Any future public API that queries raft node state should prefer reading immutable snapshot fields under a minimal lock, then performing any expensive raft.Status() interactions outside the lock while consulting atomic caches.
+
 ## 11. Limitations / Future Work
 | Area | Gap | Next Step |
 |------|-----|----------|
 | WAL Replay Validation | No explicit gap detection | Verify contiguous indices & term monotonicity on replay. |
+| Crash Semantics Consistency | Crash vs Close divergence unverified | Add integration test ensuring Crash leaves WAL segments in recoverable state and waiters abort cleanly. |
 | HardState Envelope Indexing | Uses commit index as proxy | Introduce explicit sequence for HardState ordering. |
 | Flow Control | Receiver side ignored | Implement acks / backpressure (dropped send metrics). |
 | Metrics | Minimal | Expose counters: proposals, commits, snapshots, prunes, fsyncs, validator mismatches. |
@@ -227,6 +243,7 @@ type Transport interface { Send(ctx context.Context, msgs []raftpb.Message) }
 | WAL Segment Pruning | Implemented | Index-based safe prune after snapshot compaction. |
 | Data Corruption Detection | Partial | CRC at write; replay validates but no quarantine policy. |
 | Deterministic Testing Harness | Implemented | Manual mode + simulated clock + per-step processing. |
+| Crash Simulation | Implemented | `Crash()` method performs abrupt stop without graceful WAL closure. |
 | Per-Bucket Commit Index | Implemented (in-memory) | Not persisted; lost on restart (rebuild plan pending). |
 | Dual-Read Validator | Implemented | Warn-only parity checks. |
 | Leadership Lease Optimization | Missing | Candidate for reducing read latency. |

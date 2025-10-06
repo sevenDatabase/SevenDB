@@ -62,12 +62,25 @@ n.ValidateShadowTail()
 to assert the CRC/index parity ring matches recent writes.
 
 ### Crash / Failover Simulation
-To simulate a crash of the leader without graceful shutdown:
-1. Identify the leader index.
-2. Replace its slot in the `nodes` slice with a placeholder `&ShardRaftNode{shardID:"_dead"}`.
-3. Advance simulated time until a new leader emerges.
-4. Recreate the crashed node via `newDeterministicNode` pointing to its original data directory.
-5. Reattach transport and advance until catch-up.
+Use the built-in abrupt termination helper:
+
+```
+leader.Crash()
+```
+
+This mimics an ungraceful process death:
+- Does NOT flush or close WALs (unlike `Close()`)
+- Stops background goroutines (`tickLoop`, `readyLoop`)
+- Marks the node closed via both `closed` (under mutex) and `closedAtomic` for lock-free fast path guards
+
+Updated failover pattern:
+1. Detect leader: `lid, lnode := findLeader(...)`.
+2. Call `lnode.Crash()`.
+3. Advance simulated time until a new leader is elected.
+4. (Optional) Restart crashed identity by constructing a NEW node with same `NodeID` & `DataDir` and reattaching the transport.
+5. Advance time until its `Status().LastAppliedIndex` catches up with current leader.
+
+Legacy placeholder replacement is no longer required and should be removed from new tests.
 
 ### Restart Semantics
 When restarting a node, its prior WAL shadow directory is reused so that:
@@ -181,4 +194,17 @@ A: Each advancement triggers raft tick processing; loop bounds are modest (hundr
 A: Avoid mixing in the same test; either all nodes share simulated time or all use wall clock, to retain consistent timing behavior.
 
 ---
-Last updated: 2025-10-03
+### Race / Concurrency Hardening Patterns
+Recent changes added atomic leader hint caching and a fast closed check. Tests relying on leadership transitions should:
+- Prefer `node.LeaderID()` (which uses the atomic fallback) rather than calling `rn.Status()` directly.
+- Avoid asserting leader immediately after a crash; allow several election ticks (advance loop) so `lastKnownLeader` updates through Ready processing.
+- When validating proposal abort semantics post-crash, assert `ErrProposalAborted` (waiter channel closed) rather than generic errors.
+
+### When to Use Crash vs Close
+| Scenario | Use | Reason |
+|----------|-----|--------|
+| Graceful cluster scale down | `Close()` | Ensures waiters notified & WAL flushed. |
+| Abrupt failover / durability test | `Crash()` | Emulates power loss, tests WAL recovery code path. |
+| Race detector validation (resource leak) | `Close()` | Deterministic teardown avoids false positives. |
+
+Last updated: 2025-10-07
