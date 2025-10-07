@@ -114,6 +114,62 @@ type Transport interface { Send(ctx context.Context, msgs []raftpb.Message) }
 - Eliminates nondeterminism in multi-node election tests.
 
 ## 6. Shadow WAL Details
+### 6.0 Abstract WAL Layer (Migration Interface)
+To decouple raft Ready processing from the concrete shadow WAL writer, a thin `WAL` interface was introduced. This enables:
+1. Pluggable alternative WAL implementations (e.g., compressed, encrypted, remote replicated, cloud object backed).
+2. Incremental migration: dual-writing to the legacy shadow WAL while validating a new implementation.
+3. Cleaner pruning and replay logic—callers target a stable contract instead of internal shadow writer methods.
+
+#### 6.0.1 Interface Summary
+```
+type WAL interface {
+   AppendEntry(index uint64, term uint64, kind EntryKind, payload []byte, meta WALMetadata, hardStateBytes []byte) error
+   Sync() error
+   PruneThrough(upto uint64) (removed int, err error)
+   Replay(fn func(WALReplayItem) error) error
+   ReplayLastHardState() (hsBytes []byte, ok bool, err error)
+   Dir() string
+   Close() error
+}
+```
+`EntryKind` distinguishes normal log entries from HardState mutations; `WALMetadata` carries bucket, opcode, and logical sequence for higher-level reconstruction.
+
+#### 6.0.2 Injection (`WALFactory`)
+`RaftConfig.WALFactory` allows callers/tests to supply a custom WAL. Initialization order:
+1. etcd raft node + legacy persistence created.
+2. If `WALFactory != nil`, it is invoked—errors are non-fatal (shadow path can still operate).
+3. If `EnableWALShadow` is set and no custom WAL provided, the existing shadow writer adapter fills the `WAL` slot later (migration phase).
+
+#### 6.0.3 Dual-Write Migration Strategy
+- While legacy shadow WAL is still authoritative, Ready processing writes both:
+   - Abstract WAL (`s.wal.AppendEntry(...)`)
+   - Legacy shadow writer (`walShadow.AppendEnvelope/AppendHardState`)
+- Failures in the abstract WAL are logged but do not block raft progress.
+- Once validated (CRC parity, replay gap checks), a feature flag will disable shadow writes and prune code paths referencing `walShadow`.
+
+#### 6.0.4 HardState Change Detection
+Before appending a HardState frame, the code compares `(Term, Vote, Commit)` with the last persisted HardState to eliminate redundant writes. This optimization applies to both WAL paths.
+
+#### 6.0.5 Pruning Preference Order
+When snapshot compaction advances `prunedThroughIndex`, pruning chooses:
+1. `s.wal.PruneThrough()` if an abstract WAL is present.
+2. Fallback to legacy shadow writer's `PruneThrough()` (when available).
+This ordering ensures a custom WAL implementation controls its own retention policy while legacy segments are still cleaned up during migration.
+
+#### 6.0.6 Replay & Primary Read Path
+`ReplayLastHardState` and `Replay` enable a future hardened primary read mode to reconstruct raft storage without legacy files. Current limitations:
+- Gap detection and term monotonic validation are TODO.
+- Per-bucket commit reconstruction still pending (will use metadata sequence + bucket fields).
+
+#### 6.0.7 Testing Hooks
+Tests can inject a mock WAL via `WALFactory` to capture all append/prune operations and assert ordering without touching disk, accelerating CI and fault injection scenarios.
+
+#### 6.0.8 Cutover Plan (High-Level)
+1. Run dual-write + dual-read CRC validation.
+2. Enforce replay gap checks; panic in CI on divergence.
+3. Enable primary read for canary shards using only `WAL` (skip legacy `entries.log`).
+4. Remove shadow writer & adapter after stable runtime window.
+
 ### 6.1 Frame Layout
 ```
 [CRC32(uint32)][LEN(uint32)][Envelope proto bytes]

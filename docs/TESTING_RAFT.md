@@ -61,6 +61,18 @@ n.ValidateShadowTail()
 ```
 to assert the CRC/index parity ring matches recent writes.
 
+### Custom WAL Injection (WALFactory)
+Advanced tests can supply a mock or in-memory WAL by setting `RaftConfig.WALFactory` to a function returning a test implementation of the `WAL` interface. This allows assertions on:
+- Append ordering (`AppendEntry` call sequence / indices / kinds)
+- HardState change filtering (no duplicate AppendEntry for unchanged HardState)
+- Prune behavior (`PruneThrough` receives expected watermark after snapshot)
+
+Pattern:
+```
+cfg.WALFactory = func(cfg RaftConfig) (WAL, error) { return newMockWAL(t), nil }
+```
+Ensure dual-write remains enabled if you want parity (set `EnableWALShadow=true`) or disable it to isolate the new WAL path performance characteristics.
+
 ### Crash / Failover Simulation
 Use the built-in abrupt termination helper:
 
