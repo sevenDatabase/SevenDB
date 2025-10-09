@@ -152,7 +152,7 @@ type ShardRaftNode struct {
 	// wal (new) is the abstracted write-ahead log interface (superset use-case). During
 	// migration both walShadow (legacy shadow writer) and wal may coexist; future cleanup
 	// will remove walShadow once all call sites are switched to wal.
-	wal WAL
+	wal                 WAL
 	walValidator        *walValidator
 	walDualReadValidate bool
 	// lastShadowHardState is accessed from processReady (background goroutine) and
@@ -207,7 +207,9 @@ func (s *ShardRaftNode) Crash() {
 		rn = s.rn
 	}
 	s.mu.Unlock()
-	if rn != nil { rn.Stop() }
+	if rn != nil {
+		rn.Stop()
+	}
 	s.wg.Wait()
 	// Intentionally DO NOT close committedCh or waiters; mimic abrupt termination where
 	// in-flight proposals observe ErrProposalAborted on channel close later (ignored here).
@@ -217,10 +219,14 @@ func (s *ShardRaftNode) Crash() {
 // This reduces racy empty hints just after leadership changes. It does not block more than
 // attempts * 200µs (~5ms for 25 attempts).
 func (s *ShardRaftNode) waitForLeaderHint(attempts int) string {
-	if attempts <= 0 { return "" }
+	if attempts <= 0 {
+		return ""
+	}
 	for i := 0; i < attempts; i++ {
 		lid := s.leaderHint()
-		if lid != "" { return lid }
+		if lid != "" {
+			return lid
+		}
 		if s.engine == "etcd" && s.rn != nil {
 			st := s.rn.Status()
 			if st.Lead != 0 {
@@ -333,7 +339,9 @@ type StatusSnapshot struct {
 func (s *ShardRaftNode) Status() StatusSnapshot {
 	s.mu.Lock()
 	copyMap := make(map[string]uint64, len(s.perBucketCommit))
-	for k, v := range s.perBucketCommit { copyMap[k] = v }
+	for k, v := range s.perBucketCommit {
+		copyMap[k] = v
+	}
 	lastApplied := s.lastAppliedIndex
 	lastSnap := s.lastSnapshotIndex
 	commSince := s.committedSinceSnap
@@ -349,10 +357,15 @@ func (s *ShardRaftNode) Status() StatusSnapshot {
 	if engine == "etcd" && rn != nil && !closed {
 		st := rn.Status()
 		lead := st.Lead
-		if lead != 0 { leaderID = strconv.FormatUint(uint64(lead), 10); atomic.StoreUint64(&s.lastKnownLeader, lead) }
+		if lead != 0 {
+			leaderID = strconv.FormatUint(uint64(lead), 10)
+			atomic.StoreUint64(&s.lastKnownLeader, lead)
+		}
 		isLeader = st.ID == lead && lead != 0
 		if leaderID == "" { // fallback cache
-			if cached := atomic.LoadUint64(&s.lastKnownLeader); cached != 0 { leaderID = strconv.FormatUint(cached, 10) }
+			if cached := atomic.LoadUint64(&s.lastKnownLeader); cached != 0 {
+				leaderID = strconv.FormatUint(cached, 10)
+			}
 		}
 	} else if engine != "etcd" { // stub
 		leaderID = "stub"
@@ -360,7 +373,9 @@ func (s *ShardRaftNode) Status() StatusSnapshot {
 	}
 	ss := StatusSnapshot{ShardID: shard, LeaderID: leaderID, IsLeader: isLeader, LastAppliedIndex: lastApplied, LastSnapshotIndex: lastSnap, CommittedSinceSnap: commSince, PerBucketCommit: copyMap, PrunedThroughIndex: pruned}
 	if gt, ok := s.transport.(*GRPCTransport); ok && gt != nil {
-		ps := gt.Stats(); ss.TransportPeersTotal = ps.Total; ss.TransportPeersConnected = ps.Connected
+		ps := gt.Stats()
+		ss.TransportPeersTotal = ps.Total
+		ss.TransportPeersConnected = ps.Connected
 	}
 	return ss
 }
@@ -560,7 +575,9 @@ func (s *ShardRaftNode) IsLeader() bool {
 		st := s.rn.Status()
 		lead := st.Lead
 		isLead := st.ID == lead
-		if lead != 0 { atomic.StoreUint64(&s.lastKnownLeader, lead) }
+		if lead != 0 {
+			atomic.StoreUint64(&s.lastKnownLeader, lead)
+		}
 		return isLead
 	}
 	return true
@@ -568,10 +585,14 @@ func (s *ShardRaftNode) IsLeader() bool {
 
 func (s *ShardRaftNode) LeaderID() string {
 	if s.engine == "etcd" && s.rn != nil {
-		if s.closedAtomic.Load() { return "" }
+		if s.closedAtomic.Load() {
+			return ""
+		}
 		st := s.rn.Status()
 		lead := st.Lead
-		if lead == 0 { lead = atomic.LoadUint64(&s.lastKnownLeader) }
+		if lead == 0 {
+			lead = atomic.LoadUint64(&s.lastKnownLeader)
+		}
 		if lead == 0 { // still unknown
 			return ""
 		}
@@ -607,7 +628,9 @@ func (s *ShardRaftNode) Propose(ctx context.Context, rec *RaftLogRecord) (uint64
 	if s.engine == "etcd" && s.rn != nil && !s.IsLeader() {
 		if s.forwardProposals {
 			lid := s.leaderHint()
-			if lid == "" { lid = s.waitForLeaderHint(25) }
+			if lid == "" {
+				lid = s.waitForLeaderHint(25)
+			}
 			if lid == "" { // one more attempt: direct status read
 				st := s.rn.Status()
 				if st.Lead != 0 {
@@ -615,24 +638,41 @@ func (s *ShardRaftNode) Propose(ctx context.Context, rec *RaftLogRecord) (uint64
 				} else if len(st.Progress) > 0 { // guess: smallest peer ID other than self
 					var best uint64 = ^uint64(0)
 					for id := range st.Progress {
-						if id == st.ID { continue }
-						if id < best { best = id }
+						if id == st.ID {
+							continue
+						}
+						if id < best {
+							best = id
+						}
 					}
-					if best != ^uint64(0) { lid = strconv.FormatUint(best, 10) }
+					if best != ^uint64(0) {
+						lid = strconv.FormatUint(best, 10)
+					}
 				}
 			}
 			return 0, &NotLeaderError{LeaderID: lid}
 		}
 		lid := s.leaderHint()
-		if lid == "" { lid = s.waitForLeaderHint(25) }
+		if lid == "" {
+			lid = s.waitForLeaderHint(25)
+		}
 		if lid == "" {
 			st := s.rn.Status()
 			if st.Lead != 0 {
 				lid = strconv.FormatUint(uint64(st.Lead), 10)
 			} else if len(st.Progress) > 0 {
 				var best uint64 = ^uint64(0)
-				for id := range st.Progress { if id == st.ID { continue }; if id < best { best = id } }
-				if best != ^uint64(0) { lid = strconv.FormatUint(best, 10) }
+				for id := range st.Progress {
+					if id == st.ID {
+						continue
+					}
+					if id < best {
+						best = id
+					}
+				}
+				if best != ^uint64(0) {
+					lid = strconv.FormatUint(best, 10)
+				}
 			}
 		}
 		return 0, &NotLeaderError{LeaderID: lid}
@@ -671,29 +711,51 @@ func (s *ShardRaftNode) ProposeAndWait(ctx context.Context, rec *RaftLogRecord) 
 	if s.engine == "etcd" && s.rn != nil && !s.IsLeader() {
 		if s.forwardProposals {
 			lid := s.leaderHint()
-			if lid == "" { lid = s.waitForLeaderHint(25) }
+			if lid == "" {
+				lid = s.waitForLeaderHint(25)
+			}
 			if lid == "" {
 				st := s.rn.Status()
 				if st.Lead != 0 {
 					lid = strconv.FormatUint(uint64(st.Lead), 10)
 				} else if len(st.Progress) > 0 {
 					var best uint64 = ^uint64(0)
-					for id := range st.Progress { if id == st.ID { continue }; if id < best { best = id } }
-					if best != ^uint64(0) { lid = strconv.FormatUint(best, 10) }
+					for id := range st.Progress {
+						if id == st.ID {
+							continue
+						}
+						if id < best {
+							best = id
+						}
+					}
+					if best != ^uint64(0) {
+						lid = strconv.FormatUint(best, 10)
+					}
 				}
 			}
 			return 0, 0, &NotLeaderError{LeaderID: lid}
 		}
 		lid := s.leaderHint()
-		if lid == "" { lid = s.waitForLeaderHint(25) }
+		if lid == "" {
+			lid = s.waitForLeaderHint(25)
+		}
 		if lid == "" {
 			st := s.rn.Status()
 			if st.Lead != 0 {
 				lid = strconv.FormatUint(uint64(st.Lead), 10)
 			} else if len(st.Progress) > 0 {
 				var best uint64 = ^uint64(0)
-				for id := range st.Progress { if id == st.ID { continue }; if id < best { best = id } }
-				if best != ^uint64(0) { lid = strconv.FormatUint(best, 10) }
+				for id := range st.Progress {
+					if id == st.ID {
+						continue
+					}
+					if id < best {
+						best = id
+					}
+				}
+				if best != ^uint64(0) {
+					lid = strconv.FormatUint(best, 10)
+				}
 			}
 		}
 		return 0, 0, &NotLeaderError{LeaderID: lid}
@@ -1041,7 +1103,9 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 		s.snapshotThreshold = 0
 	}
 	if !s.manual { // only spawn background loops when not in manual deterministic mode
+		// Launch background loops. Add to waitgroup before starting goroutine to avoid race with Close().
 		go s.tickLoop()
+		s.wg.Add(1)
 		go s.readyLoop()
 	}
 	return nil
@@ -1083,7 +1147,6 @@ func (s *ShardRaftNode) tickLoop() {
 }
 
 func (s *ShardRaftNode) readyLoop() {
-	s.wg.Add(1)
 	defer s.wg.Done()
 	for {
 		if s.rn == nil {
