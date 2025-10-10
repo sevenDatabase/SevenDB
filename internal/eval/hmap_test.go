@@ -73,7 +73,7 @@ func TestHashMapIncrementValue(t *testing.T) {
 }
 
 func TestGetValueFromHashMap(t *testing.T) {
-	store := store.NewStore(nil, nil)
+	store := store.NewStore(nil, nil, 0)
 	key := "key1"
 	field := "field1"
 	value := "value1"
@@ -83,7 +83,7 @@ func TestGetValueFromHashMap(t *testing.T) {
 	obj := &object.Obj{
 		Type:           object.ObjTypeSSMap,
 		Value:          hmap,
-		LastAccessedAt: uint32(time.Now().Unix()),
+	LastAccessedAt: time.Now().Unix(),
 	}
 
 	store.Put(key, obj)

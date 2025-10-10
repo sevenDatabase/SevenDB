@@ -142,3 +142,29 @@ func evalSLEEP(args []string, store *dstore.Store) []byte {
 	time.Sleep(time.Duration(durationSec) * time.Second)
 	return RespOK
 }
+
+// evalPING implements legacy RESP behavior for PING used in tests.
+// - No args => +PONG
+// - One arg => bulk string echo of the arg
+// - More than one arg => arity error
+func evalPING(args []string, store *dstore.Store) []byte {
+	if len(args) == 0 || args == nil {
+		return []byte("+PONG\r\n")
+	}
+	if len(args) == 1 {
+		s := args[0]
+		return []byte(fmt.Sprintf("$%d\r\n%s\r\n", len(s), s))
+	}
+	return diceerrors.NewErrArity("PING")
+}
+
+// evalECHO implements legacy RESP behavior for ECHO used in tests.
+// - Exactly one arg => bulk string echo
+// - Otherwise => arity error
+func evalECHO(args []string, store *dstore.Store) []byte {
+	if len(args) != 1 {
+		return diceerrors.NewErrArity("ECHO")
+	}
+	s := args[0]
+	return []byte(fmt.Sprintf("$%d\r\n%s\r\n", len(s), s))
+}
