@@ -320,107 +320,69 @@ func DeserializeCMS(buffer *bytes.Reader) (*CountMinSketch, error) {
 // contains the weighted sum of the values in each of the source sketches. If
 // weights are not provided, default is 1.
 func evalCMSMerge(args []string, store *dstore.Store) *EvalResponse {
+	// Validate minimum arity first
 	if len(args) < 3 {
-		return &EvalResponse{
-			Result: nil,
-			Error:  diceerrors.ErrWrongArgumentCount("cms.merge"),
-		}
+		return &EvalResponse{Result: nil, Error: diceerrors.ErrWrongArgumentCount("cms.merge")}
 	}
 
+	// Parse number of source sketches BEFORE touching the store
+	numberOfKeys, err := strconv.ParseInt(args[1], 10, 64)
+	if err != nil {
+		return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("cannot parse number for 'cms.merge' command")}
+	}
+	if numberOfKeys < 1 {
+		return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("invalid number of arguments to merge for 'cms.merge' command")}
+	}
+
+	// Structural validation: either 2+N (no weights) or 3+2N with literal WEIGHTS
+	if len(args) != int(2+numberOfKeys) && len(args) != int(3+2*numberOfKeys) {
+		return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("invalid number of arguments to merge for 'cms.merge' command")}
+	}
+
+	keys := args[2 : 2+numberOfKeys]
+	hasWeights := len(args) == int(3+2*numberOfKeys)
+	var weights []uint64
+	if hasWeights {
+		if !strings.EqualFold(args[2+numberOfKeys], "WEIGHTS") {
+			return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("invalid number of arguments to merge for 'cms.merge' command")}
+		}
+		numberOfWeights := len(args) - 3 - int(numberOfKeys)
+		if int(numberOfKeys) != numberOfWeights {
+			return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("invalid number of arguments to merge for 'cms.merge' command")}
+		}
+		values := args[3+numberOfWeights:]
+		weights = make([]uint64, 0, numberOfWeights)
+		for _, value := range values {
+			w, err := strconv.ParseUint(value, 10, 64)
+			if err != nil {
+				return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("invalid number")}
+			}
+			weights = append(weights, w)
+		}
+	} else {
+		// default weights = 1 for each source
+		weights = slices.Repeat([]uint64{1}, int(numberOfKeys))
+	}
+
+	// Only after structural validation, touch the store for destination and sources
 	destination, err := getCountMinSketch(args[0], store)
 	if err != nil {
-		return &EvalResponse{
-			Result: nil,
-			Error:  diceerrors.ErrGeneral(fmt.Sprintf("%v for 'cms.merge' command", err)),
-		}
+		return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral(fmt.Sprintf("%v for 'cms.merge' command", err))}
 	}
-
-	numberOfKeys, err := strconv.ParseInt(args[1], 10, 64)
-
-	if err != nil {
-		return &EvalResponse{
-			Result: nil,
-			Error:  diceerrors.ErrGeneral("cannot parse number for 'cms.merge' command"),
-		}
-	}
-
-	if numberOfKeys < 1 {
-		return &EvalResponse{
-			Result: nil,
-			Error:  diceerrors.ErrGeneral("invalid number of arguments to merge for 'cms.merge' command"),
-		}
-	}
-
-	if len(args) != int(2+numberOfKeys) && len(args) != int(3+2*numberOfKeys) {
-		return &EvalResponse{
-			Result: nil,
-			Error:  diceerrors.ErrGeneral("invalid number of arguments to merge for 'cms.merge' command"),
-		}
-	}
-	keys := args[2 : 2+numberOfKeys]
 	sources := make([]*CountMinSketch, 0, numberOfKeys)
-
 	for _, key := range keys {
 		c, err := getCountMinSketch(key, store)
 		if err != nil {
-			return &EvalResponse{
-				Result: nil,
-				Error:  diceerrors.ErrGeneral(fmt.Sprintf("%v for 'cms.merge' command", err)),
-			}
+			return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral(fmt.Sprintf("%v for 'cms.merge' command", err))}
 		}
 		if c.opts.depth != destination.opts.depth || c.opts.width != destination.opts.width {
-			return &EvalResponse{
-				Result: nil,
-				Error:  diceerrors.ErrGeneral("width/depth doesn't match"),
-			}
+			return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("width/depth doesn't match")}
 		}
 		sources = append(sources, c)
 	}
 
-	if len(args) == int(2+numberOfKeys) {
-		weights := slices.Repeat([]uint64{1}, int(numberOfKeys))
-		destination.mergeMatrices(sources, weights, args[0], keys)
-
-		return &EvalResponse{
-			Result: OK,
-			Error:  nil,
-		}
-	}
-
-	if !strings.EqualFold(args[2+numberOfKeys], "WEIGHTS") {
-		return &EvalResponse{
-			Result: nil,
-			Error:  diceerrors.ErrGeneral("invalid number of arguments to merge for 'cms.merge' command"),
-		}
-	}
-
-	numberOfWeights := len(args) - 3 - int(numberOfKeys)
-	if int(numberOfKeys) != numberOfWeights {
-		return &EvalResponse{
-			Result: nil,
-			Error:  diceerrors.ErrGeneral("invalid number of arguments to merge for 'cms.merge' command"),
-		}
-	}
-
-	values := args[3+numberOfWeights:]
-	weights := make([]uint64, 0, numberOfWeights)
-	for _, value := range values {
-		weight, err := strconv.ParseUint(value, 10, 64)
-		if err != nil {
-			return &EvalResponse{
-				Result: nil,
-				Error:  diceerrors.ErrGeneral("invalid number"),
-			}
-		}
-		weights = append(weights, weight)
-	}
-
 	destination.mergeMatrices(sources, weights, args[0], keys)
-
-	return &EvalResponse{
-		Result: OK,
-		Error:  nil,
-	}
+	return &EvalResponse{Result: OK, Error: nil}
 }
 
 // evalCMSQuery returns the count for one or more items in a sketch.
