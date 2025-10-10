@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/sevenDatabase/SevenDB/internal/common"
 	"github.com/sevenDatabase/SevenDB/internal/object"
 )
@@ -33,7 +34,8 @@ func NewExpireMap() common.ITable[*object.Obj, int64] {
 }
 
 func NewDefaultEviction() EvictionStrategy {
-	return &PrimitiveEvictionStrategy{}
+	// Use a generous default keys limit to avoid unintended evictions in tests and default runs.
+	return NewPrimitiveEvictionStrategy(config.DefaultKeysLimit)
 }
 
 // QueryWatchEvent represents a change in a watched key.
