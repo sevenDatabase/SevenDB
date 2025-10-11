@@ -70,6 +70,10 @@ func parseBitfieldEncodingAndOffset(args []string) (eType, eVal, offset interfac
 }
 
 func ParseBitfieldOps(args []string, readOnly bool) (ops []BitFieldOp, err error) {
+	cmdName := "BITFIELD"
+	if readOnly {
+		cmdName = "BITFIELD_RO"
+	}
 	var overflowType string
 
 	for i := 1; i < len(args); {
@@ -77,7 +81,8 @@ func ParseBitfieldOps(args []string, readOnly bool) (ops []BitFieldOp, err error
 		switch strings.ToUpper(args[i]) {
 		case GET:
 			if len(args) <= i+2 {
-				return nil, diceerrors.ErrInvalidSyntax("BITFIELD")
+				// Report invalid syntax for the correct command variant (BITFIELD or BITFIELD_RO)
+				return nil, diceerrors.ErrInvalidSyntax(cmdName)
 			}
 			eType, eVal, offset, err := parseBitfieldEncodingAndOffset(args[i+1 : i+3])
 			if err != nil {
@@ -94,7 +99,7 @@ func ParseBitfieldOps(args []string, readOnly bool) (ops []BitFieldOp, err error
 			isReadOnlyCommand = true
 		case SET:
 			if len(args) <= i+3 {
-				return nil, diceerrors.ErrInvalidSyntax("BITFIELD")
+				return nil, diceerrors.ErrInvalidSyntax(cmdName)
 			}
 			eType, eVal, offset, err := parseBitfieldEncodingAndOffset(args[i+1 : i+3])
 			if err != nil {
@@ -114,7 +119,7 @@ func ParseBitfieldOps(args []string, readOnly bool) (ops []BitFieldOp, err error
 			i += 4
 		case INCRBY:
 			if len(args) <= i+3 {
-				return nil, diceerrors.ErrInvalidSyntax("BITFIELD")
+				return nil, diceerrors.ErrInvalidSyntax(cmdName)
 			}
 			eType, eVal, offset, err := parseBitfieldEncodingAndOffset(args[i+1 : i+3])
 			if err != nil {
@@ -134,7 +139,7 @@ func ParseBitfieldOps(args []string, readOnly bool) (ops []BitFieldOp, err error
 			i += 4
 		case OVERFLOW:
 			if len(args) <= i+1 {
-				return nil, diceerrors.ErrInvalidSyntax("BITFIELD")
+				return nil, diceerrors.ErrInvalidSyntax(cmdName)
 			}
 			switch strings.ToUpper(args[i+1]) {
 			case WRAP, FAIL, SAT:
@@ -151,7 +156,7 @@ func ParseBitfieldOps(args []string, readOnly bool) (ops []BitFieldOp, err error
 			})
 			i += 2
 		default:
-			return nil, diceerrors.ErrInvalidSyntax("BITFIELD")
+			return nil, diceerrors.ErrGeneral("ERR syntax error")
 		}
 
 		if readOnly && !isReadOnlyCommand {

@@ -90,6 +90,29 @@ var (
 		Eval:  evalSLEEP,
 		Arity: 1,
 	}
+	// Add basic command metadata for SET/GET/PING used by COMMAND subcommands
+	setCmdMeta = DiceCmdMeta{
+		Name:      "SET",
+		Info:      "SET puts a new <key, value> pair in db as in the args\n\t\targs must contain key and value.\n\t\targs can also contain multiple options -\n\t\tEX or ex which will set the expiry time(in secs) for the key\n\t\tReturns encoded error response if at least a <key, value> pair is not part of args\n\t\tReturns encoded error response if expiry tme value in not integer\n\t\tReturns encoded OK RESP once new entry is added\n\t\tIf the key already exists then the value will be overwritten and expiry will be discarded",
+		NewEval:   evalSET,
+		IsMigrated: true,
+		Arity:     -3,
+		KeySpecs:  KeySpecs{BeginIndex: 1},
+	}
+	getCmdMeta = DiceCmdMeta{
+		Name:       "GET",
+		Info:       "GET returns the value for the queried key in args\n\t\tThe key should be the only param in args\n\t\tThe RESP value of the key is encoded and then returned\n\t\tGET returns RespNIL if key is expired or it does not exist",
+		NewEval:    evalGET,
+		IsMigrated: true,
+		Arity:      2,
+		KeySpecs:   KeySpecs{BeginIndex: 1},
+	}
+	pingCmdMeta = DiceCmdMeta{
+		Name:  "PING",
+		Info:  "PING returns with an encoded \"PONG\" If any message is added with the ping command,the message will be returned.",
+		Eval:  evalPING,
+		Arity: -1,
+	}
 )
 
 // Multi Shard or All Shard Commands:
@@ -1129,6 +1152,7 @@ func init() {
 	DiceCmds["ABORT"] = abortCmdMeta
 	DiceCmds["APPEND"] = appendCmdMeta
 	DiceCmds["AUTH"] = authCmdMeta
+	DiceCmds["PING"] = pingCmdMeta
 	DiceCmds["BF.ADD"] = bfaddCmdMeta
 	DiceCmds["BF.EXISTS"] = bfexistsCmdMeta
 	DiceCmds["BF.INFO"] = bfinfoCmdMeta
@@ -1154,6 +1178,7 @@ func init() {
 	DiceCmds["GEOHASH"] = geoHashCmdMeta
 	DiceCmds["GETBIT"] = getBitCmdMeta
 	DiceCmds["GETRANGE"] = getRangeCmdMeta
+	DiceCmds["GET"] = getCmdMeta
 	DiceCmds["HDEL"] = hdelCmdMeta
 	DiceCmds["HELLO"] = helloCmdMeta
 	DiceCmds["HEXISTS"] = hexistsCmdMeta
@@ -1211,6 +1236,7 @@ func init() {
 	DiceCmds["SLEEP"] = sleepCmdMeta
 	DiceCmds["SMEMBERS"] = smembersCmdMeta
 	DiceCmds["SREM"] = sremCmdMeta
+	DiceCmds["SET"] = setCmdMeta
 	DiceCmds["ZADD"] = zaddCmdMeta
 	DiceCmds["ZCOUNT"] = zcountCmdMeta
 	DiceCmds["ZRANGE"] = zrangeCmdMeta

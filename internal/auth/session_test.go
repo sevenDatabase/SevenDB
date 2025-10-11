@@ -101,7 +101,7 @@ func TestSessionIsActive(t *testing.T) {
 	mockTime.SetTime(time.Now().Add(5 * time.Millisecond))
 
 	session.IsActive()
-	if !session.LastAccessedAt.After(oldLastAccessed) {
+	if !(session.LastAccessedAt > oldLastAccessed) {
 		t.Error("IsActive() should update LastAccessedAt")
 	}
 	config.Config.Password = utils.EmptyStr

@@ -43,7 +43,7 @@ func evalHEXISTS(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) != 2 {
 		return &EvalResponse{
 			Result: nil,
-			Error:  diceerrors.ErrWrongArgumentCount("HEXISTS"),
+			Error:  diceerrors.ErrGeneral("ERR wrong number of arguments for 'hexists' command"),
 		}
 	}
 
@@ -61,7 +61,7 @@ func evalHEXISTS(args []string, store *dstore.Store) *EvalResponse {
 	}
 	if err := object.AssertType(obj.Type, object.ObjTypeSSMap); err != nil {
 		return &EvalResponse{
-			Error:  diceerrors.ErrGeneral(diceerrors.WrongTypeErr),
+			Error:  diceerrors.ErrGeneral("ERR -WRONGTYPE Operation against a key holding the wrong kind of value"),
 			Result: nil,
 		}
 	}
@@ -93,7 +93,7 @@ func evalHKEYS(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) != 1 {
 		return &EvalResponse{
 			Result: nil,
-			Error:  diceerrors.ErrWrongArgumentCount("HKEYS"),
+			Error:  diceerrors.ErrGeneral("ERR wrong number of arguments for 'hkeys' command"),
 		}
 	}
 
@@ -106,7 +106,7 @@ func evalHKEYS(args []string, store *dstore.Store) *EvalResponse {
 	if obj != nil {
 		if err := object.AssertType(obj.Type, object.ObjTypeSSMap); err != nil {
 			return &EvalResponse{
-				Error:  diceerrors.ErrGeneral(diceerrors.WrongTypeErr),
+				Error:  diceerrors.ErrGeneral("ERR -WRONGTYPE Operation against a key holding the wrong kind of value"),
 				Result: nil,
 			}
 		}
@@ -137,7 +137,7 @@ func evalHKEYS(args []string, store *dstore.Store) *EvalResponse {
 // Usage: HVALS key
 func evalHVALS(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) != 1 {
-		return &EvalResponse{Error: diceerrors.ErrWrongArgumentCount("HVALS"), Result: nil}
+		return &EvalResponse{Error: diceerrors.ErrGeneral("ERR wrong number of arguments for 'hvals' command"), Result: nil}
 	}
 
 	key := args[0]
@@ -225,7 +225,7 @@ func evalGETRANGE(args []string, store *dstore.Store) *EvalResponse {
 		} else {
 			return &EvalResponse{
 				Result: nil,
-				Error:  diceerrors.ErrWrongTypeOperation,
+				Error:  diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value"),
 			}
 		}
 	default:
@@ -2188,7 +2188,7 @@ func evalHSCAN(args []string, store *dstore.Store) *EvalResponse {
 // If no params are provided, it uses defaults.
 func evalBFRESERVE(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) < 3 {
-		return makeEvalError(diceerrors.ErrWrongArgumentCount("BF.RESERVE"))
+		return makeEvalError(diceerrors.ErrGeneral("ERR wrong number of arguments for 'bf.reserve' command"))
 	}
 
 	opts, err := newBloomOpts(args[1:])
@@ -2214,7 +2214,7 @@ func evalBFRESERVE(args []string, store *dstore.Store) *EvalResponse {
 // exist, it will create a new one with default parameters.
 func evalBFADD(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) != 2 {
-		return makeEvalError(diceerrors.ErrWrongArgumentCount("BF.ADD"))
+		return makeEvalError(diceerrors.ErrGeneral("ERR wrong number of arguments for 'bf.add' command"))
 	}
 
 	bf, err := GetOrCreateBloomFilter(args[0], store, nil)
@@ -2234,7 +2234,7 @@ func evalBFADD(args []string, store *dstore.Store) *EvalResponse {
 func evalBFEXISTS(args []string, store *dstore.Store) *EvalResponse {
 	// todo must work with objects of
 	if len(args) != 2 {
-		return makeEvalError(diceerrors.ErrWrongArgumentCount("BF.EXISTS"))
+		return makeEvalError(diceerrors.ErrGeneral("ERR wrong number of arguments for 'bf.exists' command"))
 	}
 
 	bf, err := GetBloomFilter(args[0], store)
@@ -2444,7 +2444,7 @@ func evalLPUSH(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) < 2 {
 		return &EvalResponse{
 			Result: nil,
-			Error:  diceerrors.ErrWrongArgumentCount("LPUSH"),
+			Error:  diceerrors.ErrGeneral("ERR wrong number of arguments for 'lpush' command"),
 		}
 	}
 
@@ -2482,7 +2482,7 @@ func evalRPUSH(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) < 2 {
 		return &EvalResponse{
 			Result: nil,
-			Error:  diceerrors.ErrWrongArgumentCount("RPUSH"),
+			Error:  diceerrors.ErrGeneral("ERR wrong number of arguments for 'rpush' command"),
 		}
 	}
 
@@ -2525,7 +2525,7 @@ func evalLPOP(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) < 1 || len(args) > 2 {
 		return &EvalResponse{
 			Result: nil,
-			Error:  diceerrors.ErrWrongArgumentCount("LPOP"),
+			Error:  diceerrors.ErrGeneral("ERR wrong number of arguments for 'lpop' command"),
 		}
 	}
 
@@ -2612,7 +2612,7 @@ func evalRPOP(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) != 1 {
 		return &EvalResponse{
 			Result: nil,
-			Error:  diceerrors.ErrWrongArgumentCount("RPOP"),
+			Error:  diceerrors.ErrGeneral("ERR wrong number of arguments for 'rpop' command"),
 		}
 	}
 
@@ -2655,7 +2655,7 @@ func evalLLEN(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) != 1 {
 		return &EvalResponse{
 			Result: nil,
-			Error:  diceerrors.ErrWrongArgumentCount("LLEN"),
+			Error:  diceerrors.ErrGeneral("ERR wrong number of arguments for 'llen' command"),
 		}
 	}
 
@@ -5618,7 +5618,7 @@ func evalDEL(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) < 1 {
 		return makeEvalError(diceerrors.ErrWrongArgumentCount("DEL"))
 	}
-	deleted := 0
+	deleted := int64(0)
 	for _, k := range args {
 		if store.Del(k) {
 			deleted++
@@ -5654,61 +5654,71 @@ func evalTYPE(args []string, store *dstore.Store) *EvalResponse {
 
 func evalINCR(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) != 1 {
-		return makeEvalError(diceerrors.ErrWrongArgumentCount("INCR"))
+		return makeEvalError(diceerrors.ErrGeneral("ERR wrong number of arguments for 'incr' command"))
 	}
 	return evalINCRBY([]string{args[0], "1"}, store)
 }
 
 func evalINCRBY(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) != 2 {
-		return makeEvalError(diceerrors.ErrWrongArgumentCount("INCRBY"))
+		return makeEvalError(diceerrors.ErrGeneral("ERR wrong number of arguments for 'incrby' command"))
 	}
 	key := args[0]
 	by, err := strconv.ParseInt(strings.TrimSpace(args[1]), 10, 64)
 	if err != nil {
-		return makeEvalError(diceerrors.ErrIntegerOutOfRange)
+		return makeEvalError(diceerrors.ErrGeneral("ERR value is not an integer or out of range"))
 	}
 	obj := store.Get(key)
 	if obj == nil {
 		obj = store.NewObj(by, -1, object.ObjTypeInt)
 		store.Put(key, obj)
-		return makeEvalResult(fmt.Sprintf("%d", by))
+		return makeEvalResult(by)
 	}
 	// accept int or string representing int
 	if err := object.AssertType(obj.Type, object.ObjTypeInt); err != nil {
 		if err2 := object.AssertType(obj.Type, object.ObjTypeString); err2 != nil {
-			return makeEvalError(diceerrors.ErrWrongTypeOperation)
+			// Tests expect the uppercase WRONGTYPE variant for INCR family
+			return makeEvalError(diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value"))
 		}
 		// convert string to int64
 		v, convErr := strconv.ParseInt(strings.TrimSpace(obj.Value.(string)), 10, 64)
 		if convErr != nil {
-			return makeEvalError(diceerrors.ErrIntegerOutOfRange)
+			return makeEvalError(diceerrors.ErrGeneral("ERR value is not an integer or out of range"))
+		}
+		// overflow check before addition
+		if (by > 0 && v > math.MaxInt64-by) || (by < 0 && v < math.MinInt64-by) {
+			return makeEvalError(diceerrors.ErrGeneral("ERR increment or decrement would overflow"))
 		}
 		v += by
 		obj.Value = v
 		obj.Type = object.ObjTypeInt
-		return makeEvalResult(fmt.Sprintf("%d", v))
+		return makeEvalResult(v)
 	}
-	v := obj.Value.(int64) + by
+	v := obj.Value.(int64)
+	// overflow check before addition
+	if (by > 0 && v > math.MaxInt64-by) || (by < 0 && v < math.MinInt64-by) {
+		return makeEvalError(diceerrors.ErrGeneral("ERR increment or decrement would overflow"))
+	}
+	v = v + by
 	obj.Value = v
-	return makeEvalResult(fmt.Sprintf("%d", v))
+	return makeEvalResult(v)
 }
 
 func evalDECR(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) != 1 {
-		return makeEvalError(diceerrors.ErrWrongArgumentCount("DECR"))
+		return makeEvalError(diceerrors.ErrGeneral("ERR wrong number of arguments for 'decr' command"))
 	}
 	return evalINCRBY([]string{args[0], "-1"}, store)
 }
 
 func evalDECRBY(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) != 2 {
-		return makeEvalError(diceerrors.ErrWrongArgumentCount("DECRBY"))
+		return makeEvalError(diceerrors.ErrGeneral("ERR wrong number of arguments for 'decrby' command"))
 	}
 	key := args[0]
 	by, err := strconv.ParseInt(strings.TrimSpace(args[1]), 10, 64)
 	if err != nil {
-		return makeEvalError(diceerrors.ErrIntegerOutOfRange)
+		return makeEvalError(diceerrors.ErrGeneral("ERR value is not an integer or out of range"))
 	}
 	return evalINCRBY([]string{key, fmt.Sprintf("%d", -by)}, store)
 }
@@ -5717,7 +5727,7 @@ func evalDECRBY(args []string, store *dstore.Store) *EvalResponse {
 // Args: GET key
 func evalGET(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) != 1 {
-		return &EvalResponse{Result: nil, Error: diceerrors.ErrWrongArgumentCount("GET")}
+		return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("ERR wrong number of arguments for 'get' command")}
 	}
 	key := args[0]
 	obj := store.Get(key)
@@ -5734,14 +5744,14 @@ func evalGET(args []string, store *dstore.Store) *EvalResponse {
 	case object.ObjTypeFloat:
 		return &EvalResponse{Result: fmt.Sprintf("%f", obj.Value.(float64)), Error: nil}
 	default:
-		return &EvalResponse{Result: nil, Error: diceerrors.ErrWrongTypeOperation}
+	return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value")}
 	}
 }
 
 // evalGETDEL returns value and deletes the key if exists, NIL otherwise.
 func evalGETDEL(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) != 1 {
-		return &EvalResponse{Result: nil, Error: diceerrors.ErrWrongArgumentCount("GETDEL")}
+		return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("ERR wrong number of arguments for 'getdel' command")}
 	}
 	key := args[0]
 	// Respect not-touch semantics before delete as tests set LastAccessedAt
@@ -5760,7 +5770,7 @@ func evalGETDEL(args []string, store *dstore.Store) *EvalResponse {
 	case object.ObjTypeFloat:
 		return &EvalResponse{Result: fmt.Sprintf("%f", obj.Value.(float64)), Error: nil}
 	default:
-		return &EvalResponse{Result: nil, Error: diceerrors.ErrWrongTypeOperation}
+	return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value")}
 	}
 }
 
@@ -5768,7 +5778,7 @@ func evalGETDEL(args []string, store *dstore.Store) *EvalResponse {
 // Supported options: EX, PX, EXAT, PXAT, PERSIST. Incompatible combos error.
 func evalGETEX(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) < 1 {
-		return &EvalResponse{Result: nil, Error: diceerrors.ErrWrongArgumentCount("GETEX")}
+		return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("ERR wrong number of arguments for 'getex' command")}
 	}
 	key := args[0]
 	// parse options
@@ -5835,7 +5845,7 @@ func evalGETEX(args []string, store *dstore.Store) *EvalResponse {
 		combos++
 	}
 	if combos > 1 || (persist && combos > 0) {
-		// tests expect integer out of range for EX with PERSIST or string values; use general invalid
+		// tests expect integer out of range for EX with PERSIST or string values
 		return makeEvalError(diceerrors.ErrIntegerOutOfRange)
 	}
 
@@ -5898,14 +5908,14 @@ func evalGETEX(args []string, store *dstore.Store) *EvalResponse {
 	case object.ObjTypeFloat:
 		return &EvalResponse{Result: fmt.Sprintf("%f", obj.Value.(float64)), Error: nil}
 	default:
-		return &EvalResponse{Result: nil, Error: diceerrors.ErrWrongTypeOperation}
+	return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value")}
 	}
 }
 
 // evalSET implements SET with optional EX/PX/PXAT and GET option.
 func evalSET(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) < 2 {
-		return &EvalResponse{Result: nil, Error: diceerrors.ErrWrongArgumentCount("SET")}
+		return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("ERR wrong number of arguments for 'set' command")}
 	}
 	key, val := args[0], args[1]
 	// parse options
@@ -5970,13 +5980,13 @@ func evalSET(args []string, store *dstore.Store) *EvalResponse {
 	var exDurationMs int64 = -1
 	if exSec != nil {
 		if *exSec <= 0 || *exSec >= maxExDuration {
-			return &EvalResponse{Result: nil, Error: diceerrors.ErrInvalidExpireTime("set")}
+			return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("ERR invalid expire time in 'set' command")}
 		}
 		exDurationMs = (*exSec) * 1000
 	}
 	if pxMs != nil {
 		if *pxMs <= 0 || *pxMs >= maxExDuration {
-			return &EvalResponse{Result: nil, Error: diceerrors.ErrInvalidExpireTime("set")}
+			return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("ERR invalid expire time in 'set' command")}
 		}
 		exDurationMs = *pxMs
 	}
@@ -5984,7 +5994,7 @@ func evalSET(args []string, store *dstore.Store) *EvalResponse {
 		nowms := time.Now().UnixMilli()
 		dur := *pxatMs - nowms
 		if dur <= 0 || dur >= maxExDuration {
-			return &EvalResponse{Result: nil, Error: diceerrors.ErrInvalidExpireTime("set")}
+			return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("ERR invalid expire time in 'set' command")}
 		}
 		exDurationMs = dur
 	}
@@ -6026,17 +6036,17 @@ func evalSET(args []string, store *dstore.Store) *EvalResponse {
 // evalSETEX implements SETEX key seconds value
 func evalSETEX(args []string, store *dstore.Store) *EvalResponse {
 	if len(args) != 3 {
-		return &EvalResponse{Result: nil, Error: diceerrors.ErrWrongArgumentCount("SETEX")}
+		return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("ERR wrong number of arguments for 'setex' command")}
 	}
 	key := args[0]
 	secStr := args[1]
 	val := args[2]
 	sec, err := strconv.ParseInt(secStr, 10, 64)
 	if err != nil {
-		return &EvalResponse{Result: nil, Error: diceerrors.ErrIntegerOutOfRange}
+		return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("ERR value is not an integer or out of range")}
 	}
 	if sec <= 0 || sec >= maxExDuration/1000 {
-		return &EvalResponse{Result: nil, Error: diceerrors.ErrInvalidExpireTime("setex")}
+		return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("ERR invalid expire time in 'setex' command")}
 	}
 	v, otype := getRawStringOrInt(val)
 	obj := store.NewObj(v, sec*1000, otype)
@@ -6424,7 +6434,7 @@ func evalJSONARRINDEX(args []string, store *dstore.Store) *EvalResponse {
 		value, err = strconv.ParseFloat(args[2], 64)
 
 		if err != nil {
-			return makeEvalError(diceerrors.ErrGeneral("Couldn't parse as integer"))
+		return makeEvalError(diceerrors.ErrGeneral("ERR Couldn't parse as integer"))
 		}
 	}
 
@@ -6433,7 +6443,7 @@ func evalJSONARRINDEX(args []string, store *dstore.Store) *EvalResponse {
 		var err error
 		start, err = strconv.Atoi(args[3])
 		if err != nil {
-			return makeEvalError(diceerrors.ErrGeneral("Couldn't parse as integer"))
+			return makeEvalError(diceerrors.ErrGeneral("ERR Couldn't parse as integer"))
 		}
 	}
 
@@ -6442,7 +6452,7 @@ func evalJSONARRINDEX(args []string, store *dstore.Store) *EvalResponse {
 		var err error
 		stop, err = strconv.Atoi(args[4])
 		if err != nil {
-			return makeEvalError(diceerrors.ErrGeneral("Couldn't parse as integer"))
+			return makeEvalError(diceerrors.ErrGeneral("ERR Couldn't parse as integer"))
 		}
 	}
 

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"time"
 
 	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/sevenDatabase/SevenDB/internal/server/utils"
@@ -96,21 +95,22 @@ func (user *User) SetPassword(password string) (err error) {
 
 func NewSession() (session *Session) {
 	session = &Session{
-		ID:             uint64(time.Now().UTC().Unix()),
-		CreatedAt:      time.Now().UnixMilli(),
-		LastAccessedAt: time.Now().UnixMilli(),
+		ID:             uint64(utils.CurrentTime.Now().UTC().Unix()),
+		CreatedAt:      utils.CurrentTime.Now().UnixMilli(),
+		LastAccessedAt: utils.CurrentTime.Now().UnixMilli(),
 		Status:         SessionStatusPending,
 	}
 	return
 }
 
 func (session *Session) IsActive() (isActive bool) {
-	if config.Config.Password == utils.EmptyStr && session.Status != SessionStatusActive {
+	// If config is not initialized or password is empty, treat as no-auth mode
+	if (config.Config == nil || config.Config.Password == utils.EmptyStr) && session.Status != SessionStatusActive {
 		session.Activate(session.User)
 	}
 	isActive = session.Status == SessionStatusActive
 	if isActive {
-		session.LastAccessedAt = time.Now().UnixMilli()
+		session.LastAccessedAt = utils.CurrentTime.Now().UnixMilli()
 	}
 	return
 }
@@ -118,8 +118,8 @@ func (session *Session) IsActive() (isActive bool) {
 func (session *Session) Activate(user *User) {
 	session.User = user
 	session.Status = SessionStatusActive
-	session.CreatedAt = time.Now().UnixMilli()
-	session.LastAccessedAt = time.Now().UnixMilli()
+	session.CreatedAt = utils.CurrentTime.Now().UnixMilli()
+	session.LastAccessedAt = utils.CurrentTime.Now().UnixMilli()
 }
 
 func (session *Session) Validate(username, password string) error {
@@ -130,7 +130,12 @@ func (session *Session) Validate(username, password string) error {
 	if user, err = UserStore.Get(username); err != nil {
 		return err
 	}
-	if username == config.Config.Username && len(user.Passwords) == 0 {
+	// Derive configured username; if config is nil, fallback to default "dicedb"
+	cfgUsername := "dicedb"
+	if config.Config != nil && config.Config.Username != utils.EmptyStr {
+		cfgUsername = config.Config.Username
+	}
+	if username == cfgUsername && len(user.Passwords) == 0 {
 		session.Activate(user)
 		return nil
 	}

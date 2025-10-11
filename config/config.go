@@ -42,6 +42,11 @@ func init() {
 
 	// Store the version string in the package-level DiceDBVersion variable
 	DiceDBVersion = strings.TrimSpace(string(version))
+
+	// Ensure Config is non-nil with default values for tests and simple runs
+	if Config == nil {
+		Config = initDefaultConfig()
+	}
 }
 
 var Config *DiceDBConfig
