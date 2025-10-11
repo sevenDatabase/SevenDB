@@ -6,11 +6,11 @@ package store
 import (
 	"path"
 	"sync"
-	"time"
 
 	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/sevenDatabase/SevenDB/internal/common"
 	"github.com/sevenDatabase/SevenDB/internal/object"
+	"github.com/sevenDatabase/SevenDB/internal/server/utils"
 )
 
 func NewStoreRegMap() common.ITable[string, *object.Obj] {
@@ -86,7 +86,7 @@ func (store *Store) NewObj(value interface{}, expDurationMs int64, oType object.
 	obj := &object.Obj{
 		Value:          value,
 		Type:           oType,
-		LastAccessedAt: time.Now().UnixMilli(),
+		LastAccessedAt: utils.CurrentTime.Now().UnixMilli(),
 	}
 	if expDurationMs >= 0 {
 		store.SetExpiry(obj, expDurationMs)
@@ -129,7 +129,7 @@ func (store *Store) putHelper(k string, obj *object.Obj, opts ...PutOption) {
 		optApplier(options)
 	}
 
-	obj.LastAccessedAt = time.Now().UnixMilli()
+	obj.LastAccessedAt = utils.CurrentTime.Now().UnixMilli()
 	currentObject, ok := store.store.Get(k)
 	if ok {
 		v, ok1 := store.expires.Get(currentObject)
@@ -168,7 +168,7 @@ func (store *Store) getHelper(k string, touch bool) *object.Obj {
 			store.deleteKey(k, obj)
 			obj = nil
 		} else if touch {
-			obj.LastAccessedAt = time.Now().UnixMilli()
+			obj.LastAccessedAt = utils.CurrentTime.Now().UnixMilli()
 			store.evictionStrategy.OnAccess(k, obj, AccessGet)
 		}
 	}
@@ -184,7 +184,7 @@ func (store *Store) GetAll(keys []string) []*object.Obj {
 				store.deleteKey(k, v)
 				response = append(response, nil)
 			} else {
-				v.LastAccessedAt = time.Now().UnixMilli()
+				v.LastAccessedAt = utils.CurrentTime.Now().UnixMilli()
 				response = append(response, v)
 			}
 		} else {
@@ -280,7 +280,7 @@ func (store *Store) GetDel(k string, opts ...DelOption) *object.Obj {
 // SetExpiry sets the expiry time for an object.
 // This method is not thread-safe. It should be called within a lock.
 func (store *Store) SetExpiry(obj *object.Obj, expDurationMs int64) {
-	store.expires.Put(obj, time.Now().UnixMilli()+expDurationMs)
+	store.expires.Put(obj, utils.CurrentTime.Now().UnixMilli()+expDurationMs)
 }
 
 // SetUnixTimeExpiry sets the expiry time for an object.

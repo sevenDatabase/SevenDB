@@ -113,6 +113,13 @@ var (
 		Eval:  evalPING,
 		Arity: -1,
 	}
+	// Minimal metadata for FLUSHDB so COMMAND GETKEYS can detect it has no key args
+	flushdbCmdMeta = DiceCmdMeta{
+		Name:     "FLUSHDB",
+		Info:     "Delete all the keys of the currently selected DB.",
+		Arity:    1,
+		KeySpecs: KeySpecs{BeginIndex: 0}, // no key args → BeginIndex 0 triggers 'the command has no key arguments'
+	}
 )
 
 // Multi Shard or All Shard Commands:
@@ -1153,6 +1160,7 @@ func init() {
 	DiceCmds["APPEND"] = appendCmdMeta
 	DiceCmds["AUTH"] = authCmdMeta
 	DiceCmds["PING"] = pingCmdMeta
+	DiceCmds["FLUSHDB"] = flushdbCmdMeta
 	DiceCmds["BF.ADD"] = bfaddCmdMeta
 	DiceCmds["BF.EXISTS"] = bfexistsCmdMeta
 	DiceCmds["BF.INFO"] = bfinfoCmdMeta

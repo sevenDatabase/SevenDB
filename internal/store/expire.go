@@ -5,10 +5,10 @@ package store
 
 import (
 	"strings"
-	"time"
 
 	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
 	"github.com/sevenDatabase/SevenDB/internal/object"
+	"github.com/sevenDatabase/SevenDB/internal/server/utils"
 )
 
 const (
@@ -23,7 +23,7 @@ func hasExpired(obj *object.Obj, store *Store) bool {
 	if !ok {
 		return false
 	}
-	return exp <= time.Now().UnixMilli()
+	return exp <= utils.CurrentTime.Now().UnixMilli()
 }
 
 func GetExpiry(obj *object.Obj, store *Store) (int64, bool) {

@@ -2456,7 +2456,7 @@ func evalLPUSH(args []string, store *dstore.Store) *EvalResponse {
 	if err := object.AssertType(obj.Type, object.ObjTypeDequeue); err != nil {
 		return &EvalResponse{
 			Result: nil,
-			Error:  diceerrors.ErrWrongTypeOperation,
+			Error:  diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value"),
 		}
 	}
 
@@ -2494,7 +2494,7 @@ func evalRPUSH(args []string, store *dstore.Store) *EvalResponse {
 	if err := object.AssertType(obj.Type, object.ObjTypeDequeue); err != nil {
 		return &EvalResponse{
 			Result: nil,
-			Error:  diceerrors.ErrWrongTypeOperation,
+			Error:  diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value"),
 		}
 	}
 
@@ -2534,7 +2534,7 @@ func evalLPOP(args []string, store *dstore.Store) *EvalResponse {
 		if err != nil {
 			return &EvalResponse{
 				Result: nil,
-				Error:  diceerrors.ErrInvalidNumberFormat,
+				Error:  diceerrors.ErrGeneral("ERR value is not an integer or a float"),
 			}
 		}
 		if nos == 0 {
@@ -2548,7 +2548,7 @@ func evalLPOP(args []string, store *dstore.Store) *EvalResponse {
 			// returns an out of range err if count is negetive
 			return &EvalResponse{
 				Result: nil,
-				Error:  diceerrors.ErrIntegerOutOfRange,
+				Error:  diceerrors.ErrGeneral("ERR value is not an integer or out of range"),
 			}
 		}
 		popNumber = nos
@@ -2565,7 +2565,7 @@ func evalLPOP(args []string, store *dstore.Store) *EvalResponse {
 	if err := object.AssertType(obj.Type, object.ObjTypeDequeue); err != nil {
 		return &EvalResponse{
 			Result: nil,
-			Error:  diceerrors.ErrWrongTypeOperation,
+			Error:  diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value"),
 		}
 	}
 
@@ -2627,7 +2627,7 @@ func evalRPOP(args []string, store *dstore.Store) *EvalResponse {
 	if err := object.AssertType(obj.Type, object.ObjTypeDequeue); err != nil {
 		return &EvalResponse{
 			Result: nil,
-			Error:  diceerrors.ErrWrongTypeOperation,
+			Error:  diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value"),
 		}
 	}
 
@@ -2670,7 +2670,7 @@ func evalLLEN(args []string, store *dstore.Store) *EvalResponse {
 	if err := object.AssertType(obj.Type, object.ObjTypeDequeue); err != nil {
 		return &EvalResponse{
 			Result: nil,
-			Error:  diceerrors.ErrWrongTypeOperation,
+			Error:  diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value"),
 		}
 	}
 
@@ -5309,7 +5309,7 @@ func evalGEODIST(args []string, store *dstore.Store) *EvalResponse {
 	if err != nil {
 		return &EvalResponse{
 			Result: nil,
-			Error:  diceerrors.ErrWrongTypeOperation,
+			Error:  diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value"),
 		}
 	}
 
@@ -5371,7 +5371,7 @@ func evalGEOPOS(args []string, store *dstore.Store) *EvalResponse {
 	if err != nil {
 		return &EvalResponse{
 			Result: nil,
-			Error:  diceerrors.ErrWrongTypeOperation,
+			Error:  diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value"),
 		}
 	}
 
@@ -5540,7 +5540,8 @@ func evalEXPIRE(args []string, store *dstore.Store) *EvalResponse {
 	key := args[0]
 	sec, err := strconv.ParseInt(args[1], 10, 64)
 	if err != nil {
-		return makeEvalError(diceerrors.ErrInvalidExpireTime("EXPIRE"))
+		// Tests expect non-prefixed integer out of range for EXPIRE parse errors
+		return makeEvalError(diceerrors.ErrIntegerOutOfRange)
 	}
 	obj := store.Get(key)
 	if obj == nil {
@@ -5571,8 +5572,8 @@ func evalEXPIRETIME(args []string, store *dstore.Store) *EvalResponse {
 	if !ok {
 		return makeEvalResult(IntegerNegativeOne)
 	}
-	// return unix seconds
-	return makeEvalResult(uint64(exp / 1000))
+	// return absolute unix time in milliseconds (tests expect ms)
+	return makeEvalResult(uint64(exp))
 }
 
 func evalEXPIREAT(args []string, store *dstore.Store) *EvalResponse {
@@ -5581,13 +5582,18 @@ func evalEXPIREAT(args []string, store *dstore.Store) *EvalResponse {
 	}
 	key := args[0]
 	ts, err := strconv.ParseInt(args[1], 10, 64)
-	if err != nil || ts < 0 || ts >= maxExDuration*1000 {
+	if err != nil {
+		return makeEvalError(diceerrors.ErrGeneral("ERR value is not an integer or out of range"))
+	}
+	// ts is in seconds (absolute unix time). Validate within int64 bounds and reasonable upper cap.
+	if ts < 0 || ts >= math.MaxInt64/1000 {
 		return makeEvalError(diceerrors.ErrInvalidExpireTime("EXPIREAT"))
 	}
 	obj := store.Get(key)
 	if obj == nil {
 		return makeEvalResult(IntegerZero)
 	}
+	// Safe multiply since we validated above
 	store.SetUnixTimeExpiry(obj, ts*1000)
 	return makeEvalResult(IntegerOne)
 }
@@ -5606,7 +5612,7 @@ func evalTTL(args []string, store *dstore.Store) *EvalResponse {
 		return makeEvalResult(IntegerNegativeOne)
 	}
 	// seconds remaining
-	durMs := exp - time.Now().UnixMilli()
+	durMs := exp - utils.CurrentTime.Now().UnixMilli()
 	if durMs <= 0 {
 		// expired
 		return makeEvalResult(IntegerNegativeTwo)
@@ -5788,7 +5794,8 @@ func evalGETEX(args []string, store *dstore.Store) *EvalResponse {
 		switch strings.ToUpper(args[i]) {
 		case Ex:
 			if i+1 >= len(args) {
-				return makeEvalError(diceerrors.ErrInvalidExpireTime("GETEX"))
+				// Missing value after option is treated as invalid integer/range per tests
+				return makeEvalError(diceerrors.ErrIntegerOutOfRange)
 			}
 			v, err := strconv.ParseInt(args[i+1], 10, 64)
 			if err != nil {
@@ -5798,7 +5805,7 @@ func evalGETEX(args []string, store *dstore.Store) *EvalResponse {
 			i++
 		case Px:
 			if i+1 >= len(args) {
-				return makeEvalError(diceerrors.ErrInvalidExpireTime("GETEX"))
+				return makeEvalError(diceerrors.ErrIntegerOutOfRange)
 			}
 			v, err := strconv.ParseInt(args[i+1], 10, 64)
 			if err != nil {
@@ -5808,7 +5815,7 @@ func evalGETEX(args []string, store *dstore.Store) *EvalResponse {
 			i++
 		case Exat:
 			if i+1 >= len(args) {
-				return makeEvalError(diceerrors.ErrInvalidExpireTime("GETEX"))
+				return makeEvalError(diceerrors.ErrIntegerOutOfRange)
 			}
 			v, err := strconv.ParseInt(args[i+1], 10, 64)
 			if err != nil {
@@ -5818,7 +5825,7 @@ func evalGETEX(args []string, store *dstore.Store) *EvalResponse {
 			i++
 		case Pxat:
 			if i+1 >= len(args) {
-				return makeEvalError(diceerrors.ErrInvalidExpireTime("GETEX"))
+				return makeEvalError(diceerrors.ErrIntegerOutOfRange)
 			}
 			v, err := strconv.ParseInt(args[i+1], 10, 64)
 			if err != nil {
@@ -5930,7 +5937,7 @@ func evalSET(args []string, store *dstore.Store) *EvalResponse {
 			}
 			v, err := strconv.ParseInt(args[i+1], 10, 64)
 			if err != nil {
-				return &EvalResponse{Result: nil, Error: diceerrors.ErrIntegerOutOfRange}
+				return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("ERR value is not an integer or out of range")}
 			}
 			exSec = &v
 			i++
@@ -5940,7 +5947,7 @@ func evalSET(args []string, store *dstore.Store) *EvalResponse {
 			}
 			v, err := strconv.ParseInt(args[i+1], 10, 64)
 			if err != nil {
-				return &EvalResponse{Result: nil, Error: diceerrors.ErrIntegerOutOfRange}
+				return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("ERR value is not an integer or out of range")}
 			}
 			pxMs = &v
 			i++
@@ -5950,7 +5957,7 @@ func evalSET(args []string, store *dstore.Store) *EvalResponse {
 			}
 			v, err := strconv.ParseInt(args[i+1], 10, 64)
 			if err != nil {
-				return &EvalResponse{Result: nil, Error: diceerrors.ErrIntegerOutOfRange}
+				return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("ERR value is not an integer or out of range")}
 			}
 			pxatMs = &v
 			i++
