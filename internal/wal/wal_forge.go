@@ -62,6 +62,12 @@ type walForge struct {
 	// testClock allows tests to inject a deterministic time source for features
 	// like replay budget. If nil, time.Now() is used directly.
 	testClock func() time.Time
+
+	// hardstate persistence (unified WAL behavior)
+	// hsPath is the canonical file where the last durable HardState is stored.
+	// pendingHS buffers the next HardState bytes to persist at the next Sync() barrier.
+	hsPath   string
+	pendingHS []byte
 }
 
 // Test-only hooks (safe no-ops in production)
@@ -100,7 +106,13 @@ func (wl *walForge) AppendEntry(kind EntryKind, index uint64, term uint64, subSe
 		}
 		return wl.LogCommand(cmd)
 	case EntryKindHardState:
-		// Placeholder: persist HS alongside last entry when unification lands.
+		if len(hardState) == 0 {
+			return fmt.Errorf("AppendEntry: empty hardState payload")
+		}
+		wl.mu.Lock()
+		// Stage the hardstate to be made durable on next Sync() barrier.
+		wl.pendingHS = append(wl.pendingHS[:0], hardState...)
+		wl.mu.Unlock()
 		return nil
 	default:
 		return fmt.Errorf("AppendEntry: unknown kind %d", kind)
@@ -109,14 +121,96 @@ func (wl *walForge) AppendEntry(kind EntryKind, index uint64, term uint64, subSe
 
 // ReplayItems maps existing ReplayCommand to ReplayItem for normal commands.
 func (wl *walForge) ReplayItems(cb func(ReplayItem) error) error {
-	return wl.ReplayCommand(func(c *wire.Command) error {
-		return cb(ReplayItem{Kind: EntryKindNormal, Cmd: c})
-	})
+	var crc, entrySize uint32
+	var el w.Element
+
+	// Buffers to hold the header and the element bytes
+	bb1h := make([]byte, 8)
+	bb1ElementBytes := make([]byte, 10*1024)
+
+	// Get list of segment files ordered by index ascending
+	segments, err := wl.segments()
+	if err != nil {
+		return fmt.Errorf("error getting wal-segment files: %w", err)
+	}
+
+	// Process each segment file in order
+	for _, segment := range segments {
+		file, err := os.Open(segment)
+		if err != nil {
+			return fmt.Errorf("error opening wal-segment file %s: %w", segment, err)
+		}
+
+		reader := bufio.NewReader(file)
+		// Format: CRC32 (4 bytes) | Size of WAL entry (4 bytes) | WAL data
+		for {
+			if _, err := io.ReadFull(reader, bb1h); err != nil {
+				if err == io.EOF {
+					break
+				}
+				file.Close()
+				return fmt.Errorf("error reading WAL: %w", err)
+			}
+			crc = binary.LittleEndian.Uint32(bb1h[0:4])
+			entrySize = binary.LittleEndian.Uint32(bb1h[4:8])
+
+			if _, err := io.ReadFull(reader, bb1ElementBytes[:entrySize]); err != nil {
+				file.Close()
+				return fmt.Errorf("error reading WAL data: %w", err)
+			}
+
+			expectedCRC := crc32.ChecksumIEEE(bb1ElementBytes[:entrySize])
+			if crc != expectedCRC {
+				file.Close()
+				return fmt.Errorf("CRC32 mismatch: expected %d, got %d", crc, expectedCRC)
+			}
+
+			if err := proto.Unmarshal(bb1ElementBytes[:entrySize], &el); err != nil {
+				file.Close()
+				return fmt.Errorf("error unmarshaling WAL entry: %w", err)
+			}
+
+			// Only process command entries for now
+			if el.ElementType != w.ElementType_ELEMENT_TYPE_COMMAND {
+				continue
+			}
+
+			var c wire.Command
+			if err := proto.Unmarshal(el.Payload, &c); err != nil {
+				file.Close()
+				return fmt.Errorf("error unmarshaling command: %w", err)
+			}
+
+			item := ReplayItem{
+				Kind:      EntryKindNormal,
+				Timestamp: el.Timestamp,
+				Cmd:       &c,
+			}
+			if err := cb(item); err != nil {
+				file.Close()
+				return fmt.Errorf("error replaying item: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // ReplayLastHardState is not yet persisted by walForge; return not found.
 func (wl *walForge) ReplayLastHardState() ([]byte, bool, error) {
-	return nil, false, nil
+	// Read the last persisted hardstate from hsPath if present.
+	// No locking: reading a fully persisted file is safe. If a concurrent Sync is renaming,
+	// either we read the old file or the new one; both are valid. We do not read temp files.
+	if wl.hsPath == "" {
+		return nil, false, nil
+	}
+	b, err := os.ReadFile(wl.hsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return b, true, nil
 }
 
 // PruneThrough is a placeholder until prune is implemented; no-op.
@@ -134,6 +228,9 @@ func (wl *walForge) Init() error {
 	if err := os.MkdirAll(config.Config.WALDir, 0755); err != nil {
 		return err
 	}
+
+	// Initialize hardstate path under the WAL directory
+	wl.hsPath = filepath.Join(config.Config.WALDir, "hardstate")
 
 	// Get the list of log segment files in the WAL directory
 	sfs, err := wl.segments()
@@ -311,6 +408,7 @@ func (wl *walForge) rotateLog() error {
 // Writes out any data in the WAL's in-memory buffer to the segment file.
 // and syncs the segment file to disk.
 func (wl *walForge) sync() error {
+	// NOTE: caller must hold wl.mu to serialize with append/rotate and protect pendingHS.
 	// Flush the buffer to the segment file
 	if err := wl.csWriter.Flush(); err != nil {
 		return err
@@ -321,10 +419,55 @@ func (wl *walForge) sync() error {
 		TestHookAfterDataBeforeFsync()
 	}
 
-	// Sync the segment file to disk to make sure
-	// it is written to disk.
+	// First, fsync the segment to ensure no hardstate can ever point past
+	// the last durable WAL entry.
 	if err := wl.csf.Sync(); err != nil {
 		return err
+	}
+
+	// If we have a staged HardState, persist it now using a durable rename.
+	if len(wl.pendingHS) > 0 && wl.hsPath != "" {
+		tmp := wl.hsPath + ".tmp"
+		// Write temp file
+		if err := os.WriteFile(tmp, wl.pendingHS, 0644); err != nil {
+			return err
+		}
+		// fsync the temp file to ensure contents are durable
+		f, err := os.OpenFile(tmp, os.O_RDONLY, 0)
+		if err != nil {
+			return err
+		}
+		if err := f.Sync(); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+
+		// Atomically replace the hardstate file
+		if err := os.Rename(tmp, wl.hsPath); err != nil {
+			return err
+		}
+
+		// Optional test hook: after HS persisted but before directory fsync
+		if TestHookAfterHSBeforeFsync != nil {
+			TestHookAfterHSBeforeFsync()
+		}
+
+		// fsync the directory to ensure the rename is durable
+		dir, err := os.Open(config.Config.WALDir)
+		if err != nil {
+			return err
+		}
+		if err := dir.Sync(); err != nil {
+			dir.Close()
+			return err
+		}
+		_ = dir.Close()
+
+		// Clear the staged HS only after all persistence steps succeed
+		wl.pendingHS = wl.pendingHS[:0]
 	}
 
 	// TODO: Evaluate if DIRECT_IO is needed here.
