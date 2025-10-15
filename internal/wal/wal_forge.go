@@ -647,9 +647,17 @@ func (wl *walForge) Stop() {
 	wl.cancel()
 
 	// Sync the current segment file to disk
+	// Temporarily disable test hooks to avoid synthetic panics during teardown.
+	oldHookData := TestHookAfterDataBeforeFsync
+	oldHookHS := TestHookAfterHSBeforeFsync
+	TestHookAfterDataBeforeFsync = nil
+	TestHookAfterHSBeforeFsync = nil
 	if err := wl.sync(); err != nil {
 		slog.Error("failed to sync current segment file", slog.String("error", err.Error()))
 	}
+	// Restore hooks
+	TestHookAfterDataBeforeFsync = oldHookData
+	TestHookAfterHSBeforeFsync = oldHookHS
 
 	wl.csf.Close()
 

@@ -22,6 +22,9 @@ func TestWAL_MidFsyncCrash_Recovery(t *testing.T) {
     // Initialize WAL
     wal.SetupWAL()
     t.Cleanup(func() {
+        // Ensure hooks are cleared before Stop to avoid synthetic panics during teardown
+        wal.TestHookAfterDataBeforeFsync = nil
+        wal.TestHookAfterHSBeforeFsync = nil
         if wal.DefaultWAL != nil {
             wal.DefaultWAL.Stop()
         }
@@ -35,7 +38,6 @@ func TestWAL_MidFsyncCrash_Recovery(t *testing.T) {
     // Inject crash: after data is flushed to file but before fsync
     panicked := false
     wal.TestHookAfterDataBeforeFsync = func() { panic("inject:after-data-before-fsync") }
-    defer func() { wal.TestHookAfterDataBeforeFsync = nil }()
 
     func() {
         defer func() {
@@ -54,10 +56,15 @@ func TestWAL_MidFsyncCrash_Recovery(t *testing.T) {
 
     // Simulate restart by stopping and reinitializing WAL
     if wal.DefaultWAL != nil {
+        // Clear hook before stopping to avoid triggering during Stop's sync
+        wal.TestHookAfterDataBeforeFsync = nil
+        wal.TestHookAfterHSBeforeFsync = nil
         wal.DefaultWAL.Stop()
     }
     wal.SetupWAL()
     t.Cleanup(func() {
+        wal.TestHookAfterDataBeforeFsync = nil
+        wal.TestHookAfterHSBeforeFsync = nil
         if wal.DefaultWAL != nil {
             wal.DefaultWAL.Stop()
         }
