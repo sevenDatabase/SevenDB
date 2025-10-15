@@ -88,6 +88,43 @@ func newWalForge() *walForge {
 	}
 }
 
+// Ensure walForge implements UnifiedWAL (compile-time check via var assignment)
+var _ UnifiedWAL = (*walForge)(nil)
+
+// AppendEntry appends a unified entry. For now, map normal commands to LogCommand; hardstate is a no-op placeholder.
+func (wl *walForge) AppendEntry(kind EntryKind, index uint64, term uint64, subSeq uint32, cmd *wire.Command, hardState []byte) error {
+	switch kind {
+	case EntryKindNormal:
+		if cmd == nil {
+			return fmt.Errorf("AppendEntry: nil command for normal entry")
+		}
+		return wl.LogCommand(cmd)
+	case EntryKindHardState:
+		// Placeholder: persist HS alongside last entry when unification lands.
+		return nil
+	default:
+		return fmt.Errorf("AppendEntry: unknown kind %d", kind)
+	}
+}
+
+// ReplayItems maps existing ReplayCommand to ReplayItem for normal commands.
+func (wl *walForge) ReplayItems(cb func(ReplayItem) error) error {
+	return wl.ReplayCommand(func(c *wire.Command) error {
+		return cb(ReplayItem{Kind: EntryKindNormal, Cmd: c})
+	})
+}
+
+// ReplayLastHardState is not yet persisted by walForge; return not found.
+func (wl *walForge) ReplayLastHardState() ([]byte, bool, error) {
+	return nil, false, nil
+}
+
+// PruneThrough is a placeholder until prune is implemented; no-op.
+func (wl *walForge) PruneThrough(index uint64) error { return nil }
+
+// Dir returns the configured WAL directory.
+func (wl *walForge) Dir() string { return config.Config.WALDir }
+
 func (wl *walForge) Init() error {
 	// TODO: Once the checkpoint is implemented
 	// Load the initial state of the database from this checkpoint
