@@ -219,19 +219,34 @@ func (wl *walForge) ReplayLastHardState() ([]byte, bool, error) {
 // Note: Currently we treat the 'index' parameter as a WAL LSN. Once unified
 // raft metadata is embedded, the caller can pass the appropriate mapping.
 func (wl *walForge) PruneThrough(index uint64) error {
-	wl.mu.Lock()
-	defer wl.mu.Unlock()
+	// Limit work per invocation to bound blocking time in raft ready loop.
+	const pruneBudgetSegments = 1
 
+	wl.mu.Lock()
 	// Ensure buffered data is durable before pruning old segments
 	if err := wl.sync(); err != nil {
+		wl.mu.Unlock()
 		return err
 	}
-
+	// Snapshot candidate list under lock, then release lock before IO-heavy work.
 	segments, err := wl.segments()
 	if err != nil {
+		wl.mu.Unlock()
 		return err
 	}
-	if len(segments) == 0 {
+	// Collect candidates strictly older than current open segment.
+	candidates := make([]string, 0, len(segments))
+	for _, seg := range segments {
+		base := filepath.Base(seg)
+		idxStr := strings.TrimSuffix(strings.TrimPrefix(base, segmentPrefix), ".wal")
+		sIdx, _ := strconv.Atoi(idxStr)
+		if sIdx < wl.csIdx { // exclude current open segment and any newer
+			candidates = append(candidates, seg)
+		}
+	}
+	wl.mu.Unlock()
+
+	if len(candidates) == 0 {
 		return nil
 	}
 
@@ -248,29 +263,21 @@ func (wl *walForge) PruneThrough(index uint64) error {
 		return dir.Close()
 	}
 
-	// Determine deletable set: segments strictly less than current active index
-	// with last LSN <= target index.
-	for _, seg := range segments {
-		base := filepath.Base(seg)
-		idxStr := strings.TrimSuffix(strings.TrimPrefix(base, segmentPrefix), ".wal")
-		sIdx, _ := strconv.Atoi(idxStr)
-		// Never prune the currently open segment file
-		if sIdx >= wl.csIdx {
-			continue
+	removed := 0
+	for _, seg := range candidates {
+		if removed >= pruneBudgetSegments {
+			break
 		}
-
+		base := filepath.Base(seg)
 		last, err := wl.lastLSNOfSegment(seg)
 		if err != nil {
-			// Be conservative: skip pruning this segment on error
 			slog.Error("prune: failed to read last LSN of segment", slog.String("segment", base), slog.Any("error", err))
 			continue
 		}
 		if last == 0 || last > index {
-			// This and subsequent segments are not safe to delete
+			// Not safe to delete yet
 			continue
 		}
-
-		// Crash-safe removal: rename then fsync dir, then unlink and fsync dir again
 		renamed := seg + ".deleted"
 		if err := os.Rename(seg, renamed); err != nil {
 			slog.Error("prune: rename failed", slog.String("segment", base), slog.Any("error", err))
@@ -278,22 +285,20 @@ func (wl *walForge) PruneThrough(index uint64) error {
 		}
 		if err := fsyncDir(); err != nil {
 			slog.Error("prune: dir fsync after rename failed", slog.Any("error", err))
-			// Try to rename back to original to avoid stranding
 			_ = os.Rename(renamed, seg)
 			_ = fsyncDir()
 			continue
 		}
 		if err := os.Remove(renamed); err != nil {
 			slog.Error("prune: unlink failed", slog.String("segment", filepath.Base(renamed)), slog.Any("error", err))
-			// If unlink fails, try to move back
 			_ = os.Rename(renamed, seg)
 			_ = fsyncDir()
 			continue
 		}
 		if err := fsyncDir(); err != nil {
 			slog.Error("prune: dir fsync after unlink failed", slog.Any("error", err))
-			// Best-effort; segment already unlinked
 		}
+		removed++
 	}
 	return nil
 }
