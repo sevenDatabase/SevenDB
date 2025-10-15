@@ -213,8 +213,139 @@ func (wl *walForge) ReplayLastHardState() ([]byte, bool, error) {
 	return b, true, nil
 }
 
-// PruneThrough is a placeholder until prune is implemented; no-op.
-func (wl *walForge) PruneThrough(index uint64) error { return nil }
+// PruneThrough removes fully durable segments whose last entry position (LSN) is
+// less than or equal to the provided index. It serializes with appends via wl.mu
+// and performs crash-safe deletion (rename + dir fsync + unlink + dir fsync).
+// Note: Currently we treat the 'index' parameter as a WAL LSN. Once unified
+// raft metadata is embedded, the caller can pass the appropriate mapping.
+func (wl *walForge) PruneThrough(index uint64) error {
+	wl.mu.Lock()
+	defer wl.mu.Unlock()
+
+	// Ensure buffered data is durable before pruning old segments
+	if err := wl.sync(); err != nil {
+		return err
+	}
+
+	segments, err := wl.segments()
+	if err != nil {
+		return err
+	}
+	if len(segments) == 0 {
+		return nil
+	}
+
+	// Helper to fsync directory after metadata changes
+	fsyncDir := func() error {
+		dir, err := os.Open(config.Config.WALDir)
+		if err != nil {
+			return err
+		}
+		if err := dir.Sync(); err != nil {
+			dir.Close()
+			return err
+		}
+		return dir.Close()
+	}
+
+	// Determine deletable set: segments strictly less than current active index
+	// with last LSN <= target index.
+	for _, seg := range segments {
+		base := filepath.Base(seg)
+		idxStr := strings.TrimSuffix(strings.TrimPrefix(base, segmentPrefix), ".wal")
+		sIdx, _ := strconv.Atoi(idxStr)
+		// Never prune the currently open segment file
+		if sIdx >= wl.csIdx {
+			continue
+		}
+
+		last, err := wl.lastLSNOfSegment(seg)
+		if err != nil {
+			// Be conservative: skip pruning this segment on error
+			slog.Error("prune: failed to read last LSN of segment", slog.String("segment", base), slog.Any("error", err))
+			continue
+		}
+		if last == 0 || last > index {
+			// This and subsequent segments are not safe to delete
+			continue
+		}
+
+		// Crash-safe removal: rename then fsync dir, then unlink and fsync dir again
+		renamed := seg + ".deleted"
+		if err := os.Rename(seg, renamed); err != nil {
+			slog.Error("prune: rename failed", slog.String("segment", base), slog.Any("error", err))
+			continue
+		}
+		if err := fsyncDir(); err != nil {
+			slog.Error("prune: dir fsync after rename failed", slog.Any("error", err))
+			// Try to rename back to original to avoid stranding
+			_ = os.Rename(renamed, seg)
+			_ = fsyncDir()
+			continue
+		}
+		if err := os.Remove(renamed); err != nil {
+			slog.Error("prune: unlink failed", slog.String("segment", filepath.Base(renamed)), slog.Any("error", err))
+			// If unlink fails, try to move back
+			_ = os.Rename(renamed, seg)
+			_ = fsyncDir()
+			continue
+		}
+		if err := fsyncDir(); err != nil {
+			slog.Error("prune: dir fsync after unlink failed", slog.Any("error", err))
+			// Best-effort; segment already unlinked
+		}
+	}
+	return nil
+}
+
+// lastLSNOfSegment scans a segment and returns the last valid LSN observed.
+// It tolerates tail corruption by returning the last successfully verified entry.
+func (wl *walForge) lastLSNOfSegment(path string) (uint64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+	reader := bufio.NewReader(file)
+	var last uint64
+	header := make([]byte, 8)
+	buf := make([]byte, 10*1024)
+	var el w.Element
+	for {
+		if _, err := io.ReadFull(reader, header); err != nil {
+			if err == io.EOF {
+				break
+			}
+			if err == io.ErrUnexpectedEOF {
+				// partial header: ignore tail
+				break
+			}
+			return last, err
+		}
+		crc := binary.LittleEndian.Uint32(header[:4])
+		sz := binary.LittleEndian.Uint32(header[4:8])
+		if int(sz) > len(buf) {
+			buf = make([]byte, sz)
+		}
+		if _, err := io.ReadFull(reader, buf[:sz]); err != nil {
+			if err == io.ErrUnexpectedEOF || err == io.EOF {
+				// partial payload: ignore tail
+				break
+			}
+			return last, err
+		}
+		if crc32.ChecksumIEEE(buf[:sz]) != crc {
+			// corrupted tail; stop here
+			break
+		}
+		if err := proto.Unmarshal(buf[:sz], &el); err != nil {
+			// corrupted tail; stop here
+			break
+		}
+		last = el.GetLsn()
+	}
+	return last, nil
+}
 
 // Dir returns the configured WAL directory.
 func (wl *walForge) Dir() string { return config.Config.WALDir }
