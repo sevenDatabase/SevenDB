@@ -97,14 +97,31 @@ func newWalForge() *walForge {
 // Ensure walForge implements UnifiedWAL (compile-time check via var assignment)
 var _ UnifiedWAL = (*walForge)(nil)
 
-// AppendEntry appends a unified entry. For now, map normal commands to LogCommand; hardstate is a no-op placeholder.
+// AppendEntry appends a unified entry. NORMAL entries are written using a
+// lightweight envelope inside the Forge Element payload that carries raft
+// metadata (index/term/subSeq). HARDSTATE bytes are staged for co-fsync via
+// sync() and persisted separately in wl.hsPath.
 func (wl *walForge) AppendEntry(kind EntryKind, index uint64, term uint64, subSeq uint32, cmd *wire.Command, hardState []byte) error {
 	switch kind {
 	case EntryKindNormal:
 		if cmd == nil {
 			return fmt.Errorf("AppendEntry: nil command for normal entry")
 		}
-		return wl.LogCommand(cmd)
+		// Marshal command and wrap in unified envelope, then wrap in Element
+		b, err := proto.Marshal(cmd)
+		if err != nil {
+			return err
+		}
+		payload := encodeUWAL(uwalKindNormal, index, term, subSeq, b)
+		wl.mu.Lock()
+		defer wl.mu.Unlock()
+		wl.lsn += 1
+		ts := time.Now().UnixNano()
+		if wl.testClock != nil { ts = wl.testClock().UnixNano() }
+		el := &w.Element{Lsn: wl.lsn, Timestamp: ts, ElementType: w.ElementType_ELEMENT_TYPE_COMMAND, Payload: payload}
+	eb, err := proto.Marshal(el)
+	if err != nil { return err }
+		return wl.writePayloadLocked(eb)
 	case EntryKindHardState:
 		if len(hardState) == 0 {
 			return fmt.Errorf("AppendEntry: empty hardState payload")
@@ -175,16 +192,31 @@ func (wl *walForge) ReplayItems(cb func(ReplayItem) error) error {
 				continue
 			}
 
-			var c wire.Command
-			if err := proto.Unmarshal(el.Payload, &c); err != nil {
-				file.Close()
-				return fmt.Errorf("error unmarshaling command: %w", err)
-			}
-
-			item := ReplayItem{
-				Kind:      EntryKindNormal,
-				Timestamp: el.Timestamp,
-				Cmd:       &c,
+			// Detect unified envelope vs legacy raw command
+			var item ReplayItem
+			if isUWAL(el.Payload) {
+				kind, idx, term, sub, inner, derr := decodeUWAL(el.Payload)
+				if derr != nil {
+					file.Close()
+					return fmt.Errorf("decode uwal: %w", derr)
+				}
+				if kind == uwalKindHardState {
+					// HardState envelopes (if ever present) are not yielded as commands
+					continue
+				}
+				var c wire.Command
+				if err := proto.Unmarshal(inner, &c); err != nil {
+					file.Close()
+					return fmt.Errorf("error unmarshaling uwal command: %w", err)
+				}
+				item = ReplayItem{Kind: EntryKindNormal, Index: idx, Term: term, SubSeq: sub, Timestamp: el.Timestamp, Cmd: &c}
+			} else {
+				var c wire.Command
+				if err := proto.Unmarshal(el.Payload, &c); err != nil {
+					file.Close()
+					return fmt.Errorf("error unmarshaling command: %w", err)
+				}
+				item = ReplayItem{Kind: EntryKindNormal, Timestamp: el.Timestamp, Cmd: &c}
 			}
 			if err := cb(item); err != nil {
 				file.Close()
@@ -269,7 +301,7 @@ func (wl *walForge) PruneThrough(index uint64) error {
 			break
 		}
 		base := filepath.Base(seg)
-		last, err := wl.lastLSNOfSegment(seg)
+		last, err := wl.lastIndexOfSegment(seg)
 		if err != nil {
 			slog.Error("prune: failed to read last LSN of segment", slog.String("segment", base), slog.Any("error", err))
 			continue
@@ -303,9 +335,11 @@ func (wl *walForge) PruneThrough(index uint64) error {
 	return nil
 }
 
-// lastLSNOfSegment scans a segment and returns the last valid LSN observed.
-// It tolerates tail corruption by returning the last successfully verified entry.
-func (wl *walForge) lastLSNOfSegment(path string) (uint64, error) {
+// lastIndexOfSegment scans a segment and returns the last raft index observed
+// from unified envelopes. Falls back to physical LSN when envelope metadata is
+// absent. It tolerates tail corruption by returning the last successfully
+// verified entry.
+func (wl *walForge) lastIndexOfSegment(path string) (uint64, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return 0, err
@@ -347,6 +381,15 @@ func (wl *walForge) lastLSNOfSegment(path string) (uint64, error) {
 			// corrupted tail; stop here
 			break
 		}
+		// Prefer raft index from unified envelope when present
+		if el.ElementType == w.ElementType_ELEMENT_TYPE_COMMAND && isUWAL(el.Payload) {
+			_, idx, _, _, _, derr := decodeUWAL(el.Payload)
+			if derr == nil {
+				last = idx
+				continue
+			}
+		}
+		// Fallback: use physical LSN
 		last = el.GetLsn()
 	}
 	return last, nil
@@ -446,44 +489,12 @@ func (wl *walForge) LogCommand(c *wire.Command) error {
 		Payload:     b,
 	}
 
-	// marshal the WAL Element to bytes
-	b, err = proto.Marshal(el)
+	// marshal the WAL Element to bytes and write via helper
+	eb, err := proto.Marshal(el)
 	if err != nil {
 		return err
 	}
-
-	// Wrap the element with Checksum and Size
-	// and keep it ready to be written to the segment file through the buffer
-	// We call this WAL Entry.
-	entrySize := uint32(4 + 4 + len(b))
-	if err := wl.rotateLogIfNeeded(entrySize); err != nil {
-		return err
-	}
-
-	// If the entry size is greater than the buffer size, we need to
-	// create a new buffer.
-	if entrySize > uint32(cap(bb)) {
-		// TODO: In this case, we can do a one time creation of a new buffer
-		// and proceed rather than using the existing buffer.
-		panic(fmt.Errorf("buffer too small, %d > %d", entrySize, len(bb)))
-	}
-
-	bb = bb[:8+len(b)]
-	chk := crc32.ChecksumIEEE(b)
-
-	// Write header and payload
-	binary.LittleEndian.PutUint32(bb[0:4], chk)
-	binary.LittleEndian.PutUint32(bb[4:8], uint32(len(b)))
-	copy(bb[8:], b)
-
-	// TODO: Check if we need to handle the error here,
-	// from my initial understanding, we should not be
-	// handling the error here because it would never happen.
-	// Have not tested this yet.
-	_, _ = wl.csWriter.Write(bb)
-
-	wl.csSize += entrySize
-	return nil
+	return wl.writePayloadLocked(eb)
 }
 
 // rotateLogIfNeeded checks if the current segment size + the entry size is
@@ -752,12 +763,27 @@ func (wl *walForge) ReplayCommand(cb func(*wire.Command) error) error {
 				return fmt.Errorf("error unmarshaling WAL entry: %w", err)
 			}
 
+			// Detect unified envelope and unwrap to command bytes if present
+			var cmdBytes []byte
+			if isUWAL(el.Payload) {
+				kind, _, _, _, inner, derr := decodeUWAL(el.Payload)
+				if derr != nil {
+					file.Close()
+					return fmt.Errorf("decode uwal: %w", derr)
+				}
+				if kind == uwalKindHardState {
+					// unified hardstate is not surfaced via ReplayCommand
+					continue
+				}
+				cmdBytes = inner
+			} else {
+				cmdBytes = el.Payload
+			}
 			var c wire.Command
-			if err := proto.Unmarshal(el.Payload, &c); err != nil {
+			if err := proto.Unmarshal(cmdBytes, &c); err != nil {
 				file.Close()
 				return fmt.Errorf("error unmarshaling command: %w", err)
 			}
-
 			// Call provided replay function with parsed command
 			if err := cb(&c); err != nil {
 				file.Close()
@@ -805,4 +831,75 @@ func (wl *walForge) Sync() error {
 	wl.mu.Lock()
 	defer wl.mu.Unlock()
 	return wl.sync()
+}
+
+// --- unified envelope helpers (non-exported) ---
+
+const (
+	uwalKindNormal    = byte(0)
+	uwalKindHardState = byte(1)
+)
+
+var uwalMagic = []byte{'U', 'W', 'A', 'L', '1'}
+
+func isUWAL(b []byte) bool {
+	if len(b) < len(uwalMagic) { return false }
+	for i := range uwalMagic {
+		if b[i] != uwalMagic[i] { return false }
+	}
+	return true
+}
+
+// encodeUWAL builds a minimal envelope: magic(5) | kind(1) | index(8 LE) | term(8 LE) | subSeq(4 LE) | cmdLen(4 LE) | cmd
+func encodeUWAL(kind byte, index, term uint64, subSeq uint32, cmd []byte) []byte {
+	total := 5 + 1 + 8 + 8 + 4 + 4 + len(cmd)
+	out := make([]byte, total)
+	copy(out[:5], uwalMagic)
+	out[5] = kind
+	off := 6
+	binary.LittleEndian.PutUint64(out[off:off+8], index)
+	off += 8
+	binary.LittleEndian.PutUint64(out[off:off+8], term)
+	off += 8
+	binary.LittleEndian.PutUint32(out[off:off+4], subSeq)
+	off += 4
+	binary.LittleEndian.PutUint32(out[off:off+4], uint32(len(cmd)))
+	off += 4
+	copy(out[off:], cmd)
+	return out
+}
+
+// decodeUWAL parses the minimal envelope and returns (kind,index,term,subSeq,cmdBytes).
+func decodeUWAL(b []byte) (byte, uint64, uint64, uint32, []byte, error) {
+	if !isUWAL(b) { return 0, 0, 0, 0, nil, fmt.Errorf("not uwal") }
+	if len(b) < 6+8+8+4+4 { return 0, 0, 0, 0, nil, fmt.Errorf("uwal: short header") }
+	kind := b[5]
+	off := 6
+	idx := binary.LittleEndian.Uint64(b[off:off+8]); off += 8
+	term := binary.LittleEndian.Uint64(b[off:off+8]); off += 8
+	sub := binary.LittleEndian.Uint32(b[off:off+4]); off += 4
+	ln := binary.LittleEndian.Uint32(b[off:off+4]); off += 4
+	if int(off)+int(ln) > len(b) { return 0, 0, 0, 0, nil, fmt.Errorf("uwal: length exceeds payload") }
+	return kind, idx, term, sub, b[off : off+int(ln)], nil
+}
+
+// writePayloadLocked writes a fully formed Element payload 'eb' to the segment with framing and rotation.
+// Caller must hold wl.mu.
+func (wl *walForge) writePayloadLocked(eb []byte) error {
+	// Wrap the element with Checksum and Size, and write via buffer
+	entrySize := uint32(4 + 4 + len(eb))
+	if err := wl.rotateLogIfNeeded(entrySize); err != nil {
+		return err
+	}
+	if entrySize > uint32(cap(bb)) {
+		panic(fmt.Errorf("buffer too small, %d > %d", entrySize, len(bb)))
+	}
+	bb = bb[:8+len(eb)]
+	chk := crc32.ChecksumIEEE(eb)
+	binary.LittleEndian.PutUint32(bb[0:4], chk)
+	binary.LittleEndian.PutUint32(bb[4:8], uint32(len(eb)))
+	copy(bb[8:], eb)
+	_, _ = wl.csWriter.Write(bb)
+	wl.csSize += entrySize
+	return nil
 }
