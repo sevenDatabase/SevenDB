@@ -184,6 +184,10 @@ type ShardRaftNode struct {
 	// has been established. It is executed outside the internal mutex.
 	replicationHandler func(*ReplicationPayload) error
 	replicationStrict  bool // if true, handler errors are treated as fatal (panic) to avoid divergence
+
+	// walPruneBusy guards scheduling of a background WAL prune worker to avoid
+	// blocking the raft Ready loop and to prevent concurrent prune workers.
+	walPruneBusy atomic.Bool
 }
 
 // Crash simulates an abrupt process crash for test scenarios. It attempts a minimal
@@ -1417,30 +1421,23 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 						if err := s.persist.PruneEntries(compactionIndex); err != nil {
 							slog.Warn("raft prune failed", slog.String("shard", s.shardID), slog.Any("error", err))
 						} else {
+							// Compute follower-aware prune floor: min(compactionIndex, minFollowerMatchIndex)
+							floor := compactionIndex
+							if mf := s.minFollowerMatchIndex(); mf > 0 && mf < floor {
+								floor = mf
+							}
 							s.mu.Lock()
-							if compactionIndex > s.prunedThroughIndex {
-								s.prunedThroughIndex = compactionIndex
+							if floor > s.prunedThroughIndex {
+								s.prunedThroughIndex = floor
 							}
 							if snap.Metadata.Index > s.lastSnapshotIndex {
 								s.lastSnapshotIndex = snap.Metadata.Index
 							}
 							s.committedSinceSnap = 0
 							s.mu.Unlock()
-							// WAL pruning (prefer abstract WAL, fallback to legacy shadow). Only prune if we have a positive watermark.
+							// Schedule WAL pruning asynchronously to avoid blocking ready loop.
 							if s.prunedThroughIndex > 0 {
-								pruneFunc := func(upto uint64) (int, error) { return 0, nil }
-								if s.wal != nil {
-									pruneFunc = s.wal.PruneThrough
-								} else if s.walShadow != nil {
-									if pw, ok := s.walShadow.(interface{ PruneThrough(uint64) (int, error) }); ok {
-										pruneFunc = pw.PruneThrough
-									}
-								}
-								if removed, perr := pruneFunc(s.prunedThroughIndex); perr != nil {
-									slog.Warn("wal prune failed", slog.String("shard", s.shardID), slog.Any("error", perr))
-								} else if removed > 0 {
-									slog.Info("wal segments pruned", slog.String("shard", s.shardID), slog.Int("removed", removed), slog.Uint64("through", s.prunedThroughIndex))
-								}
+								s.scheduleWalPrune(s.prunedThroughIndex)
 							}
 						}
 						if s.prunedThroughIndex < compactionIndex {
@@ -1458,6 +1455,70 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 			}
 		}
 	}
+}
+
+// scheduleWalPrune launches a bounded background prune worker if none is running.
+// It prunes small batches per run to minimize IO spikes.
+func (s *ShardRaftNode) scheduleWalPrune(upto uint64) {
+	if upto == 0 {
+		return
+	}
+	if s.walPruneBusy.Swap(true) {
+		return // already running
+	}
+	go func(shard string, target uint64) {
+		defer s.walPruneBusy.Store(false)
+		pruneFunc := func(u uint64) (int, error) { return 0, nil }
+		if s.wal != nil {
+			pruneFunc = s.wal.PruneThrough
+		} else if s.walShadow != nil {
+			if pw, ok := s.walShadow.(interface{ PruneThrough(uint64) (int, error) }); ok {
+				pruneFunc = pw.PruneThrough
+			}
+		}
+		// Prune in small batches; stop on first zero-removal pass.
+		const maxBatches = 4
+		for i := 0; i < maxBatches; i++ {
+			removed, err := pruneFunc(target)
+			if err != nil {
+				slog.Warn("wal prune failed", slog.String("shard", shard), slog.Any("error", err))
+				return
+			}
+			if removed <= 0 {
+				return
+			}
+			slog.Info("wal segments pruned", slog.String("shard", shard), slog.Int("removed", removed), slog.Uint64("through", target))
+		}
+	}(s.shardID, upto)
+}
+
+// minFollowerMatchIndex returns the minimum Match index across followers for the
+// current shard, as observed by the leader's etcd raft status. If not leader or
+// status unavailable, returns 0 to indicate "no floor from followers".
+func (s *ShardRaftNode) minFollowerMatchIndex() uint64 {
+	if s.engine != "etcd" || s.rn == nil {
+		return 0
+	}
+	st := s.rn.Status()
+	if st.Lead == 0 || st.Lead != st.ID {
+		// Only the leader has authoritative Progress map for followers
+		return 0
+	}
+	min := uint64(0)
+	for id, pr := range st.Progress {
+		if id == st.ID {
+			continue // skip leader itself
+		}
+		// Match is the highest index known replicated on that follower
+		m := pr.Match
+		if m == 0 {
+			continue
+		}
+		if min == 0 || m < min {
+			min = m
+		}
+	}
+	return min
 }
 
 // ---- shadow WAL writer compatibility helpers ----
