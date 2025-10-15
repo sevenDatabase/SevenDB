@@ -26,7 +26,7 @@ func (a *forgeWALAdapter) AppendEntry(index, term uint64, kind EntryKind, appByt
     if a.uw == nil { return nil }
     switch kind {
     case EntryKindHardState:
-        return a.uw.AppendEntry(wal.EntryKindHardState, index, term, 0, nil, rawHardState)
+        return a.uw.AppendEntry(wal.EntryKindHardState, index, term, 0, nil, rawHardState, nil)
     case EntryKindNormal:
         // Decode application payload JSON into a wire.Command
         var pl ReplicationPayload
@@ -39,7 +39,8 @@ func (a *forgeWALAdapter) AppendEntry(index, term uint64, kind EntryKind, appByt
         cmd := &wire.Command{Cmd: pl.Cmd, Args: pl.Args}
         // subSeq uses lower 32 bits of meta.Sequence when present
         sub := uint32(meta.Sequence & 0xffffffff)
-        return a.uw.AppendEntry(wal.EntryKindNormal, index, term, sub, cmd, nil)
+        // Pass original raft Entry.Data as raftData to preserve primary-read fidelity
+        return a.uw.AppendEntry(wal.EntryKindNormal, index, term, sub, cmd, nil, appBytes)
     default:
         return nil
     }

@@ -20,13 +20,19 @@ type ReplayItem struct {
     Cmd       *wire.Command
     // HardState carries serialized raft HardState bytes when Kind==EntryKindHardState.
     HardState []byte
+    // RaftData carries the original raft Entry.Data bytes (when present) for
+    // primary-read seeding of raft storage. Optional for legacy records.
+    RaftData []byte
 }
 
 // UnifiedWAL exposes extended operations needed by raft and unified restore.
 // This is implemented incrementally by the existing WAL implementation.
 type UnifiedWAL interface {
     // AppendEntry appends either a normal command or a hardstate update.
-    AppendEntry(kind EntryKind, index uint64, term uint64, subSeq uint32, cmd *wire.Command, hardState []byte) error
+    // For NORMAL entries, cmd must be non-nil. If raftData is provided, it will be
+    // persisted alongside the command to allow deterministic reconstruction of raft
+    // Entry.Data during primary-read seeding.
+    AppendEntry(kind EntryKind, index uint64, term uint64, subSeq uint32, cmd *wire.Command, hardState []byte, raftData []byte) error
     // ReplayItems streams unified replay items in deterministic order.
     ReplayItems(cb func(ReplayItem) error) error
     // ReplayLastHardState returns the last persisted HardState if present.

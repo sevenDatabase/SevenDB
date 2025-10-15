@@ -22,6 +22,7 @@ import (
 
 	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/sevenDatabase/SevenDB/internal/harness/clock"
+	"github.com/sevenDatabase/SevenDB/internal/wal"
 	"github.com/sevenDatabase/SevenDB/internal/raftwal"
 	"google.golang.org/protobuf/proto"
 
@@ -1034,36 +1035,52 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 	}
 	// record conf state for snapshots
 	s.confState = raftpb.ConfState{Voters: confVoters}
-	// Experimental: seed from unified WAL as primary read path.
-	if cfg.WALPrimaryRead && cfg.EnableWALShadow && !cfg.DisablePersistence {
-		shadowDir := cfg.WALShadowDir
-		if shadowDir == "" {
-			shadowDir = filepath.Join(cfg.DataDir, "raftwal")
-		}
-		// Replay envelopes to build entries slice and locate latest HardState.
-		var entries []raftpb.Entry
-		var hs raftpb.HardState
-		var haveHS bool
-		_ = raftwal.Replay(shadowDir, func(env *raftwal.Envelope) error {
-			if env.Kind == raftwal.EntryKind_ENTRY_NORMAL {
-				entries = append(entries, raftpb.Entry{Index: env.RaftIndex, Term: env.RaftTerm, Type: raftpb.EntryNormal, Data: env.AppBytes})
-			} else if env.Kind == raftwal.EntryKind_ENTRY_HARDSTATE {
-				// store last HardState bytes; decode later once fully collected
-				hs.Unmarshal(env.AppBytes)
-				haveHS = true
+	// Experimental: seed storage from WAL as primary read path.
+	// Attempt Forge Unified WAL first if available; if nothing was seeded and shadow WAL is enabled,
+	// fall back to shadow replay so legacy tests still pass without configuring Forge.
+	if cfg.WALPrimaryRead && !cfg.DisablePersistence {
+		seededEntries := 0
+		seededHS := false
+		// Try Forge Unified WAL (if DefaultWAL implements it)
+		if uw, ok := wal.DefaultWAL.(wal.UnifiedWAL); ok && uw != nil {
+			var hs raftpb.HardState
+			_ = uw.ReplayItems(func(it wal.ReplayItem) error {
+				if it.Kind == wal.EntryKindNormal {
+					e := raftpb.Entry{Index: it.Index, Term: it.Term, Type: raftpb.EntryNormal, Data: it.RaftData}
+					if err := s.storage.Append([]raftpb.Entry{e}); err == nil {
+						seededEntries++
+					}
+				}
+				return nil
+			})
+			if b, ok, err := uw.ReplayLastHardState(); err == nil && ok && len(b) > 0 {
+				if uerr := hs.Unmarshal(b); uerr == nil && !etcdraft.IsEmptyHardState(hs) {
+					s.storage.SetHardState(hs)
+					s.setLastShadowHardState(hs)
+					seededHS = true
+				}
 			}
-			return nil
-		})
-		if len(entries) > 0 {
-			// Set to storage (replace any pre-existing data which should be empty at this point)
-			// We assume entries are contiguous; future: validate gaps.
-			for _, e := range entries {
-				_ = s.storage.Append([]raftpb.Entry{e})
-			}
 		}
-		if haveHS && !etcdraft.IsEmptyHardState(hs) {
-			s.storage.SetHardState(hs)
-			s.setLastShadowHardState(hs)
+		// Fallback to shadow WAL if nothing was appended and feature is enabled
+		if seededEntries == 0 && cfg.EnableWALShadow {
+			shadowDir := cfg.WALShadowDir
+			if shadowDir == "" { shadowDir = filepath.Join(cfg.DataDir, "raftwal") }
+			_ = raftwal.Replay(shadowDir, func(env *raftwal.Envelope) error {
+				if env.Kind == raftwal.EntryKind_ENTRY_NORMAL {
+					_ = s.storage.Append([]raftpb.Entry{{Index: env.RaftIndex, Term: env.RaftTerm, Type: raftpb.EntryNormal, Data: env.AppBytes}})
+					seededEntries++
+				}
+				return nil
+			})
+			if !seededHS {
+				if hsBytes, ok, herr := raftwal.ReplayLastHardState(shadowDir); herr == nil && ok && len(hsBytes) > 0 {
+					var hs raftpb.HardState
+					if uerr := hs.Unmarshal(hsBytes); uerr == nil && !etcdraft.IsEmptyHardState(hs) {
+						s.storage.SetHardState(hs)
+						s.setLastShadowHardState(hs)
+					}
+				}
+			}
 		}
 	}
 	// Shadow WAL setup (non-fatal). Only when enabled and persistence not disabled.

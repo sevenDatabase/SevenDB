@@ -101,7 +101,7 @@ var _ UnifiedWAL = (*walForge)(nil)
 // lightweight envelope inside the Forge Element payload that carries raft
 // metadata (index/term/subSeq). HARDSTATE bytes are staged for co-fsync via
 // sync() and persisted separately in wl.hsPath.
-func (wl *walForge) AppendEntry(kind EntryKind, index uint64, term uint64, subSeq uint32, cmd *wire.Command, hardState []byte) error {
+func (wl *walForge) AppendEntry(kind EntryKind, index uint64, term uint64, subSeq uint32, cmd *wire.Command, hardState []byte, raftData []byte) error {
 	switch kind {
 	case EntryKindNormal:
 		if cmd == nil {
@@ -112,7 +112,7 @@ func (wl *walForge) AppendEntry(kind EntryKind, index uint64, term uint64, subSe
 		if err != nil {
 			return err
 		}
-		payload := encodeUWAL(uwalKindNormal, index, term, subSeq, b)
+	payload := encodeUWAL(uwalKindNormal, index, term, subSeq, b, raftData)
 		wl.mu.Lock()
 		defer wl.mu.Unlock()
 		wl.lsn += 1
@@ -195,7 +195,7 @@ func (wl *walForge) ReplayItems(cb func(ReplayItem) error) error {
 			// Detect unified envelope vs legacy raw command
 			var item ReplayItem
 			if isUWAL(el.Payload) {
-				kind, idx, term, sub, inner, derr := decodeUWAL(el.Payload)
+				kind, idx, term, sub, inner, raftBytes, derr := decodeUWAL(el.Payload)
 				if derr != nil {
 					file.Close()
 					return fmt.Errorf("decode uwal: %w", derr)
@@ -209,14 +209,14 @@ func (wl *walForge) ReplayItems(cb func(ReplayItem) error) error {
 					file.Close()
 					return fmt.Errorf("error unmarshaling uwal command: %w", err)
 				}
-				item = ReplayItem{Kind: EntryKindNormal, Index: idx, Term: term, SubSeq: sub, Timestamp: el.Timestamp, Cmd: &c}
+				item = ReplayItem{Kind: EntryKindNormal, Index: idx, Term: term, SubSeq: sub, Timestamp: el.Timestamp, Cmd: &c, RaftData: raftBytes}
 			} else {
 				var c wire.Command
 				if err := proto.Unmarshal(el.Payload, &c); err != nil {
 					file.Close()
 					return fmt.Errorf("error unmarshaling command: %w", err)
 				}
-				item = ReplayItem{Kind: EntryKindNormal, Timestamp: el.Timestamp, Cmd: &c}
+				item = ReplayItem{Kind: EntryKindNormal, Timestamp: el.Timestamp, Cmd: &c, RaftData: el.Payload}
 			}
 			if err := cb(item); err != nil {
 				file.Close()
@@ -383,7 +383,7 @@ func (wl *walForge) lastIndexOfSegment(path string) (uint64, error) {
 		}
 		// Prefer raft index from unified envelope when present
 		if el.ElementType == w.ElementType_ELEMENT_TYPE_COMMAND && isUWAL(el.Payload) {
-			_, idx, _, _, _, derr := decodeUWAL(el.Payload)
+			_, idx, _, _, _, _, derr := decodeUWAL(el.Payload)
 			if derr == nil {
 				last = idx
 				continue
@@ -766,7 +766,7 @@ func (wl *walForge) ReplayCommand(cb func(*wire.Command) error) error {
 			// Detect unified envelope and unwrap to command bytes if present
 			var cmdBytes []byte
 			if isUWAL(el.Payload) {
-				kind, _, _, _, inner, derr := decodeUWAL(el.Payload)
+				kind, _, _, _, inner, _, derr := decodeUWAL(el.Payload)
 				if derr != nil {
 					file.Close()
 					return fmt.Errorf("decode uwal: %w", derr)
@@ -850,9 +850,10 @@ func isUWAL(b []byte) bool {
 	return true
 }
 
-// encodeUWAL builds a minimal envelope: magic(5) | kind(1) | index(8 LE) | term(8 LE) | subSeq(4 LE) | cmdLen(4 LE) | cmd
-func encodeUWAL(kind byte, index, term uint64, subSeq uint32, cmd []byte) []byte {
-	total := 5 + 1 + 8 + 8 + 4 + 4 + len(cmd)
+// encodeUWAL builds a minimal envelope:
+// magic(5) | kind(1) | index(8 LE) | term(8 LE) | subSeq(4 LE) | cmdLen(4 LE) | cmd | raftLen(4 LE) | raftData
+func encodeUWAL(kind byte, index, term uint64, subSeq uint32, cmd []byte, raftData []byte) []byte {
+	total := 5 + 1 + 8 + 8 + 4 + 4 + len(cmd) + 4 + len(raftData)
 	out := make([]byte, total)
 	copy(out[:5], uwalMagic)
 	out[5] = kind
@@ -866,21 +867,31 @@ func encodeUWAL(kind byte, index, term uint64, subSeq uint32, cmd []byte) []byte
 	binary.LittleEndian.PutUint32(out[off:off+4], uint32(len(cmd)))
 	off += 4
 	copy(out[off:], cmd)
+	off += len(cmd)
+	binary.LittleEndian.PutUint32(out[off:off+4], uint32(len(raftData)))
+	off += 4
+	copy(out[off:], raftData)
 	return out
 }
 
-// decodeUWAL parses the minimal envelope and returns (kind,index,term,subSeq,cmdBytes).
-func decodeUWAL(b []byte) (byte, uint64, uint64, uint32, []byte, error) {
-	if !isUWAL(b) { return 0, 0, 0, 0, nil, fmt.Errorf("not uwal") }
-	if len(b) < 6+8+8+4+4 { return 0, 0, 0, 0, nil, fmt.Errorf("uwal: short header") }
+// decodeUWAL parses the minimal envelope and returns (kind,index,term,subSeq,cmdBytes,raftData).
+func decodeUWAL(b []byte) (byte, uint64, uint64, uint32, []byte, []byte, error) {
+	if !isUWAL(b) { return 0, 0, 0, 0, nil, nil, fmt.Errorf("not uwal") }
+	if len(b) < 6+8+8+4+4 { return 0, 0, 0, 0, nil, nil, fmt.Errorf("uwal: short header") }
 	kind := b[5]
 	off := 6
 	idx := binary.LittleEndian.Uint64(b[off:off+8]); off += 8
 	term := binary.LittleEndian.Uint64(b[off:off+8]); off += 8
 	sub := binary.LittleEndian.Uint32(b[off:off+4]); off += 4
 	ln := binary.LittleEndian.Uint32(b[off:off+4]); off += 4
-	if int(off)+int(ln) > len(b) { return 0, 0, 0, 0, nil, fmt.Errorf("uwal: length exceeds payload") }
-	return kind, idx, term, sub, b[off : off+int(ln)], nil
+	if int(off)+int(ln) > len(b) { return 0, 0, 0, 0, nil, nil, fmt.Errorf("uwal: length exceeds payload") }
+	cmd := b[off : off+int(ln)]
+	off += int(ln)
+	if len(b) < off+4 { return kind, idx, term, sub, cmd, nil, nil }
+	rln := binary.LittleEndian.Uint32(b[off:off+4]); off += 4
+	if int(off)+int(rln) > len(b) { return 0, 0, 0, 0, nil, nil, fmt.Errorf("uwal: raft length exceeds payload") }
+	raft := b[off : off+int(rln)]
+	return kind, idx, term, sub, cmd, raft, nil
 }
 
 // writePayloadLocked writes a fully formed Element payload 'eb' to the segment with framing and rotation.
