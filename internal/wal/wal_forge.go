@@ -58,7 +58,22 @@ type walForge struct {
 	mu     sync.Mutex
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// testClock allows tests to inject a deterministic time source for features
+	// like replay budget. If nil, time.Now() is used directly.
+	testClock func() time.Time
 }
+
+// Test-only hooks (safe no-ops in production)
+// Set these from tests to simulate failures and race conditions deterministically.
+// Called after buffered data is flushed but before fsync to disk.
+// For example, tests can set TestHookAfterDataBeforeFsync = func(){ panic("inject:after-data-before-fsync") }
+var TestHookAfterDataBeforeFsync func()
+
+// Placeholder for future HardState co-fsync testing when HS is written.
+// If/when HS is persisted separately, invoke this hook after HS is durable in
+// memory/buffer but before the final fsync that groups HS with the last entry.
+var TestHookAfterHSBeforeFsync func()
 
 func newWalForge() *walForge {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -150,9 +165,13 @@ func (wl *walForge) LogCommand(c *wire.Command) error {
 
 	// TODO: This logic changes as we change the LSN format
 	wl.lsn += 1
+	ts := time.Now().UnixNano()
+	if wl.testClock != nil {
+		ts = wl.testClock().UnixNano()
+	}
 	el := &w.Element{
 		Lsn:         wl.lsn,
-		Timestamp:   time.Now().UnixNano(),
+		Timestamp:   ts,
 		ElementType: w.ElementType_ELEMENT_TYPE_COMMAND,
 		Payload:     b,
 	}
@@ -258,6 +277,11 @@ func (wl *walForge) sync() error {
 	// Flush the buffer to the segment file
 	if err := wl.csWriter.Flush(); err != nil {
 		return err
+	}
+
+	// Test hook: simulate a crash right after data hits the page cache but before durable fsync
+	if TestHookAfterDataBeforeFsync != nil {
+		TestHookAfterDataBeforeFsync()
 	}
 
 	// Sync the segment file to disk to make sure

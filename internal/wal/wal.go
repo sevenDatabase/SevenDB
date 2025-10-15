@@ -5,6 +5,7 @@ package wal
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/dicedb/dicedb-go/wire"
 	"github.com/sevenDatabase/SevenDB/config"
@@ -53,5 +54,13 @@ func SetupWAL() {
 	if err := DefaultWAL.Init(); err != nil {
 		slog.Error("could not initialize WAL", slog.Any("error", err))
 		panic(err)
+	}
+}
+
+// SetTestClock injects a test clock function into the default WAL when supported.
+// Test-only; no effect in production builds.
+func SetTestClock(nowFn func() time.Time) {
+	if wf, ok := DefaultWAL.(*walForge); ok {
+		wf.testClock = nowFn
 	}
 }
