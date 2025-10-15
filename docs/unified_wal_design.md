@@ -18,6 +18,21 @@ This addendum refines the unified WAL plan with explicit decisions, invariants, 
 
 ## Co-fsync HardState with last entry (atomicity)
 
+## Minimal unified envelope (UWAL1)
+
+- Encoding
+  - Magic: ASCII "UWAL1" (5 bytes) to identify unified envelope inside Forge Element payloads.
+  - Fields (little-endian): kind(1) | index(8) | term(8) | subSeq(4) | cmdLen(4) | cmdBytes(cmdLen)
+  - kind: 0 = normal entry, 1 = hardstate (hardstate records are not surfaced via ReplayCommand; handled by ReplayLastHardState).
+  - cmdBytes: protobuf-encoded `wire.Command` for normal entries; absent for hardstate.
+- Backward compatibility
+  - When replaying, if payload does not start with "UWAL1", treat entire payload as legacy raw `wire.Command` bytes (index/term default to 0 in ReplayItems).
+  - Pruning logic prefers last raft index from UWAL envelope; falls back to physical LSN when envelope missing.
+- Rollout
+  - Writers start emitting UWAL1 for raft-driven appends; legacy direct `LogCommand` continues to write raw commands. Replay remains compatible with both.
+- Acceptance
+  - Mixed segments containing both legacy and UWAL1 records replay deterministically; DB restore uses UWAL1 LTS when present and ignores it otherwise.
+
 - Write group
   - Append last entry bytes, then persist HardState delta in the same segment as a paired "HS" record with the same index in its header.
   - Issue a single fsync barrier that covers both records (and directory if rotation occurred).
