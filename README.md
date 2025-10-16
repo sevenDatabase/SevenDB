@@ -25,6 +25,9 @@ We extend the excellent work of DiceDB with new primitives that make *subscripti
 
 [**View the Design Plan PDF**](./docs/design-plan.pdf)
 
+Additional docs:
+- [WAL manifest, UWAL1, and integrity preamble](./docs/WAL_MANIFEST_AND_UWAL.md)
+
 
 ## Core Concepts
 

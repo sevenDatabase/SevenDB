@@ -1,10 +1,11 @@
-# WAL Migration Progress (September 30, 2025)
+# WAL Migration Progress (October 16, 2025)
 
 ## Newly Implemented
 * StrictSync mode (RaftConfig.WALStrictSync / raftwal.Config.StrictSync) with per-append fsync and directory sync enforcement.
 * Sidecar durability refinements: cleanup of orphan `*.wal.idx.tmp`; directory+segment fsync after sidecar rewrite in strict mode.
 * Pruning already integrated: segment whole-file deletion with rename + unlink crash safety.
-* Experimental primary read path (RaftConfig.WALPrimaryRead): seeds in-memory raft storage from unified WAL (normal entries + last HardState) prior to starting etcd raft.
+* Primary read path (RaftConfig.WALPrimaryRead): seeds in-memory raft storage from unified WAL (normal entries + last HardState) prior to starting etcd raft.
+* WAL.MANIFEST with startup detection/enforcement and integrity preamble in each segment; strict policy blocks mismatches, warn logs and continues.
 * Replay seeding logic and tests:
   - `TestStrictSyncDurability` validates persistence of frames & HardState with sidecar loss recovery.
   - `TestWALPrimaryReadSeedsStorage` asserts entries + HardState are visible when WALPrimaryRead enabled.
@@ -14,7 +15,7 @@
 * Sidecar loss recovery test with enriched metadata (`TestSidecarLossEnriched`).
 
 ## Outstanding For Full Cutover
-1. Expand validator to also compare opcode/sequence/bucket (currently only CRC + index validated).
+1. Expand validator to compare opcode/sequence/bucket (currently focused on UWAL parity and replay correctness).
 2. Metrics & observability: expose strict sync latency, sidecar rewrite count, validation mismatch counters.
 3. Progressive rollout: gating strategy & feature flag orchestration (percentage or shard subset).
 4. Optional: per-bucket sequence counters vs shard-global sequence for finer replay semantics.
