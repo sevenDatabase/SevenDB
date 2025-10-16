@@ -929,8 +929,12 @@ func (wl *walForge) Stop() {
 	oldHookHS := TestHookAfterHSBeforeFsync
 	TestHookAfterDataBeforeFsync = nil
 	TestHookAfterHSBeforeFsync = nil
-	if err := wl.sync(); err != nil {
+	// If the context is already cancelled (e.g., simulated crash), skip sync to avoid
+	// turning a crash into a graceful flush during tests.
+	if wl.ctx.Err() == nil {
+		if err := wl.sync(); err != nil {
 		slog.Error("failed to sync current segment file", slog.String("error", err.Error()))
+		}
 	}
 	// Restore hooks
 	TestHookAfterDataBeforeFsync = oldHookData
