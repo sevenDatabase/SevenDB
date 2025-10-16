@@ -69,7 +69,11 @@ func evalHGETWATCH(c *Cmd, s *dstore.Store) (*CmdRes, error) {
 }
 
 func executeHGETWATCH(c *Cmd, sm *shardmanager.ShardManager) (*CmdRes, error) {
-	if len(c.C.Args) == 0 {
+	// Require exactly 2 arguments: key and field. This prevents panics in evalHGET.
+	// HGET.WATCH requires exactly two arguments: key and field.
+	// Enforce strict arity here because evalHGETWATCH calls evalHGET directly,
+	// which expects two args and may panic if not validated upfront.
+	if len(c.C.Args) != 2 {
 		return HGETWATCHResNilRes, errors.ErrWrongArgumentCount("HGET.WATCH")
 	}
 	shard := sm.GetShardForKey(c.C.Args[0])
