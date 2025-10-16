@@ -1078,6 +1078,25 @@ func (wl *walForge) writePayloadLocked(eb []byte) error {
 	return nil
 }
 
+// writePayloadLockedNoRotate writes the Element payload 'eb' without attempting
+// a segment rotation. This is used for internal records like the manifest
+// preamble that must be written as the very first record of a fresh segment.
+// Caller must hold wl.mu.
+func (wl *walForge) writePayloadLockedNoRotate(eb []byte) error {
+	entrySize := uint32(4 + 4 + len(eb))
+	if entrySize > uint32(cap(bb)) {
+		panic(fmt.Errorf("buffer too small, %d > %d", entrySize, len(bb)))
+	}
+	bb = bb[:8+len(eb)]
+	chk := crc32.ChecksumIEEE(eb)
+	binary.LittleEndian.PutUint32(bb[0:4], chk)
+	binary.LittleEndian.PutUint32(bb[4:8], uint32(len(eb)))
+	copy(bb[8:], eb)
+	_, _ = wl.csWriter.Write(bb)
+	wl.csSize += entrySize
+	return nil
+}
+
 // writeManifestPreambleLocked writes a UWAL manifest preamble as the first record
 // of an empty segment. Caller must hold wl.mu. No-op if manifestHash is empty
 // or the current segment already has data.
@@ -1090,17 +1109,23 @@ func (wl *walForge) writeManifestPreambleLocked() error {
 	}
 	// Encode the manifest hash as the inner command bytes with uwalKindManifest
 	payload := encodeUWAL(uwalKindManifest, 0, 0, 0, wl.manifestHash, nil)
-	wl.lsn += 1
+	// Do NOT advance LSN for manifest preamble; this is a metadata record and
+	// should not consume a logical sequence number. This keeps prune indices
+	// aligned with actual entry LSNs in tests and production.
 	ts := time.Now().UnixNano()
 	if wl.testClock != nil {
 		ts = wl.testClock().UnixNano()
 	}
-	el := &w.Element{Lsn: wl.lsn, Timestamp: ts, ElementType: w.ElementType_ELEMENT_TYPE_COMMAND, Payload: payload}
+	// Use Lsn=0 for preamble to make it clearly non-progressing; readers ignore
+	// uwalKindManifest for last-index calculations.
+	el := &w.Element{Lsn: 0, Timestamp: ts, ElementType: w.ElementType_ELEMENT_TYPE_COMMAND, Payload: payload}
 	eb, err := proto.Marshal(el)
 	if err != nil {
 		return err
 	}
-	return wl.writePayloadLocked(eb)
+	// Important: write the preamble without triggering rotation to avoid
+	// infinite rotate loops when maxSegmentSizeBytes is set to 0 for tests.
+	return wl.writePayloadLockedNoRotate(eb)
 }
 
 // verifyManifestPreambleIfPresent reads the first segment's first entry (if any)
