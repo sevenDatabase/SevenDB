@@ -220,3 +220,148 @@ Recent changes added atomic leader hint caching and a fast closed check. Tests r
 | Race detector validation (resource leak) | `Close()` | Deterministic teardown avoids false positives. |
 
 Last updated: 2025-10-07
+
+## Real-world multi-machine testing
+
+This section explains how to run a small RAFT cluster across two laptops on a LAN to validate elections, replication, and failover. You can do a minimal 2-node test (no failover) or a recommended 3-node test (fault tolerant) by running two nodes on one laptop and one on the other.
+
+### Prerequisites
+- Two machines on the same network, reachable by IP (for example 192.168.1.10 and 192.168.1.20).
+- Open firewall for RAFT gRPC ports you choose (default 7090; second node on same host can use 7091).
+- Build the server binary on each machine:
+
+```zsh
+make build
+```
+
+### Minimal 2-node cluster (no failover)
+
+Peers list (use on both machines): `1@192.168.1.10:7090`, `2@192.168.1.20:7090`.
+
+Laptop A (node 1):
+
+```zsh
+./sevendb \
+  --raft-enabled=true \
+  --raft-engine=etcd \
+  --raft-node-id=1 \
+  --raft-nodes 1@192.168.1.10:7090 \
+  --raft-nodes 2@192.168.1.20:7090 \
+  --raft-listen-addr=0.0.0.0:7090 \
+  --raft-advertise-addr=192.168.1.10:7090 \
+  --num-shards=1 \
+  --port=7379 \
+  --raft-persistent-dir=/tmp/sevendb-node1/raftdata \
+  --wal-dir=/tmp/sevendb-node1/logs \
+  --log-level=debug
+```
+
+Laptop B (node 2):
+
+```zsh
+./sevendb \
+  --raft-enabled=true \
+  --raft-engine=etcd \
+  --raft-node-id=2 \
+  --raft-nodes 1@192.168.1.10:7090 \
+  --raft-nodes 2@192.168.1.20:7090 \
+  --raft-listen-addr=0.0.0.0:7090 \
+  --raft-advertise-addr=192.168.1.20:7090 \
+  --num-shards=1 \
+  --port=7379 \
+  --raft-persistent-dir=/tmp/sevendb-node2/raftdata \
+  --wal-dir=/tmp/sevendb-node2/logs \
+  --log-level=debug
+```
+
+Note: a 2-node cluster cannot make progress if either node is down (majority of 2 is 2). This is fine for connectivity and replication smoke tests, but not for failover testing.
+
+### Recommended 3-node cluster (with failover)
+
+Run two nodes on Laptop A and one node on Laptop B. Use a 3-peer set:
+
+- `1@192.168.1.10:7090`
+- `2@192.168.1.20:7090`
+- `3@192.168.1.10:7091`
+
+Laptop A, node 1:
+
+```zsh
+./sevendb \
+  --raft-enabled=true \
+  --raft-engine=etcd \
+  --raft-node-id=1 \
+  --raft-nodes 1@192.168.1.10:7090 \
+  --raft-nodes 2@192.168.1.20:7090 \
+  --raft-nodes 3@192.168.1.10:7091 \
+  --raft-listen-addr=0.0.0.0:7090 \
+  --raft-advertise-addr=192.168.1.10:7090 \
+  --num-shards=1 \
+  --port=7379 \
+  --raft-persistent-dir=/tmp/sevendb-node1/raftdata \
+  --wal-dir=/tmp/sevendb-node1/logs \
+  --log-level=debug
+```
+
+Laptop B, node 2:
+
+```zsh
+./sevendb \
+  --raft-enabled=true \
+  --raft-engine=etcd \
+  --raft-node-id=2 \
+  --raft-nodes 1@192.168.1.10:7090 \
+  --raft-nodes 2@192.168.1.20:7090 \
+  --raft-nodes 3@192.168.1.10:7091 \
+  --raft-listen-addr=0.0.0.0:7090 \
+  --raft-advertise-addr=192.168.1.20:7090 \
+  --num-shards=1 \
+  --port=7379 \
+  --raft-persistent-dir=/tmp/sevendb-node2/raftdata \
+  --wal-dir=/tmp/sevendb-node2/logs \
+  --log-level=debug
+```
+
+Laptop A, node 3 (second process on Laptop A):
+
+```zsh
+./sevendb \
+  --raft-enabled=true \
+  --raft-engine=etcd \
+  --raft-node-id=3 \
+  --raft-nodes 1@192.168.1.10:7090 \
+  --raft-nodes 2@192.168.1.20:7090 \
+  --raft-nodes 3@192.168.1.10:7091 \
+  --raft-listen-addr=0.0.0.0:7091 \
+  --raft-advertise-addr=192.168.1.10:7091 \
+  --num-shards=1 \
+  --port=7380 \
+  --raft-persistent-dir=/tmp/sevendb-node3/raftdata \
+  --wal-dir=/tmp/sevendb-node3/logs \
+  --log-level=debug
+```
+
+This setup tolerates one node failure (majority of 3 is 2). Kill the leader process and observe re-election on the remaining nodes.
+
+### Optional: exercise the unified WAL (Forge)
+
+Add these flags to each process to route RAFT appends through the unified WAL in addition to legacy paths:
+
+```zsh
+--enable-wal \
+--wal-variant=forge
+```
+
+### How to verify it’s working
+
+- Leader election: check periodic status JSON. By default it’s written under the metadata directory (or set `--status-file-path=/tmp/sevendb-node1/status.json`). Look for `leader_id`, `is_leader`, `last_applied_index`.
+- Writes replicate: run a few writes on the leader (e.g., using `redis-cli` to the leader’s app port), and watch `last_applied_index` increase on all nodes.
+- Failover (3-node): kill the leader process; another node should show `is_leader=true` soon after, and commits should continue.
+- WAL hygiene: inspect `--wal-dir`; after snapshots, old `seg-*.wal` files are pruned and there are no lingering `*.wal.deleted` markers.
+
+### Common pitfalls
+
+- Use unique directories per node for `--raft-persistent-dir` and `--wal-dir`. Don’t share the same folder across processes.
+- Ensure RAFT ports are reachable between machines (e.g., `nc -vz 192.168.1.20 7090`).
+- Two-node clusters cannot make progress if one node is down; use three nodes to test failover.
+- Transport is unauthenticated by default; keep tests on a trusted network.
