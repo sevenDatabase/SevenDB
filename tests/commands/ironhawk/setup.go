@@ -22,13 +22,49 @@ import (
 	derrors "github.com/sevenDatabase/SevenDB/internal/errors"
 )
 
+// ensureTestServer starts a singleton test server on the default port if not running.
+var (
+	testServerOnce sync.Once
+)
+
 //nolint:unused
 func getLocalConnection() *dicedb.Client {
-	client, err := dicedb.NewClient("localhost", config.Config.Port)
-	if err != nil {
-		panic(err)
+	// If some tests mutated the port (e.g., watch WAL replay), reset to default for generic tests.
+	const defaultPort = 7379
+	if config.Config.Port == 0 {
+		config.Config.Port = defaultPort
 	}
-	return client
+
+	// First attempt to connect on the current port.
+	client, err := dicedb.NewClient("localhost", config.Config.Port)
+	if err == nil {
+		return client
+	}
+
+	// If connection failed and port isn't the default, switch back to default and try starting the server.
+	if config.Config.Port != defaultPort {
+		config.Config.Port = defaultPort
+	}
+
+	// Start the test server once.
+	testServerOnce.Do(func() {
+		var wg sync.WaitGroup
+		RunTestServer(&wg)
+		// Give the server a brief moment to bind and start listening.
+		time.Sleep(200 * time.Millisecond)
+	})
+
+	// Retry connecting a few times with small backoff.
+	var lastErr error
+	for i := 0; i < 5; i++ {
+		client, lastErr = dicedb.NewClient("localhost", config.Config.Port)
+		if lastErr == nil {
+			return client
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	// If still failing, panic to surface a clear error in tests.
+	panic(lastErr)
 }
 
 func ClosePublisherSubscribers(publisher net.Conn, subscribers []net.Conn) error {
