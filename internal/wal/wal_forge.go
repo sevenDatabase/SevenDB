@@ -108,6 +108,10 @@ var _ UnifiedWAL = (*walForge)(nil)
 func (wl *walForge) AppendEntry(kind EntryKind, index uint64, term uint64, subSeq uint32, cmd *wire.Command, hardState []byte, raftData []byte) error {
 	switch kind {
 	case EntryKindNormal:
+		// Enforce manifest policy: in strict legacy/mixed modes, disallow UWAL appends
+		if wl.manifest != nil && wl.manifest.Enforce == EnforceStrict && !wl.manifest.IsUWAL1() {
+			return fmt.Errorf("wal manifest(strict %s) forbids UWAL appends: migrate or relax policy", wl.manifest.Format)
+		}
 		if cmd == nil {
 			return fmt.Errorf("AppendEntry: nil command for normal entry")
 		}
@@ -203,6 +207,10 @@ func (wl *walForge) ReplayItems(cb func(ReplayItem) error) error {
 				if derr != nil {
 					file.Close()
 					return fmt.Errorf("decode uwal: %w", derr)
+				}
+				if kind == uwalKindManifest {
+					// Skip manifest preamble entries
+					continue
 				}
 				if kind == uwalKindHardState {
 					// HardState envelopes (if ever present) are not yielded as commands
@@ -387,9 +395,11 @@ func (wl *walForge) lastIndexOfSegment(path string) (uint64, error) {
 		}
 		// Prefer raft index from unified envelope when present
 		if el.ElementType == w.ElementType_ELEMENT_TYPE_COMMAND && isUWAL(el.Payload) {
-			_, idx, _, _, _, _, derr := decodeUWAL(el.Payload)
+			kind, idx, _, _, _, _, derr := decodeUWAL(el.Payload)
 			if derr == nil {
-				last = idx
+				if kind != uwalKindManifest { // ignore preamble entries
+					last = idx
+				}
 				continue
 			}
 		}
@@ -459,6 +469,14 @@ func (wl *walForge) Init() error {
 	}
 	slog.Debug("Loading WAL segments", slog.Any("total_segments", len(sfs)))
 
+	// Verify manifest preamble if present in the first segment
+	if err := wl.verifyManifestPreambleIfPresent(sfs); err != nil {
+		if wl.manifest != nil && wl.manifest.Enforce == EnforceStrict {
+			return err
+		}
+		slog.Warn("wal manifest preamble mismatch (continuing in warn mode)", slog.Any("error", err))
+	}
+
 	// Determine the current active segment. If existing segments are present we
 	// append to the highest numbered one and set wl.csIdx & wl.csSize accordingly.
 	var targetPath string
@@ -495,6 +513,16 @@ func (wl *walForge) Init() error {
 
 	wl.csf = sf
 	wl.csWriter = bufio.NewWriterSize(wl.csf, config.Config.WALBufferSizeMB*1024*1024)
+
+	// If this is a brand new segment (size==0), write the manifest preamble first
+	if wl.csSize == 0 {
+		wl.mu.Lock()
+		if err := wl.writeManifestPreambleLocked(); err != nil {
+			wl.mu.Unlock()
+			return fmt.Errorf("write manifest preamble: %w", err)
+		}
+		wl.mu.Unlock()
+	}
 
 	go wl.periodicSyncBuffer()
 
@@ -589,6 +617,11 @@ func (wl *walForge) rotateLog() error {
 	wl.csf = sf
 	wl.csSize = 0
 	wl.csWriter = bufio.NewWriter(sf)
+
+	// After opening a fresh segment, write the manifest preamble first
+	if err := wl.writeManifestPreambleLocked(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -845,6 +878,10 @@ func (wl *walForge) ReplayCommand(cb func(*wire.Command) error) error {
 					file.Close()
 					return fmt.Errorf("decode uwal: %w", derr)
 				}
+				if kind == uwalKindManifest {
+					// Skip manifest preamble
+					continue
+				}
 				if kind == uwalKindHardState {
 					// unified hardstate is not surfaced via ReplayCommand
 					continue
@@ -912,6 +949,7 @@ func (wl *walForge) Sync() error {
 const (
 	uwalKindNormal    = byte(0)
 	uwalKindHardState = byte(1)
+	uwalKindManifest  = byte(2) // preamble record carrying manifest hash; ignored during replay
 )
 
 var uwalMagic = []byte{'U', 'W', 'A', 'L', '1'}
@@ -986,5 +1024,79 @@ func (wl *walForge) writePayloadLocked(eb []byte) error {
 	copy(bb[8:], eb)
 	_, _ = wl.csWriter.Write(bb)
 	wl.csSize += entrySize
+	return nil
+}
+
+// writeManifestPreambleLocked writes a UWAL manifest preamble as the first record
+// of an empty segment. Caller must hold wl.mu. No-op if manifestHash is empty
+// or the current segment already has data.
+func (wl *walForge) writeManifestPreambleLocked() error {
+	if len(wl.manifestHash) == 0 {
+		return nil
+	}
+	if wl.csSize != 0 {
+		return nil
+	}
+	// Encode the manifest hash as the inner command bytes with uwalKindManifest
+	payload := encodeUWAL(uwalKindManifest, 0, 0, 0, wl.manifestHash, nil)
+	wl.lsn += 1
+	ts := time.Now().UnixNano()
+	if wl.testClock != nil {
+		ts = wl.testClock().UnixNano()
+	}
+	el := &w.Element{Lsn: wl.lsn, Timestamp: ts, ElementType: w.ElementType_ELEMENT_TYPE_COMMAND, Payload: payload}
+	eb, err := proto.Marshal(el)
+	if err != nil {
+		return err
+	}
+	return wl.writePayloadLocked(eb)
+}
+
+// verifyManifestPreambleIfPresent reads the first segment's first entry (if any)
+// and verifies the uwalKindManifest payload hash matches the current manifest hash.
+// Returns an error on mismatch in strict UWAL1 mode; otherwise returns nil.
+func (wl *walForge) verifyManifestPreambleIfPresent(segments []string) error {
+	if len(segments) == 0 {
+		return nil
+	}
+	// Only enforce for UWAL1 strict manifests; warn-only is permissive.
+	if wl.manifest == nil || !wl.manifest.IsUWAL1() || wl.manifest.Enforce != EnforceStrict {
+		return nil
+	}
+	f, err := os.Open(segments[0])
+	if err != nil {
+		return nil // don't block startup if we can't read; segment scanning will catch issues later
+	}
+	defer f.Close()
+	hdr := make([]byte, 8)
+	if _, err := io.ReadFull(f, hdr); err != nil {
+		return nil // empty or unreadable first record; nothing to verify
+	}
+	sz := binary.LittleEndian.Uint32(hdr[4:8])
+	if sz == 0 || sz > 16*1024*1024 {
+		return nil
+	}
+	payload := make([]byte, sz)
+	if _, err := io.ReadFull(f, payload); err != nil {
+		return nil
+	}
+	var el w.Element
+	if err := proto.Unmarshal(payload, &el); err != nil {
+		return nil
+	}
+	if !isUWAL(el.Payload) {
+		return nil
+	}
+	kind, _, _, _, inner, _, derr := decodeUWAL(el.Payload)
+	if derr != nil {
+		return nil
+	}
+	if kind != uwalKindManifest {
+		return nil
+	}
+	// inner contains the manifest hash bytes
+	if len(inner) != len(wl.manifestHash) || (len(inner) > 0 && string(inner) != string(wl.manifestHash)) {
+		return fmt.Errorf("manifest preamble hash mismatch: wal=%x manifest=%x", inner, wl.manifestHash)
+	}
 	return nil
 }
