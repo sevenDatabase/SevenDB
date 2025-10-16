@@ -22,8 +22,8 @@ import (
 
 	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/sevenDatabase/SevenDB/internal/harness/clock"
-	"github.com/sevenDatabase/SevenDB/internal/wal"
 	"github.com/sevenDatabase/SevenDB/internal/raftwal"
+	"github.com/sevenDatabase/SevenDB/internal/wal"
 	"google.golang.org/protobuf/proto"
 
 	etcdraft "go.etcd.io/etcd/raft/v3"
@@ -1064,7 +1064,9 @@ func (s *ShardRaftNode) initEtcd(cfg RaftConfig) error {
 		// Fallback to shadow WAL if nothing was appended and feature is enabled
 		if seededEntries == 0 && cfg.EnableWALShadow {
 			shadowDir := cfg.WALShadowDir
-			if shadowDir == "" { shadowDir = filepath.Join(cfg.DataDir, "raftwal") }
+			if shadowDir == "" {
+				shadowDir = filepath.Join(cfg.DataDir, "raftwal")
+			}
 			_ = raftwal.Replay(shadowDir, func(env *raftwal.Envelope) error {
 				if env.Kind == raftwal.EntryKind_ENTRY_NORMAL {
 					_ = s.storage.Append([]raftpb.Entry{{Index: env.RaftIndex, Term: env.RaftTerm, Type: raftpb.EntryNormal, Data: env.AppBytes}})

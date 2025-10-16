@@ -66,7 +66,7 @@ type walForge struct {
 	// hardstate persistence (unified WAL behavior)
 	// hsPath is the canonical file where the last durable HardState is stored.
 	// pendingHS buffers the next HardState bytes to persist at the next Sync() barrier.
-	hsPath   string
+	hsPath    string
 	pendingHS []byte
 
 	// manifest holds the loaded/created manifest and hash for enforcement and UWAL headers
@@ -120,15 +120,19 @@ func (wl *walForge) AppendEntry(kind EntryKind, index uint64, term uint64, subSe
 		if err != nil {
 			return err
 		}
-	payload := encodeUWAL(uwalKindNormal, index, term, subSeq, b, raftData)
+		payload := encodeUWAL(uwalKindNormal, index, term, subSeq, b, raftData)
 		wl.mu.Lock()
 		defer wl.mu.Unlock()
 		wl.lsn += 1
 		ts := time.Now().UnixNano()
-		if wl.testClock != nil { ts = wl.testClock().UnixNano() }
+		if wl.testClock != nil {
+			ts = wl.testClock().UnixNano()
+		}
 		el := &w.Element{Lsn: wl.lsn, Timestamp: ts, ElementType: w.ElementType_ELEMENT_TYPE_COMMAND, Payload: payload}
-	eb, err := proto.Marshal(el)
-	if err != nil { return err }
+		eb, err := proto.Marshal(el)
+		if err != nil {
+			return err
+		}
 		return wl.writePayloadLocked(eb)
 	case EntryKindHardState:
 		if len(hardState) == 0 {
@@ -434,20 +438,36 @@ func (wl *walForge) Init() error {
 		if mf == nil {
 			// Detect on missing manifest
 			detected, derr := DetectFormat(config.Config.WALDir, 2, 16)
-			if derr != nil { return fmt.Errorf("manifest detect: %w", derr) }
+			if derr != nil {
+				return fmt.Errorf("manifest detect: %w", derr)
+			}
 			// Enforce config policies
 			if config.Config.WALRequireUWAL1 && detected != WALFormatUWAL1 {
 				return fmt.Errorf("wal requires UWAL1, but detected %s without manifest; refuse startup (set wal-require-uwal1=false to allow)", detected)
 			}
 			if config.Config.WALAutoCreateManifest {
 				enforce := EnforceWarn
-				if config.Config.WALManifestEnforce == string(EnforceStrict) { enforce = EnforceStrict }
-				mf = &Manifest{SchemaVersion: 1, Format: detected, UWALVersion: func() int { if detected==WALFormatUWAL1 {return 1}; return 0 }(), Enforce: enforce}
+				if config.Config.WALManifestEnforce == string(EnforceStrict) {
+					enforce = EnforceStrict
+				}
+				mf = &Manifest{SchemaVersion: 1, Format: detected, UWALVersion: func() int {
+					if detected == WALFormatUWAL1 {
+						return 1
+					}
+					return 0
+				}(), Enforce: enforce}
 				hash, err = SaveManifestAtomic(config.Config.WALDir, mf)
-				if err != nil { return fmt.Errorf("manifest save: %w", err) }
+				if err != nil {
+					return fmt.Errorf("manifest save: %w", err)
+				}
 			} else {
 				// No manifest created; proceed, but treat as warn mode in memory
-				mf = &Manifest{SchemaVersion: 1, Format: detected, UWALVersion: func() int { if detected==WALFormatUWAL1 {return 1}; return 0 }(), Enforce: EnforceWarn}
+				mf = &Manifest{SchemaVersion: 1, Format: detected, UWALVersion: func() int {
+					if detected == WALFormatUWAL1 {
+						return 1
+					}
+					return 0
+				}(), Enforce: EnforceWarn}
 			}
 		} else {
 			// Verify directory format against manifest
@@ -624,8 +644,12 @@ func (wl *walForge) rotateLog() error {
 	wl.csWriter = bufio.NewWriter(sf)
 
 	// After opening a fresh segment, write the manifest preamble first and flush
-	if err := wl.writeManifestPreambleLocked(); err != nil { return err }
-	if err := wl.csWriter.Flush(); err != nil { return err }
+	if err := wl.writeManifestPreambleLocked(); err != nil {
+		return err
+	}
+	if err := wl.csWriter.Flush(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -933,7 +957,7 @@ func (wl *walForge) Stop() {
 	// turning a crash into a graceful flush during tests.
 	if wl.ctx.Err() == nil {
 		if err := wl.sync(); err != nil {
-		slog.Error("failed to sync current segment file", slog.String("error", err.Error()))
+			slog.Error("failed to sync current segment file", slog.String("error", err.Error()))
 		}
 	}
 	// Restore hooks
@@ -963,9 +987,13 @@ const (
 var uwalMagic = []byte{'U', 'W', 'A', 'L', '1'}
 
 func isUWAL(b []byte) bool {
-	if len(b) < len(uwalMagic) { return false }
+	if len(b) < len(uwalMagic) {
+		return false
+	}
 	for i := range uwalMagic {
-		if b[i] != uwalMagic[i] { return false }
+		if b[i] != uwalMagic[i] {
+			return false
+		}
 	}
 	return true
 }
@@ -996,20 +1024,35 @@ func encodeUWAL(kind byte, index, term uint64, subSeq uint32, cmd []byte, raftDa
 
 // decodeUWAL parses the minimal envelope and returns (kind,index,term,subSeq,cmdBytes,raftData).
 func decodeUWAL(b []byte) (byte, uint64, uint64, uint32, []byte, []byte, error) {
-	if !isUWAL(b) { return 0, 0, 0, 0, nil, nil, fmt.Errorf("not uwal") }
-	if len(b) < 6+8+8+4+4 { return 0, 0, 0, 0, nil, nil, fmt.Errorf("uwal: short header") }
+	if !isUWAL(b) {
+		return 0, 0, 0, 0, nil, nil, fmt.Errorf("not uwal")
+	}
+	if len(b) < 6+8+8+4+4 {
+		return 0, 0, 0, 0, nil, nil, fmt.Errorf("uwal: short header")
+	}
 	kind := b[5]
 	off := 6
-	idx := binary.LittleEndian.Uint64(b[off:off+8]); off += 8
-	term := binary.LittleEndian.Uint64(b[off:off+8]); off += 8
-	sub := binary.LittleEndian.Uint32(b[off:off+4]); off += 4
-	ln := binary.LittleEndian.Uint32(b[off:off+4]); off += 4
-	if int(off)+int(ln) > len(b) { return 0, 0, 0, 0, nil, nil, fmt.Errorf("uwal: length exceeds payload") }
+	idx := binary.LittleEndian.Uint64(b[off : off+8])
+	off += 8
+	term := binary.LittleEndian.Uint64(b[off : off+8])
+	off += 8
+	sub := binary.LittleEndian.Uint32(b[off : off+4])
+	off += 4
+	ln := binary.LittleEndian.Uint32(b[off : off+4])
+	off += 4
+	if int(off)+int(ln) > len(b) {
+		return 0, 0, 0, 0, nil, nil, fmt.Errorf("uwal: length exceeds payload")
+	}
 	cmd := b[off : off+int(ln)]
 	off += int(ln)
-	if len(b) < off+4 { return kind, idx, term, sub, cmd, nil, nil }
-	rln := binary.LittleEndian.Uint32(b[off:off+4]); off += 4
-	if int(off)+int(rln) > len(b) { return 0, 0, 0, 0, nil, nil, fmt.Errorf("uwal: raft length exceeds payload") }
+	if len(b) < off+4 {
+		return kind, idx, term, sub, cmd, nil, nil
+	}
+	rln := binary.LittleEndian.Uint32(b[off : off+4])
+	off += 4
+	if int(off)+int(rln) > len(b) {
+		return 0, 0, 0, 0, nil, nil, fmt.Errorf("uwal: raft length exceeds payload")
+	}
 	raft := b[off : off+int(rln)]
 	return kind, idx, term, sub, cmd, raft, nil
 }

@@ -38,7 +38,7 @@ func init() {
 // TeardownWAL stops the WAL and closes the WAL instance.
 func TeardownWAL() {
 	// Make idempotent in tests; avoid panic on double close
-	defer func(){ _ = recover() }()
+	defer func() { _ = recover() }()
 	close(stopCh)
 }
 

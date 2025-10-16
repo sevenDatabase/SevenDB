@@ -83,7 +83,7 @@ func TestGetValueFromHashMap(t *testing.T) {
 	obj := &object.Obj{
 		Type:           object.ObjTypeSSMap,
 		Value:          hmap,
-	LastAccessedAt: time.Now().Unix(),
+		LastAccessedAt: time.Now().Unix(),
 	}
 
 	store.Put(key, obj)

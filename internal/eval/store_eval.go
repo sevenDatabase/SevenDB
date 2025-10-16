@@ -5750,7 +5750,7 @@ func evalGET(args []string, store *dstore.Store) *EvalResponse {
 	case object.ObjTypeFloat:
 		return &EvalResponse{Result: fmt.Sprintf("%f", obj.Value.(float64)), Error: nil}
 	default:
-	return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value")}
+		return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value")}
 	}
 }
 
@@ -5776,7 +5776,7 @@ func evalGETDEL(args []string, store *dstore.Store) *EvalResponse {
 	case object.ObjTypeFloat:
 		return &EvalResponse{Result: fmt.Sprintf("%f", obj.Value.(float64)), Error: nil}
 	default:
-	return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value")}
+		return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value")}
 	}
 }
 
@@ -5915,7 +5915,7 @@ func evalGETEX(args []string, store *dstore.Store) *EvalResponse {
 	case object.ObjTypeFloat:
 		return &EvalResponse{Result: fmt.Sprintf("%f", obj.Value.(float64)), Error: nil}
 	default:
-	return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value")}
+		return &EvalResponse{Result: nil, Error: diceerrors.ErrGeneral("WRONGTYPE Operation against a key holding the wrong kind of value")}
 	}
 }
 
@@ -6441,7 +6441,7 @@ func evalJSONARRINDEX(args []string, store *dstore.Store) *EvalResponse {
 		value, err = strconv.ParseFloat(args[2], 64)
 
 		if err != nil {
-		return makeEvalError(diceerrors.ErrGeneral("ERR Couldn't parse as integer"))
+			return makeEvalError(diceerrors.ErrGeneral("ERR Couldn't parse as integer"))
 		}
 	}
 

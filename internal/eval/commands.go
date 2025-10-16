@@ -92,12 +92,12 @@ var (
 	}
 	// Add basic command metadata for SET/GET/PING used by COMMAND subcommands
 	setCmdMeta = DiceCmdMeta{
-		Name:      "SET",
-		Info:      "SET puts a new <key, value> pair in db as in the args\n\t\targs must contain key and value.\n\t\targs can also contain multiple options -\n\t\tEX or ex which will set the expiry time(in secs) for the key\n\t\tReturns encoded error response if at least a <key, value> pair is not part of args\n\t\tReturns encoded error response if expiry tme value in not integer\n\t\tReturns encoded OK RESP once new entry is added\n\t\tIf the key already exists then the value will be overwritten and expiry will be discarded",
-		NewEval:   evalSET,
+		Name:       "SET",
+		Info:       "SET puts a new <key, value> pair in db as in the args\n\t\targs must contain key and value.\n\t\targs can also contain multiple options -\n\t\tEX or ex which will set the expiry time(in secs) for the key\n\t\tReturns encoded error response if at least a <key, value> pair is not part of args\n\t\tReturns encoded error response if expiry tme value in not integer\n\t\tReturns encoded OK RESP once new entry is added\n\t\tIf the key already exists then the value will be overwritten and expiry will be discarded",
+		NewEval:    evalSET,
 		IsMigrated: true,
-		Arity:     -3,
-		KeySpecs:  KeySpecs{BeginIndex: 1},
+		Arity:      -3,
+		KeySpecs:   KeySpecs{BeginIndex: 1},
 	}
 	getCmdMeta = DiceCmdMeta{
 		Name:       "GET",

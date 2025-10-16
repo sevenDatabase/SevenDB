@@ -8592,7 +8592,7 @@ func BenchmarkZCOUNT(b *testing.B) {
 	// Benchmark for edge cases
 	b.Run("Edge Case ZCOUNT", func(b *testing.B) {
 		// Reset the store and set up members
-	store = dstore.NewStore(nil, nil, 0)
+		store = dstore.NewStore(nil, nil, 0)
 		evalZADD([]string{"key", "5", "member1", "15", "member2", "25", "member3"}, store)
 
 		b.ResetTimer()
