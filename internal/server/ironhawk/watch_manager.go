@@ -51,6 +51,8 @@ func (w *WatchManager) RegisterThread(t *IOThread) {
 }
 
 func (w *WatchManager) HandleWatch(c *cmd.Cmd, t *IOThread) error {
+	// Compute fingerprint using the base command (without appending .WATCH),
+	// matching what we return to clients and persist in WAL.
 	fp, key := c.Fingerprint(), c.Key()
 	slog.Debug("creating a new subscription",
 		slog.String("key", key),
@@ -216,7 +218,10 @@ func (w *WatchManager) NotifyWatchers(c *cmd.Cmd, shardManager *shardmanager.Sha
 
 		r, err := _c.Execute(shardManager)
 		if err != nil {
-			slog.Error("failed to execute command as part of watch notification",
+			// During watch notifications, it is common to hit WRONGTYPE errors if the
+			// watched key has changed to an incompatible type. These are not fatal and
+			// should not spam error logs. Log at debug level instead.
+			slog.Debug("watch notify command returned error",
 				slog.Any("cmd", _c.String()),
 				slog.Any("error", err))
 			continue

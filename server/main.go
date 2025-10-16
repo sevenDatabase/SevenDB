@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+    "time"
 
 	"github.com/dicedb/dicedb-go/wire"
 	"github.com/sevenDatabase/SevenDB/internal/auth"
@@ -177,6 +178,40 @@ func Start() {
 						// per occurrence, but these are expected when absolute expirations have already passed while
 						// the server was down. Treat as a no-op with no log noise.
 						return nil
+					}
+
+					// Similarly, tolerate SET with EXAT/PXAT whose absolute timestamp is already in the past.
+					// These can occur if the server was down past the intended expiry time. Treat them as no-ops
+					// during WAL replay to avoid aborting restore due to now-invalid absolute timestamps.
+					if cd.Cmd == "SET" {
+						// Look for EXAT/PXAT options and check if the provided absolute timestamp is in the past.
+						isPast := false
+						for i := 2; i < len(cd.Args); i++ {
+							opt := strings.ToUpper(cd.Args[i])
+							switch opt {
+							case "EXAT":
+								if i+1 < len(cd.Args) {
+									if tv, perr := strconv.ParseInt(cd.Args[i+1], 10, 64); perr == nil {
+										if tv <= time.Now().Unix() {
+											isPast = true
+											break
+										}
+									}
+								}
+							case "PXAT":
+								if i+1 < len(cd.Args) {
+									if tv, perr := strconv.ParseInt(cd.Args[i+1], 10, 64); perr == nil {
+										if tv <= time.Now().UnixMilli() {
+											isPast = true
+											break
+										}
+									}
+								}
+							}
+						}
+						if isPast {
+							return nil
+						}
 					}
 					return fmt.Errorf("error handling WAL replay: %w", err)
 				}

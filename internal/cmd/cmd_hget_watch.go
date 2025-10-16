@@ -64,6 +64,8 @@ func evalHGETWATCH(c *Cmd, s *dstore.Store) (*CmdRes, error) {
 		return nil, err
 	}
 
+	// Return the base command fingerprint (without appending .WATCH) so that
+	// clients can UNWATCH using the same identifier that is also stored in WAL.
 	r.Rs.Fingerprint64 = c.Fingerprint()
 	return r, nil
 }

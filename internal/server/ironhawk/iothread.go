@@ -94,8 +94,9 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 			res.Rs.Message = "OK"
 		}
 
-		// Determine if this is a watch/unwatch command
-		isWatchCmd := strings.HasSuffix(c.Cmd, "WATCH")
+	// Determine if this is a watch command. Require the explicit ".WATCH" suffix
+	// so that commands like "UNWATCH" are not misclassified as watch commands.
+	isWatchCmd := strings.HasSuffix(c.Cmd, ".WATCH")
 
 		// Log command to WAL if enabled and not a replay and not a watch/unwatch op
 		// Watch/Unwatch are logged via WatchManager as SUBSCRIBE/UNSUBSCRIBE and must be atomic with ack
@@ -115,9 +116,11 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 		}
 
 		if _c.Meta.IsWatchable {
-			_cWatch := _c
-			_cWatch.C.Cmd += ".WATCH"
-			res.Rs.Fingerprint64 = _cWatch.Fingerprint()
+			// Use the base command fingerprint for watch subscriptions.
+			// This ensures the fingerprint returned to the client matches the one
+			// used internally for registration and persisted to WAL, allowing
+			// UNWATCH to correctly identify and remove the subscription across restarts.
+			res.Rs.Fingerprint64 = _c.Fingerprint()
 		}
 
 		if c.Cmd == "HANDSHAKE" && err == nil {
