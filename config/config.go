@@ -75,6 +75,11 @@ type DiceDBConfig struct {
 	WALSegmentRotationTimeSec   int    `mapstructure:"wal-max-segment-rotation-time-sec" default:"60" description:"the time interval (in seconds) after which wal a segment is rotated"`
 	WALBufferSyncIntervalMillis int    `mapstructure:"wal-buffer-sync-interval-ms" default:"200" description:"the interval (in milliseconds) at which the wal write buffer is synced to disk"`
 
+	// WAL manifest & format enforcement
+	WALAutoCreateManifest bool   `mapstructure:"wal-auto-create-manifest" default:"true" description:"auto-create WAL.MANIFEST on startup if missing using detected format"`
+	WALRequireUWAL1       bool   `mapstructure:"wal-require-uwal1" default:"false" description:"if true and no manifest, require UWAL1 format; fail startup if legacy/mixed detected"`
+	WALManifestEnforce    string `mapstructure:"wal-manifest-enforce" default:"warn" description:"manifest enforcement mode: warn | strict"`
+
 	// Raft / replication flags (MVP – subject to change; kept flat for simple flag binding)
 	RaftEnabled                  bool     `mapstructure:"raft-enabled" default:"false" description:"enable raft replication (experimental)"`
 	RaftNodes                    []string `mapstructure:"raft-nodes" description:"comma separated raft peer addresses (host:port) for static cluster"`

@@ -68,6 +68,10 @@ type walForge struct {
 	// pendingHS buffers the next HardState bytes to persist at the next Sync() barrier.
 	hsPath   string
 	pendingHS []byte
+
+	// manifest holds the loaded/created manifest and hash for enforcement and UWAL headers
+	manifest     *Manifest
+	manifestHash []byte
 }
 
 // Test-only hooks (safe no-ops in production)
@@ -411,6 +415,43 @@ func (wl *walForge) Init() error {
 	// Initialize hardstate path under the WAL directory
 	wl.hsPath = filepath.Join(config.Config.WALDir, "hardstate")
 
+	// Load or create manifest and enforce on startup
+	{
+		mf, hash, err := LoadManifest(config.Config.WALDir)
+		if err != nil {
+			return fmt.Errorf("manifest load: %w", err)
+		}
+		if mf == nil {
+			// Detect on missing manifest
+			detected, derr := DetectFormat(config.Config.WALDir, 2, 16)
+			if derr != nil { return fmt.Errorf("manifest detect: %w", derr) }
+			// Enforce config policies
+			if config.Config.WALRequireUWAL1 && detected != WALFormatUWAL1 {
+				return fmt.Errorf("wal requires UWAL1, but detected %s without manifest; refuse startup (set wal-require-uwal1=false to allow)", detected)
+			}
+			if config.Config.WALAutoCreateManifest {
+				enforce := EnforceWarn
+				if config.Config.WALManifestEnforce == string(EnforceStrict) { enforce = EnforceStrict }
+				mf = &Manifest{SchemaVersion: 1, Format: detected, UWALVersion: func() int { if detected==WALFormatUWAL1 {return 1}; return 0 }(), Enforce: enforce}
+				hash, err = SaveManifestAtomic(config.Config.WALDir, mf)
+				if err != nil { return fmt.Errorf("manifest save: %w", err) }
+			} else {
+				// No manifest created; proceed, but treat as warn mode in memory
+				mf = &Manifest{SchemaVersion: 1, Format: detected, UWALVersion: func() int { if detected==WALFormatUWAL1 {return 1}; return 0 }(), Enforce: EnforceWarn}
+			}
+		} else {
+			// Verify directory format against manifest
+			detected, derr := DetectFormat(config.Config.WALDir, 2, 16)
+			if derr == nil {
+				if verr := mf.VerifyAgainst(detected); verr != nil {
+					return fmt.Errorf("wal format enforcement failed: %w", verr)
+				}
+			}
+		}
+		wl.manifest = mf
+		wl.manifestHash = hash
+	}
+
 	// Get the list of log segment files in the WAL directory
 	sfs, err := wl.segments()
 	if err != nil {
@@ -679,6 +720,39 @@ func (wl *walForge) segments() ([]string, error) {
 	}
 	files = valid
 	// Sort numerically by extracted index (NOT lexicographically by full path)
+	sort.Slice(files, func(i, j int) bool {
+		bi := filepath.Base(files[i])
+		bj := filepath.Base(files[j])
+		iStr := strings.TrimSuffix(strings.TrimPrefix(bi, segmentPrefix), ".wal")
+		jStr := strings.TrimSuffix(strings.TrimPrefix(bj, segmentPrefix), ".wal")
+		iVal, _ := strconv.Atoi(iStr)
+		jVal, _ := strconv.Atoi(jStr)
+		return iVal < jVal
+	})
+	return files, nil
+}
+
+// segmentsInDir returns segments under an explicit directory (used by manifest detection before Init).
+func (wl *walForge) segmentsInDir(dir string) ([]string, error) {
+	pattern := filepath.Join(dir, segmentPrefix+"*"+".wal")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, err
+	}
+	// reuse same filtering/sorting as segments()
+	valid := files[:0]
+	for _, f := range files {
+		base := filepath.Base(f)
+		if !strings.HasPrefix(base, segmentPrefix) || !strings.HasSuffix(base, ".wal") {
+			continue
+		}
+		idxStr := strings.TrimSuffix(strings.TrimPrefix(base, segmentPrefix), ".wal")
+		if _, err := strconv.Atoi(idxStr); err != nil {
+			continue
+		}
+		valid = append(valid, f)
+	}
+	files = valid
 	sort.Slice(files, func(i, j int) bool {
 		bi := filepath.Base(files[i])
 		bj := filepath.Base(files[j])
