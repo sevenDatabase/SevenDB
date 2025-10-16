@@ -521,6 +521,11 @@ func (wl *walForge) Init() error {
 			wl.mu.Unlock()
 			return fmt.Errorf("write manifest preamble: %w", err)
 		}
+		// Ensure preamble is visible on disk for readers (flush buffer; fsync deferred to normal sync cadence)
+		if err := wl.csWriter.Flush(); err != nil {
+			wl.mu.Unlock()
+			return fmt.Errorf("flush manifest preamble: %w", err)
+		}
 		wl.mu.Unlock()
 	}
 
@@ -618,10 +623,9 @@ func (wl *walForge) rotateLog() error {
 	wl.csSize = 0
 	wl.csWriter = bufio.NewWriter(sf)
 
-	// After opening a fresh segment, write the manifest preamble first
-	if err := wl.writeManifestPreambleLocked(); err != nil {
-		return err
-	}
+	// After opening a fresh segment, write the manifest preamble first and flush
+	if err := wl.writeManifestPreambleLocked(); err != nil { return err }
+	if err := wl.csWriter.Flush(); err != nil { return err }
 
 	return nil
 }
