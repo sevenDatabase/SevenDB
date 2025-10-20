@@ -108,7 +108,9 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 			// Emission contract wiring (single-notifier per shard) behind flag
 			if config.Config.EmissionContractEnabled {
 				mgr := emission.NewManager()
-				emission.RegisterWithShard(rn, mgr)
+				// Start applier to translate DATA_EVENT/ACK to OUTBOX_* and apply
+				applier := emission.NewApplier(rn, mgr, cfg.ShardID)
+				applier.Start(context.Background())
 				// Sender bridge is wired later after IOThreads available; start with a no-op sender that logs
 				sender := &noopSender{}
 				proposer := &emission.RaftProposer{Node: rn, BucketID: cfg.ShardID}
@@ -357,4 +359,36 @@ func (manager *ShardManager) RaftStatusSnapshots() []interface{} { // using inte
 		out = append(out, snap)
 	}
 	return out
+}
+
+// SetEmissionSender wires a sender implementation for a given shard index, if emission is enabled.
+// Safe to call after server/watch manager initialization to swap from noop to a real bridge.
+func (manager *ShardManager) SetEmissionSender(shardIdx int, sender interface {
+	Send(context.Context, *emission.DataEvent) error
+}) {
+	if manager == nil || shardIdx < 0 || shardIdx >= len(manager.emissionNotifiers) {
+		return
+	}
+	n := manager.emissionNotifiers[shardIdx]
+	if n != nil {
+		n.SetSender(sender)
+	}
+}
+
+// ProposeDataEvent proposes a DATA_EVENT for a subscription to the shard's raft group.
+// The applier will convert it to an OUTBOX_WRITE with the assigned commit index.
+func (manager *ShardManager) ProposeDataEvent(ctx context.Context, shardIdx int, subID string, delta []byte) error {
+	if manager == nil || shardIdx < 0 || shardIdx >= len(manager.raftNodes) {
+		return fmt.Errorf("invalid shard idx")
+	}
+	rn := manager.raftNodes[shardIdx]
+	if rn == nil {
+		return fmt.Errorf("raft not enabled for shard")
+	}
+	rec, err := raft.BuildReplicationRecord(rn.ShardID(), "DATA_EVENT", []string{subID, string(delta)})
+	if err != nil {
+		return err
+	}
+	_, _, err = rn.ProposeAndWait(ctx, rec)
+	return err
 }

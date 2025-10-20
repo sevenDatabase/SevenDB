@@ -18,7 +18,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-    "time"
+	"time"
 
 	"github.com/dicedb/dicedb-go/wire"
 	"github.com/sevenDatabase/SevenDB/internal/auth"
@@ -129,6 +129,14 @@ func Start() {
 
 	ioThreadManager := ironhawk.NewIOThreadManager()
 	ironhawkServer := ironhawk.NewServer(shardManager, ioThreadManager, watchManager)
+	// If emission contract is enabled, swap in the BridgeSender per shard so notifier can deliver.
+	if config.Config != nil && config.Config.EmissionContractEnabled {
+		bridge := ironhawk.NewBridgeSender(watchManager)
+		// Set the same bridge for all shards for now (single Notifier per shard will fan out via WatchManager)
+		for i := 0; i < int(shardManager.ShardCount()); i++ {
+			shardManager.SetEmissionSender(i, bridge)
+		}
+	}
 
 	// Restore the database from WAL logs
 	if config.Config.EnableWAL {

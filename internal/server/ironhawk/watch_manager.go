@@ -5,13 +5,14 @@ package ironhawk
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
 
-	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/dicedb/dicedb-go/wire"
+	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/sevenDatabase/SevenDB/internal/cmd"
 	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
 	"github.com/sevenDatabase/SevenDB/internal/wal"
@@ -208,9 +209,41 @@ func (w *WatchManager) NotifyWatchers(c *cmd.Cmd, shardManager *shardmanager.Sha
 	// If emission-contract is enabled, do not send directly.
 	// The emission path will propose OUTBOX_WRITE via raft and the Notifier will deliver.
 	if config.Config != nil && config.Config.EmissionContractEnabled {
-		// TODO: Extract delta & propose DATA_EVENT/OUTBOX_WRITE here.
-		// For now, skip direct send to avoid duplicate delivery under contract mode.
-		slog.Debug("emission-contract: skipping direct NotifyWatchers delivery")
+		// Execute the watch command to compute the delta result without sending to clients yet.
+		res, err := c.Execute(shardManager)
+		if err != nil {
+			// WRONGTYPE and similar are common; log at debug and return.
+			slog.Debug("emission-contract: watch compute returned error", slog.Any("cmd", c.String()), slog.Any("error", err))
+			return
+		}
+		// Use the wire.Result.Message as the delta payload for MVP (string encoding).
+		var deltaBytes []byte
+		if res != nil && res.Rs != nil && res.Rs.Message != "" {
+			deltaBytes = []byte(res.Rs.Message)
+		} else {
+			// Empty delta is allowed; still record an event for ordering.
+			deltaBytes = nil
+		}
+		// Determine shard by key to map to the correct raft node
+		shard := shardManager.GetShardForKey(c.Key())
+		shardIdx := 0
+		if shard != nil {
+			shardIdx = shard.ID
+		}
+		// For each subscribed client to this key's fingerprint, propose a DATA_EVENT with sub-id as clientID:fp
+		fp := c.Fingerprint()
+		w.mu.RLock()
+		subs := make([]string, 0, len(w.fpClientMap[fp]))
+		for clientID := range w.fpClientMap[fp] {
+			subs = append(subs, clientID)
+		}
+		w.mu.RUnlock()
+		for _, clientID := range subs {
+			subID := fmt.Sprintf("%s:%d", clientID, fp)
+			if err := shardManager.ProposeDataEvent(context.Background(), shardIdx, subID, deltaBytes); err != nil {
+				slog.Warn("emission-contract: propose DATA_EVENT failed", slog.String("sub_id", subID), slog.Any("error", err))
+			}
+		}
 		return
 	}
 	// Use RLock instead as we are not really modifying any shared maps here.
