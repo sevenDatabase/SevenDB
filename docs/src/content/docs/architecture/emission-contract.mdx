@@ -1,0 +1,252 @@
+---
+title: SevenDB Emission Contract
+description: How committed Raft log updates become reliable, ordered client events with effective-once semantics.
+---
+
+# SevenDB Emission Contract — Design Document
+
+This document defines the emission layer of SevenDB — the bridge between deterministic Raft replication and external observable state. It establishes how log-committed updates become reliable, ordered client events under all failure conditions.
+
+Goal: effective-once delivery — every logical change is reflected to clients exactly once in effect, even in the presence of crashes, reconnections, or migration.
+
+## 1. Motivation
+
+Raft replication guarantees that all replicas see the same sequence of committed entries. The emission contract ensures that clients also see a deterministic, gapless, and replayable stream derived from that log.
+
+Before this contract, SevenDB’s determinism ended at the storage boundary: replicas agreed on state, but emissions could vary in timing or survival across failures. After this contract, determinism extends beyond replicas — into the visible behavior of the system itself. Clients can crash, reconnect, and migrate without semantic ambiguity.
+
+## 2. Core Semantics: Effective-Once Delivery
+
+SevenDB’s emission model follows a two-party agreement:
+
+- Server Guarantee — At-Least-Once: For every committed Raft entry that produces a delta, the Notifier guarantees at-least-once emission until it receives client acknowledgment. Emissions are stored durably in the replicated Outbox to survive failures.
+- Client Responsibility — Idempotent Processing: Clients deduplicate and discard any message with an `emit_seq` less than or equal to their last acknowledged one. This ensures that, while the server may resend during recovery, the client’s side effect occurs exactly once in application terms.
+
+Combined, these yield effective-once semantics — the practical foundation for correctness in real-world networks.
+
+## 3. The emit_seq Identifier
+
+Every emission carries a globally unique, totally ordered identifier:
+
+```
+emit_seq = (epoch_id, commit_index)
+```
+
+- commit_index — the Raft log index of the source entry. Monotonic within a single epoch.
+- epoch_id = {bucket_uuid, epoch_counter}
+  - bucket_uuid: Stable identifier for the logical bucket across migrations.
+  - epoch_counter: Monotonic counter assigned by the Cluster Manager each time a bucket migrates or restarts its log lineage.
+
+Ordering is lexicographic: `(bucket_uuid, epoch_counter, commit_index)` which provides total, gapless ordering across migrations and failovers — a client’s single source of truth for stream position.
+
+## 4. Emission Lifecycle
+
+Flow from Raft commit to client acknowledgment:
+
+```
+Raft Log Commit
+       ↓
+Apply to State Machine (deterministic compute)
+       ↓
+Compute delta for subscriptions
+       ↓
+Propose OUTBOX_WRITE(sub_id, emit_seq, delta)
+       ↓
+Raft commits OUTBOX_WRITE (delta is now durable)
+       ↓
+Notifier (lease holder) sends DataEvent(emit_seq, delta)
+       ↓
+Client processes → sends ClientAck(emit_seq)
+       ↓
+Propose OUTBOX_PURGE(up_to_emit_seq)
+       ↓
+Raft commits PURGE → entries removed from Outbox
+```
+
+Crash boundaries:
+
+- If the Notifier crashes after `OUTBOX_WRITE` but before sending, the next lease-holder finds it in the replicated Outbox and sends it.
+- If it crashes after send but before receiving ACK, the message is resent; client deduplication ensures no double-processing.
+
+This design achieves transactional durability without external coordination.
+
+## 5. Client–Server Synchronization
+
+### 5.1 Subscription Initiation
+
+A `SUBSCRIBE` request is written to the Raft log as `SUBSCRIBE(query, params, plan_hash)`.
+
+When committed, the leader replies with:
+
+```protobuf
+message EmitSeq {
+  message EpochId {
+    string bucket_uuid = 1;
+    uint64 epoch_counter = 2;
+  }
+  EpochId epoch_id = 1;
+  uint64 commit_index = 2;
+}
+
+message SubAck {
+  string sub_id = 1;
+  EmitSeq start_emit_seq = 2;
+}
+```
+
+This `start_emit_seq` defines the exact log coordinate where the stream begins — no ambiguity, no race conditions.
+
+### 5.2 Reconnect Protocol
+
+When a client disconnects, it later reconnects with:
+
+```protobuf
+message ReconnectRequest {
+  string sub_id = 1;
+  EmitSeq last_processed_emit_seq = 2;
+}
+```
+
+The server replies with:
+
+```protobuf
+message ReconnectAck {
+  enum Status {
+    OK = 0;
+    STALE_SEQUENCE = 1;
+    INVALID_SEQUENCE = 2;
+    SUBSCRIPTION_NOT_FOUND = 3;
+  }
+  Status status = 1;
+  EmitSeq.EpochId current_epoch_id = 2;
+  uint64 next_commit_index = 3;
+}
+```
+
+Server logic:
+
+1. Validate `sub_id`. If invalid → `SUBSCRIPTION_NOT_FOUND`.
+2. Compare client’s `emit_seq` to server state:
+   - Valid and present → `OK`, resume from `commit_index + 1`.
+   - Too old (compacted) → `STALE_SEQUENCE`, client must resubscribe.
+   - Ahead (log rollback) → `INVALID_SEQUENCE`, client must reset state.
+
+The reconnect handshake converts ambiguous failures into deterministic recovery states.
+
+## 6. Notifier Lease and Failover
+
+Only one replica in a Raft group actively emits at a time — the Notifier lease-holder. Lease assignment follows a deterministic rendezvous-hash election keyed on `(bucket_uuid, epoch_id)`; by default, the current Raft leader holds the lease.
+
+If the lease-holder fails:
+
+1. The new holder scans the replicated Outbox.
+2. For each unpurged `OUTBOX_WRITE`, it re-emits the delta.
+
+Because Outbox state is part of the Raft log, this recovery is exact and duplicate-safe. Notifier election therefore only changes who emits, not what is emitted.
+
+## 7. Epoch Advancement and Migration
+
+When a bucket migrates:
+
+1. The Cluster Manager initiates Raft membership change (joint consensus).
+2. Once new replicas are synced, the leader proposes `EPOCH_CREATE(new_epoch_id)`.
+3. On commit:
+   - All replicas increment `epoch_counter`.
+   - New Notifier resumes emissions tagged with the new `epoch_id`.
+   - Old Outbox entries from the previous epoch are drained before any new emissions.
+
+From the client’s perspective, the stream continues seamlessly:
+
+```
+(uuidX, 1, 1000)
+(uuidX, 2, 1001)
+```
+
+No resets, no duplicates — just a clean epoch rollover.
+
+## 8. Log Compaction and Client Stall Policy
+
+Raft logs cannot grow unboundedly. SevenDB defines a safety point for compaction:
+
+```
+safety_point = min(
+  oldest_cold_replica_checkpoint,
+  min_active_client_ack,
+  migration_hold_point
+)
+```
+
+The system will never compact beyond `safety_point`.
+
+A client that doesn’t ACK progress for longer than the Maximum Client Stall Window (default: 24h) is marked stale and removed from `min_active_client_ack`.
+
+On reconnect, such a client gets `STALE_SEQUENCE` and must resubscribe. This keeps the system bounded while maintaining fairness for reconnecting clients.
+
+## 9. Client Responsibilities (SDK Layer)
+
+- Persist Last Processed `EmitSeq`: Must survive process restarts for reliable resumption.
+- Deduplication: Discard any message with `emit_seq ≤ last_ack`.
+- Reordering: Maintain a small buffer to reorder by `emit_seq` before delivery.
+- Gap Detection: Detect gaps in `commit_index` and trigger reconnect.
+
+These are minimal and standard for modern stream clients, and easily wrapped into SDK logic.
+
+## 10. Server-Side Enforcement
+
+The Notifier validates client behavior to enforce contract integrity:
+
+- Reject regressive or duplicate ACKs.
+- Track `ack_lag_commit_index` per subscription.
+- Drop or resubscribe clients exceeding stall window.
+
+Together, this makes misbehaving clients unable to break cluster health.
+
+## 11. Observability and Metrics
+
+| Metric | Type | Purpose |
+| --- | --- | --- |
+| `emit_latency_seconds` | Histogram | Commit → network send latency |
+| `ack_lag_commit_index` | Gauge | Detects slow/stalled clients |
+| `notifier_outbox_size_entries` | Gauge | Tracks unpurged messages |
+| `reconnect_status_total{status}` | Counter | Monitors reconnect outcomes |
+| `plan_hash_mismatch_total` | Counter | Detects determinism violations |
+
+These make correctness measurable and alertable, not just theoretical.
+
+## 12. Deterministic Validation Tests
+
+A non-exhaustive deterministic harness test suite:
+
+| ID | Scenario | Expected Outcome |
+| --- | --- | --- |
+| DET-01 | Replay identical log twice with random scheduling | Byte-identical outputs |
+| FTO-01 | Kill active Notifier | Seamless failover; no gaps |
+| FTO-02 | Crash after OUTBOX_WRITE before send | Message resent once; client dedup safe |
+| REC-01 | Normal reconnect | Continuous stream |
+| REC-02 | Reconnect after compaction | STALE_SEQUENCE, forced resubscribe |
+| MIG-01 | Migration under load | Monotonic emit_seq continuity |
+| PLN-01 | Planner divergence | Replica quarantines itself |
+
+These form the acceptance gates for emission contract correctness.
+
+## 13. Performance Considerations
+
+Each emission currently implies one Raft log append for `OUTBOX_WRITE`.
+
+Future optimizations:
+
+- Batching: Multiple subs may share one append group.
+- Piggyback Purge: Combine `OUTBOX_PURGE` with subsequent commits.
+- Async ACK Processing: ACKs batched per client window.
+
+Such optimizations must preserve all invariants and pass deterministic replay tests before adoption.
+
+## 14. Summary
+
+The emission contract transforms SevenDB from a deterministic replicator into a deterministic communicator.
+
+- Every emission is a function of the log.
+- Every failure path is explicitly recoverable.
+- Every client interaction is verifiable by invariant.
+
+By co-locating durability, ordering, and delivery within Raft itself, SevenDB achieves correctness that is both provable and practical — a closed causal loop from commit to client.
