@@ -4,23 +4,12 @@ import (
     "context"
     "encoding/json"
     "log/slog"
-    "strings"
+    "strconv"
 
     raftimpl "github.com/sevenDatabase/SevenDB/internal/raft"
 )
 
-// RaftProposer implements Proposer using a raft node.
-type RaftProposer struct { node *raftimpl.ShardRaftNode }
-
-func NewRaftProposer(node *raftimpl.ShardRaftNode) *RaftProposer { return &RaftProposer{node: node} }
-
-func (rp *RaftProposer) ProposePurge(ctx context.Context, sub string, upTo EmitSeq) error {
-    payload := &raftimpl.ReplicationPayload{Version: 1, Cmd: "OUTBOX_PURGE", Args: []string{sub, upTo.Epoch.BucketUUID,
-        formatUint(upTo.Epoch.EpochCounter), formatUint(upTo.CommitIndex)}}
-    b, _ := json.Marshal(payload)
-    _, _, err := rp.node.ProposeAndWait(ctx, &raftimpl.RaftLogRecord{BucketID: upTo.Epoch.BucketUUID, Type: raftimpl.RaftRecordTypeAppCommand, Payload: b})
-    return err
-}
+// RaftProposer is defined in raft_integration.go
 
 // Applier consumes raft committed records and applies emission semantics.
 type Applier struct {
@@ -111,14 +100,6 @@ func (a *Applier) applyCommand(ctx context.Context, cr *raftimpl.CommittedRecord
 }
 
 // basic numeric helpers using decimal strings to keep payloads human-readable for tests
-func formatUint(v uint64) string { return strings.TrimLeftFunc((&struct{ s string }{s: func() string { return func() string { return (func() string { return (func() string { return (func() string { return (func() string { return (func() string { return (func() string { return (func() string { return (func() string { return (func() string { return (func() string { return (func() string { return (func() string { return (func() string { return (func() string { return (func() string { return "." }() }()) }()) }()) }()) }()) }()) }()) }()) }()) }()) }()) }()) }()) }() } }).s[1:] }
+func formatUint(v uint64) string { return strconv.FormatUint(v, 10) }
 
-func parseUint(s string) uint64 {
-    var n uint64
-    for i := 0; i < len(s); i++ {
-        c := s[i]
-        if c < '0' || c > '9' { continue }
-        n = n*10 + uint64(c-'0')
-    }
-    return n
-}
+func parseUint(s string) uint64 { n, _ := strconv.ParseUint(s, 10, 64); return n }
