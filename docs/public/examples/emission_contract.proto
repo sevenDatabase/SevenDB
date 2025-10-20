@@ -1,0 +1,22 @@
+// SevenDB Emission Contract — illustrative proto sketch (downloadable)
+// NOTE: This file is for documentation only and is not compiled by the build.
+
+syntax = "proto3";
+
+message EmitSeq {
+  message EpochId { string bucket_uuid = 1; uint64 epoch_counter = 2; }
+  EpochId epoch_id = 1;
+  uint64 commit_index = 2;
+}
+
+message SubscribeRequest { string query = 1; bytes params = 2; uint64 plan_hash = 3; }
+message SubAck { string sub_id = 1; EmitSeq start_emit_seq = 2; }
+message DataEvent { string sub_id = 1; EmitSeq emit_seq = 2; bytes delta = 3; }
+message ClientAck { string sub_id = 1; EmitSeq emit_seq = 2; }
+message ReconnectRequest { string sub_id = 1; EmitSeq last_processed_emit_seq = 2; }
+message ReconnectAck {
+  enum Status { OK = 0; STALE_SEQUENCE = 1; INVALID_SEQUENCE = 2; SUBSCRIPTION_NOT_FOUND = 3; }
+  Status status = 1; EmitSeq.EpochId current_epoch_id = 2; uint64 next_commit_index = 3;
+}
+message OutboxWrite { string sub_id = 1; EmitSeq emit_seq = 2; bytes delta = 3; }
+message OutboxPurge { string sub_id = 1; EmitSeq up_to_emit_seq = 2; }

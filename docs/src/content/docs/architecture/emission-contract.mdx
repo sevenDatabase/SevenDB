@@ -96,6 +96,8 @@ message SubAck {
 
 This `start_emit_seq` defines the exact log coordinate where the stream begins — no ambiguity, no race conditions.
 
+See also: [Illustrative .proto sketch](/examples/emission_contract.proto) for wire message shapes.
+
 ### 5.2 Reconnect Protocol
 
 When a client disconnects, it later reconnects with:
@@ -250,3 +252,9 @@ The emission contract transforms SevenDB from a deterministic replicator into a 
 - Every client interaction is verifiable by invariant.
 
 By co-locating durability, ordering, and delivery within Raft itself, SevenDB achieves correctness that is both provable and practical — a closed causal loop from commit to client.
+
+---
+
+### Appendix: Downloads
+
+- Proto sketch (download): [/examples/emission_contract.proto](/examples/emission_contract.proto)

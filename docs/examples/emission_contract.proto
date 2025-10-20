@@ -1,0 +1,70 @@
+// SevenDB Emission Contract — illustrative proto sketch
+// NOTE: This file is for documentation only and is not compiled by the build.
+// Package name and options omitted intentionally.
+
+syntax = "proto3";
+
+// Identifies a unique, totally ordered emission position.
+message EmitSeq {
+  message EpochId {
+    string bucket_uuid = 1;     // Stable identifier of the logical bucket
+    uint64 epoch_counter = 2;   // Monotonic across migrations/restarts
+  }
+  EpochId epoch_id = 1;
+  uint64 commit_index = 2;      // Raft log index within the epoch
+}
+
+// Subscription establishment
+message SubscribeRequest {
+  string query = 1;             // Canonical query representation
+  bytes params = 2;             // Opaque parameter encoding (e.g., msgpack)
+  uint64 plan_hash = 3;         // Planner determinism guard
+}
+
+message SubAck {
+  string sub_id = 1;            // Server-assigned subscription identifier
+  EmitSeq start_emit_seq = 2;   // Exact starting position for emission
+}
+
+// Data event emitted to client
+message DataEvent {
+  string sub_id = 1;
+  EmitSeq emit_seq = 2;
+  bytes delta = 3;              // Deterministic delta for the subscription
+}
+
+// Client acknowledgment of processing
+message ClientAck {
+  string sub_id = 1;
+  EmitSeq emit_seq = 2;         // Highest emit_seq processed by the client
+}
+
+// Reconnect handshake
+message ReconnectRequest {
+  string sub_id = 1;
+  EmitSeq last_processed_emit_seq = 2;
+}
+
+message ReconnectAck {
+  enum Status {
+    OK = 0;
+    STALE_SEQUENCE = 1;         // Too old; server compacted beyond this point
+    INVALID_SEQUENCE = 2;       // Ahead/rollback mismatch; client must reset
+    SUBSCRIPTION_NOT_FOUND = 3; // Unknown sub_id
+  }
+  Status status = 1;
+  EmitSeq.EpochId current_epoch_id = 2;  // Current epoch identity
+  uint64 next_commit_index = 3;          // Commit index to resume from when OK
+}
+
+// Internal Raft-applied intents for durability; for documentation only.
+message OutboxWrite {
+  string sub_id = 1;
+  EmitSeq emit_seq = 2;
+  bytes delta = 3;
+}
+
+message OutboxPurge {
+  string sub_id = 1;
+  EmitSeq up_to_emit_seq = 2;   // Inclusive purge watermark
+}
