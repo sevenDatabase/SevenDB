@@ -28,7 +28,7 @@ type Server struct {
 }
 
 func NewServer(shardManager *shardmanager.ShardManager, ioThreadManager *IOThreadManager, watchManager *WatchManager) *Server {
-	return &Server{
+	srv := &Server{
 		Host:            config.Config.Host,
 		Port:            config.Config.Port,
 		connBacklogSize: config.DefaultConnBacklogSize,
@@ -36,6 +36,16 @@ func NewServer(shardManager *shardmanager.ShardManager, ioThreadManager *IOThrea
 		ioThreadManager: ioThreadManager,
 		watchManager:    watchManager,
 	}
+	// If emission-contract is enabled, wire bridge sender into each shard notifier now that WatchManager exists.
+	if config.Config != nil && config.Config.EmissionContractEnabled && shardManager != nil && watchManager != nil {
+		bridge := NewBridgeSender(watchManager)
+		// Iterate shards by index and set sender directly.
+		// We don't have a per-shard key at this point; use shard indices.
+		for idx := 0; idx < int(shardManager.ShardCount()); idx++ {
+			shardManager.SetEmissionSender(idx, bridge)
+		}
+	}
+	return srv
 }
 
 func (s *Server) Run(ctx context.Context) (err error) {

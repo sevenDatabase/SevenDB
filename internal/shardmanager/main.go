@@ -43,6 +43,7 @@ type ShardManager struct {
 	// emission (optional) per-shard manager/notifier when EmissionContractEnabled
 	emissionMgrs      []*emission.Manager
 	emissionNotifiers []*emission.Notifier
+	emissionAppliers  []*emission.Applier
 }
 
 var globalManager *ShardManager
@@ -91,6 +92,7 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 		if config.Config.EmissionContractEnabled {
 			sm.emissionMgrs = make([]*emission.Manager, shardCount)
 			sm.emissionNotifiers = make([]*emission.Notifier, shardCount)
+			sm.emissionAppliers = make([]*emission.Applier, shardCount)
 		}
 		for i := 0; i < shardCount; i++ {
 			cfg := raft.RaftConfig{ShardID: string(rune('a' + i)), Engine: config.Config.RaftEngine, HeartbeatMillis: config.Config.RaftHeartbeatMillis, ElectionTimeoutMillis: config.Config.RaftElectionTimeoutMillis, NodeID: fmt.Sprintf("%d", sm.localRaftID), Peers: canonical, DataDir: config.Config.RaftPersistentDir}
@@ -118,6 +120,7 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 				notifier.Start(context.Background())
 				sm.emissionMgrs[i] = mgr
 				sm.emissionNotifiers[i] = notifier
+				sm.emissionAppliers[i] = applier
 				slog.Info("emission contract enabled for shard", slog.Int("shard", i), slog.String("bucket_uuid", cfg.ShardID))
 			}
 		}
@@ -328,6 +331,47 @@ func (manager *ShardManager) Shards() []*shard.Shard {
 	return manager.shards
 }
 
+// GetRaftNodeForKey returns the raft node responsible for the shard that owns the given key.
+// Returns nil if raft is not enabled or index out of range.
+func (manager *ShardManager) GetRaftNodeForKey(key string) *raft.ShardRaftNode {
+	if manager == nil || manager.raftNodes == nil {
+		return nil
+	}
+	idx := int(xxhash.Sum64String(key) % uint64(manager.ShardCount()))
+	if idx < 0 || idx >= len(manager.raftNodes) {
+		return nil
+	}
+	return manager.raftNodes[idx]
+}
+
+// SetEmissionSender wires a Sender into the notifier for the shard owning the key.
+// No-op if emission is disabled or components are missing.
+func (manager *ShardManager) SetEmissionSenderForKey(key string, sender emission.Sender) {
+	if manager == nil || manager.emissionNotifiers == nil {
+		return
+	}
+	idx := int(xxhash.Sum64String(key) % uint64(manager.ShardCount()))
+	if idx < 0 || idx >= len(manager.emissionNotifiers) {
+		return
+	}
+	n := manager.emissionNotifiers[idx]
+	if n != nil {
+		n.SetSender(sender)
+	}
+}
+
+// NotifierForKey returns the Notifier for the shard owning the key (for ACK path).
+func (manager *ShardManager) NotifierForKey(key string) *emission.Notifier {
+	if manager == nil || manager.emissionNotifiers == nil {
+		return nil
+	}
+	idx := int(xxhash.Sum64String(key) % uint64(manager.ShardCount()))
+	if idx < 0 || idx >= len(manager.emissionNotifiers) {
+		return nil
+	}
+	return manager.emissionNotifiers[idx]
+}
+
 // BucketLogFor returns a bucket log implementation for the shard index. When raft is enabled
 // it returns a RaftBucketLog; otherwise a file-backed log. Errors are logged and a nil may be returned.
 func (manager *ShardManager) BucketLogFor(shardIdx int) bucket.BucketLog {
@@ -363,9 +407,7 @@ func (manager *ShardManager) RaftStatusSnapshots() []interface{} { // using inte
 
 // SetEmissionSender wires a sender implementation for a given shard index, if emission is enabled.
 // Safe to call after server/watch manager initialization to swap from noop to a real bridge.
-func (manager *ShardManager) SetEmissionSender(shardIdx int, sender interface {
-	Send(context.Context, *emission.DataEvent) error
-}) {
+func (manager *ShardManager) SetEmissionSender(shardIdx int, sender emission.Sender) {
 	if manager == nil || shardIdx < 0 || shardIdx >= len(manager.emissionNotifiers) {
 		return
 	}
@@ -384,6 +426,20 @@ func (manager *ShardManager) ProposeDataEvent(ctx context.Context, shardIdx int,
 	rn := manager.raftNodes[shardIdx]
 	if rn == nil {
 		return fmt.Errorf("raft not enabled for shard")
+	}
+	rec, err := raft.BuildReplicationRecord(rn.ShardID(), "DATA_EVENT", []string{subID, string(delta)})
+	if err != nil {
+		return err
+	}
+	_, _, err = rn.ProposeAndWait(ctx, rec)
+	return err
+}
+
+// ProposeDataEventForKey selects shard by key and proposes a DATA_EVENT.
+func (manager *ShardManager) ProposeDataEventForKey(ctx context.Context, key string, subID string, delta []byte) error {
+	rn := manager.GetRaftNodeForKey(key)
+	if rn == nil {
+		return fmt.Errorf("raft not enabled for key shard")
 	}
 	rec, err := raft.BuildReplicationRecord(rn.ShardID(), "DATA_EVENT", []string{subID, string(delta)})
 	if err != nil {
