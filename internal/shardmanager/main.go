@@ -18,11 +18,20 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/sevenDatabase/SevenDB/internal/bucket"
+	"github.com/sevenDatabase/SevenDB/internal/emission"
 	"github.com/sevenDatabase/SevenDB/internal/raft"
 	"github.com/sevenDatabase/SevenDB/internal/shard"
 	"github.com/sevenDatabase/SevenDB/internal/shardthread"
 	"github.com/sevenDatabase/SevenDB/internal/store"
 )
+
+// noopSender implements emission.Sender with logging only; replaced later by a real bridge.
+type noopSender struct{}
+
+func (n *noopSender) Send(ctx context.Context, ev *emission.DataEvent) error {
+	slog.Debug("noop sender emit", slog.String("sub_id", ev.SubID), slog.String("emit_seq", ev.EmitSeq.String()), slog.Int("delta_bytes", len(ev.Delta)))
+	return nil
+}
 
 type ShardManager struct {
 	shards  []*shard.Shard
@@ -31,6 +40,9 @@ type ShardManager struct {
 	raftNodes   []*raft.ShardRaftNode
 	raftSrv     *raft.RaftGRPCServer
 	localRaftID uint64
+	// emission (optional) per-shard manager/notifier when EmissionContractEnabled
+	emissionMgrs      []*emission.Manager
+	emissionNotifiers []*emission.Notifier
 }
 
 var globalManager *ShardManager
@@ -76,6 +88,10 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 			sm.localRaftID = 1
 		}
 		sm.raftNodes = make([]*raft.ShardRaftNode, shardCount)
+		if config.Config.EmissionContractEnabled {
+			sm.emissionMgrs = make([]*emission.Manager, shardCount)
+			sm.emissionNotifiers = make([]*emission.Notifier, shardCount)
+		}
 		for i := 0; i < shardCount; i++ {
 			cfg := raft.RaftConfig{ShardID: string(rune('a' + i)), Engine: config.Config.RaftEngine, HeartbeatMillis: config.Config.RaftHeartbeatMillis, ElectionTimeoutMillis: config.Config.RaftElectionTimeoutMillis, NodeID: fmt.Sprintf("%d", sm.localRaftID), Peers: canonical, DataDir: config.Config.RaftPersistentDir}
 			// If Forge WAL is enabled at the server level, route raft writes through the unified Forge WAL
@@ -88,6 +104,20 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 				continue
 			}
 			sm.raftNodes[i] = rn
+
+			// Emission contract wiring (single-notifier per shard) behind flag
+			if config.Config.EmissionContractEnabled {
+				mgr := emission.NewManager()
+				emission.RegisterWithShard(rn, mgr)
+				// Sender bridge is wired later after IOThreads available; start with a no-op sender that logs
+				sender := &noopSender{}
+				proposer := &emission.RaftProposer{Node: rn, BucketID: cfg.ShardID}
+				notifier := emission.NewNotifier(mgr, sender, proposer)
+				notifier.Start(context.Background())
+				sm.emissionMgrs[i] = mgr
+				sm.emissionNotifiers[i] = notifier
+				slog.Info("emission contract enabled for shard", slog.Int("shard", i), slog.String("bucket_uuid", cfg.ShardID))
+			}
 		}
 		slog.Info("raft enabled for shards", slog.Int("count", shardCount), slog.Uint64("local_id", sm.localRaftID))
 		// Early best-effort initial status write (honors explicit status-file-path if provided)

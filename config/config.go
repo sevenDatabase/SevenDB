@@ -95,6 +95,9 @@ type DiceDBConfig struct {
 	RaftAdvertiseAddr            string   `mapstructure:"raft-advertise-addr" description:"public address host:port other peers use to reach this node; defaults to raft-listen-addr if empty"`
 
 	StatusFilePath string `mapstructure:"status-file-path" description:"optional explicit path for periodic raft status JSON (status.json). If set, writer uses only this path"`
+
+	// Emission contract (experimental): if true, route watch emissions through raft-backed outbox and notifier.
+	EmissionContractEnabled bool `mapstructure:"emission-contract-enabled" default:"false" description:"enable deterministic emission contract (raft-backed outbox + notifier)"`
 }
 
 func Load(flags *pflag.FlagSet) {

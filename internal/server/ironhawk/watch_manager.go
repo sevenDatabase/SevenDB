@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/dicedb/dicedb-go/wire"
 	"github.com/sevenDatabase/SevenDB/internal/cmd"
 	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
@@ -204,6 +205,14 @@ func (w *WatchManager) CleanupThreadWatchSubscriptions(t *IOThread) {
 }
 
 func (w *WatchManager) NotifyWatchers(c *cmd.Cmd, shardManager *shardmanager.ShardManager, t *IOThread) {
+	// If emission-contract is enabled, do not send directly.
+	// The emission path will propose OUTBOX_WRITE via raft and the Notifier will deliver.
+	if config.Config != nil && config.Config.EmissionContractEnabled {
+		// TODO: Extract delta & propose DATA_EVENT/OUTBOX_WRITE here.
+		// For now, skip direct send to avoid duplicate delivery under contract mode.
+		slog.Debug("emission-contract: skipping direct NotifyWatchers delivery")
+		return
+	}
 	// Use RLock instead as we are not really modifying any shared maps here.
 	w.mu.RLock()
 	defer w.mu.RUnlock()
