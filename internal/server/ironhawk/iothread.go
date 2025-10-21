@@ -94,9 +94,9 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 			res.Rs.Message = "OK"
 		}
 
-	// Determine if this is a watch command. Require the explicit ".WATCH" suffix
-	// so that commands like "UNWATCH" are not misclassified as watch commands.
-	isWatchCmd := strings.HasSuffix(c.Cmd, ".WATCH")
+		// Determine if this is a watch command. Require the explicit ".WATCH" suffix
+		// so that commands like "UNWATCH" are not misclassified as watch commands.
+		isWatchCmd := strings.HasSuffix(c.Cmd, ".WATCH")
 
 		// Log command to WAL if enabled and not a replay and not a watch/unwatch op
 		// Watch/Unwatch are logged via WatchManager as SUBSCRIBE/UNSUBSCRIBE and must be atomic with ack

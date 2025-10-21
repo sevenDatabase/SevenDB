@@ -98,6 +98,8 @@ type DiceDBConfig struct {
 
 	// Emission contract (experimental): if true, route watch emissions through raft-backed outbox and notifier.
 	EmissionContractEnabled bool `mapstructure:"emission-contract-enabled" default:"false" description:"enable deterministic emission contract (raft-backed outbox + notifier)"`
+	// EmissionNotifierPollMs controls the notifier poll interval in milliseconds (tests can lower this).
+	EmissionNotifierPollMs int `mapstructure:"emission-notifier-poll-ms" default:"5" description:"notifier poll interval in milliseconds when emission contract is enabled"`
 }
 
 func Load(flags *pflag.FlagSet) {

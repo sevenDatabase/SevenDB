@@ -110,6 +110,8 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 			// Emission contract wiring (single-notifier per shard) behind flag
 			if config.Config.EmissionContractEnabled {
 				mgr := emission.NewManager()
+				// Register replication handler to apply OUTBOX_* directly on commit (idempotent with applier)
+				emission.RegisterWithShard(rn, mgr)
 				// Start applier to translate DATA_EVENT/ACK to OUTBOX_* and apply
 				applier := emission.NewApplier(rn, mgr, cfg.ShardID)
 				applier.Start(context.Background())

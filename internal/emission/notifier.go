@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/sevenDatabase/SevenDB/config"
 )
 
 // Sender abstracts transport to clients. Implementation can be gRPC/Websocket/etc.
@@ -32,8 +34,12 @@ type Notifier struct {
 }
 
 func NewNotifier(mgr *Manager, sender Sender, proposer Proposer) *Notifier {
-	// Use a small poll interval to keep delivery latency low in tests and stub-raft mode
-	return &Notifier{mgr: mgr, sender: sender, proposer: proposer, ackCh: make(chan *ClientAck, 1024), interval: 5 * time.Millisecond, stopCh: make(chan struct{})}
+	// Use configured poll interval when available; default to 5ms.
+	pollMs := 5
+	if config.Config != nil && config.Config.EmissionNotifierPollMs > 0 {
+		pollMs = config.Config.EmissionNotifierPollMs
+	}
+	return &Notifier{mgr: mgr, sender: sender, proposer: proposer, ackCh: make(chan *ClientAck, 1024), interval: time.Duration(pollMs) * time.Millisecond, stopCh: make(chan struct{})}
 }
 
 // Ack injects a client ack (test/simulated path for now).
