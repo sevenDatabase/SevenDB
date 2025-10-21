@@ -1,0 +1,66 @@
+---
+title: Emission Contract – Operations & Config
+description: How to enable, tune, and validate SevenDB's deterministic emission path.
+---
+
+# Emission Contract – Operations & Config
+
+This page explains how to use the emission contract at runtime: enabling it, tuning latency, and validating correct behavior.
+
+## Enable the emission contract
+
+Set the flag (via config file or environment variables mapped into Viper):
+
+- `emission-contract-enabled: true`
+
+When enabled, watch notifications are routed through the Raft-backed outbox and a single Notifier per shard. The legacy direct-send path is bypassed.
+
+## Tuning latency
+
+- `emission-notifier-poll-ms` (default: `5`)
+  - Controls the Notifier’s poll interval for scanning pending outbox entries.
+  - Lower values reduce end-to-end emit latency at the cost of slightly higher CPU wakeups.
+  - Tests can set this to very small values (e.g., `2`) to reduce flakiness.
+
+Example (YAML):
+
+```yaml
+emission-contract-enabled: true
+emission-notifier-poll-ms: 5
+```
+
+## What happens under the hood
+
+1. A mutation triggers `NotifyWatchers`, which computes the delta for each subscribed fingerprint of the changed key and proposes a `DATA_EVENT(sub_id, delta)` into the shard’s Raft log.
+2. On commit, the Applier proposes `OUTBOX_WRITE`, and the shard’s replication handler applies `OUTBOX_WRITE` to the durable outbox.
+3. The Notifier polls the outbox and delivers the event to the specific client using `sub_id = clientID:fingerprint`.
+4. The client acknowledges with `EMITACK key sub_id commit_index`, which proposes `OUTBOX_PURGE` and removes all entries up to (and including) the acknowledged sequence.
+
+## Client delivery shape
+
+- The bridge delivers both:
+  - A simple `message` containing the delta string (useful for lightweight clients), and
+  - A typed response (e.g., `GETRes`) when the watched base command is known (e.g., `GET.WATCH`).
+
+This preserves legacy ergonomics while allowing structured SDKs to parse strongly typed values.
+
+## Operational checks
+
+- Confirm configuration at startup in logs: `emission contract enabled for shard`.
+- Validate Raft status (`status.json`) to ensure commit indices advance.
+- (Optional) Add counters/metrics: outbox size, send success, ack lag.
+
+## Troubleshooting
+
+- No emission received:
+  - Ensure `emission-contract-enabled` is true and Raft is enabled (even stub mode).
+  - Increase `emission-notifier-poll-ms` sensitivity (set to lower ms) to reduce latency in constrained environments.
+  - Verify watch handshake sent an initial response with `Fingerprint64`.
+
+- ACK does not purge:
+  - Check that `EMITACK` used the correct `sub_id` (`clientID:fingerprint`) and a valid `commit_index`.
+  - Review logs for `OUTBOX_PURGE` entries and Notifier ACK handling.
+
+## Related docs
+
+- [Architecture: Emission Contract](/docs/architecture/emission-contract)
