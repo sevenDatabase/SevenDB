@@ -31,6 +31,9 @@ type Notifier struct {
 	// simple ticker-based poll for pending.
 	interval time.Duration
 	stopCh   chan struct{}
+	// resumeFrom optionally holds the next commit index to resume from per sub after reconnect
+	resumeMu   sync.Mutex
+	resumeFrom map[string]uint64
 }
 
 func NewNotifier(mgr *Manager, sender Sender, proposer Proposer) *Notifier {
@@ -39,7 +42,7 @@ func NewNotifier(mgr *Manager, sender Sender, proposer Proposer) *Notifier {
 	if config.Config != nil && config.Config.EmissionNotifierPollMs > 0 {
 		pollMs = config.Config.EmissionNotifierPollMs
 	}
-	return &Notifier{mgr: mgr, sender: sender, proposer: proposer, ackCh: make(chan *ClientAck, 1024), interval: time.Duration(pollMs) * time.Millisecond, stopCh: make(chan struct{})}
+	return &Notifier{mgr: mgr, sender: sender, proposer: proposer, ackCh: make(chan *ClientAck, 1024), interval: time.Duration(pollMs) * time.Millisecond, stopCh: make(chan struct{}), resumeFrom: make(map[string]uint64)}
 }
 
 // Ack injects a client ack (test/simulated path for now).
@@ -93,6 +96,13 @@ func (n *Notifier) loop(ctx context.Context) {
 			for _, sub := range subs {
 				entries := n.mgr.Pending(sub)
 				for _, e := range entries {
+					// honor resume point if present for this sub
+					n.resumeMu.Lock()
+					resumeIdx := n.resumeFrom[sub]
+					n.resumeMu.Unlock()
+					if resumeIdx > 0 && e.Seq.CommitIndex < resumeIdx {
+						continue // skip older entries until reaching resume point
+					}
 					ev := &DataEvent{SubID: sub, EmitSeq: e.Seq, Delta: e.Delta}
 					sender := n.getSender()
 					if sender == nil {
@@ -104,8 +114,25 @@ func (n *Notifier) loop(ctx context.Context) {
 						break // backoff this sub until next tick
 					}
 					slog.Debug("SEND", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
+					// If we had a resume threshold and we reached/surpassed it, clear it
+					if resumeIdx > 0 && e.Seq.CommitIndex >= resumeIdx {
+						n.resumeMu.Lock()
+						delete(n.resumeFrom, sub)
+						n.resumeMu.Unlock()
+					}
 				}
 			}
 		}
 	}
+}
+
+// SetResumeFrom sets the next commit index to resume sending for a subscription.
+func (n *Notifier) SetResumeFrom(sub string, nextCommitIdx uint64) {
+	n.resumeMu.Lock()
+	defer n.resumeMu.Unlock()
+	if nextCommitIdx == 0 {
+		delete(n.resumeFrom, sub)
+		return
+	}
+	n.resumeFrom[sub] = nextCommitIdx
 }

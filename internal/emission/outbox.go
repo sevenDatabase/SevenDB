@@ -103,6 +103,8 @@ func (m *Manager) ApplyOutboxWrite(ctx context.Context, sub string, seq EmitSeq,
 // ApplyOutboxPurge removes entries up to the provided position (inclusive).
 func (m *Manager) ApplyOutboxPurge(ctx context.Context, sub string, upTo EmitSeq) {
 	removed := m.ob.purge(sub, upTo.CommitIndex)
+	// Update compaction watermark so reconnect can detect stale sequences
+	m.SetCompactedThrough(sub, upTo.CommitIndex)
 	slog.Debug("OUTBOX_PURGE", slog.String("sub_id", sub), slog.String("up_to", upTo.String()), slog.Int("removed", removed))
 }
 

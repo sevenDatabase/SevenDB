@@ -374,6 +374,24 @@ func (manager *ShardManager) NotifierForKey(key string) *emission.Notifier {
 	return manager.emissionNotifiers[idx]
 }
 
+// EmissionReconnectForKey runs Manager.Reconnect for the shard owning the key.
+// Returns a ReconnectAck indicating whether the client can resume and the next commit index.
+func (manager *ShardManager) EmissionReconnectForKey(key string, req emission.ReconnectRequest) emission.ReconnectAck {
+	var zero emission.ReconnectAck
+	if manager == nil || manager.emissionMgrs == nil {
+		return zero
+	}
+	idx := int(xxhash.Sum64String(key) % uint64(manager.ShardCount()))
+	if idx < 0 || idx >= len(manager.emissionMgrs) {
+		return zero
+	}
+	mgr := manager.emissionMgrs[idx]
+	if mgr == nil {
+		return zero
+	}
+	return mgr.Reconnect(req)
+}
+
 // BucketLogFor returns a bucket log implementation for the shard index. When raft is enabled
 // it returns a RaftBucketLog; otherwise a file-backed log. Errors are logged and a nil may be returned.
 func (manager *ShardManager) BucketLogFor(shardIdx int) bucket.BucketLog {
