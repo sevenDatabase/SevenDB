@@ -143,11 +143,14 @@ func getLocalSdk() *dicedb.Client {
 // }
 
 func RunTestServer(wg *sync.WaitGroup) {
+	// Ensure metadata dir exists as early as possible to avoid status writer errors
+	_ = os.MkdirAll(config.MetadataDir, 0o700)
 	// #1261: Added here to prevent resp integration tests from failing on lower-spec machines
 	gec := make(chan error)
 	shardManager := shardmanager.NewShardManager(1, gec)
 	ioThreadManager := ironhawk.NewIOThreadManager()
-	watchManager := &ironhawk.WatchManager{}
+	// Use constructor to initialize internal maps; direct struct literal leaves maps nil and causes panics
+	watchManager := ironhawk.NewWatchManager()
 	wal.SetupWAL()
 
 	testServer := ironhawk.NewServer(shardManager, ioThreadManager, watchManager)

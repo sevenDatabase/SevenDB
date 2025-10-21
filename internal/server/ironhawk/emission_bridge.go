@@ -26,8 +26,37 @@ func (b *BridgeSender) Send(ctx context.Context, ev *emission.DataEvent) error {
 	// Try to parse sub_id into clientID:fp
 	delivered := 0
 	if parts := strings.SplitN(ev.SubID, ":", 2); len(parts) == 2 {
-		if thread, ok := b.wm.clientWatchThreadMap[parts[0]]; ok && thread != nil {
+		clientID := parts[0]
+		if thread, ok := b.wm.clientWatchThreadMap[clientID]; ok && thread != nil {
+			// If we can parse fingerprint and locate the original command, craft
+			// a structured response to mirror legacy NotifyWatchers behavior.
+			// Keep Message set to the delta for simple client polling.
 			rs := &wire.Result{Status: wire.Status_OK, Message: string(ev.Delta)}
+			// Best-effort: embed command-specific response (e.g., GET) when known
+			if fpStr := parts[1]; fpStr != "" {
+				// parse base-10 fingerprint
+				var fp uint64
+				for i := 0; i < len(fpStr); i++ { // fast parse without strconv to avoid import churn
+					c := fpStr[i]
+					if c < '0' || c > '9' {
+						fp = 0
+						break
+					}
+					fp = fp*10 + uint64(c-'0')
+				}
+				if fp != 0 {
+					if c := b.wm.fpCmdMap[fp]; c != nil && c.C != nil {
+						base := c.C.Cmd
+						if strings.HasSuffix(base, ".WATCH") {
+							base = strings.TrimSuffix(base, ".WATCH")
+						}
+						switch base {
+						case "GET":
+							rs.Response = &wire.Result_GETRes{GETRes: &wire.GETRes{Value: string(ev.Delta)}}
+						}
+					}
+				}
+			}
 			if err := thread.serverWire.Send(ctx, rs); err != nil {
 				slog.Warn("bridge send failed", slog.Any("error", err), slog.String("client", thread.ClientID), slog.String("sub_id", ev.SubID))
 			} else {

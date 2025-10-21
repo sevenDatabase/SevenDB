@@ -209,39 +209,67 @@ func (w *WatchManager) NotifyWatchers(c *cmd.Cmd, shardManager *shardmanager.Sha
 	// If emission-contract is enabled, do not send directly.
 	// The emission path will propose OUTBOX_WRITE via raft and the Notifier will deliver.
 	if config.Config != nil && config.Config.EmissionContractEnabled {
-		// Execute the watch command to compute the delta result without sending to clients yet.
-		res, err := c.Execute(shardManager)
-		if err != nil {
-			// WRONGTYPE and similar are common; log at debug and return.
-			slog.Debug("emission-contract: watch compute returned error", slog.Any("cmd", c.String()), slog.Any("error", err))
-			return
-		}
-		// Use the wire.Result.Message as the delta payload for MVP (string encoding).
-		var deltaBytes []byte
-		if res != nil && res.Rs != nil && res.Rs.Message != "" {
-			deltaBytes = []byte(res.Rs.Message)
-		} else {
-			// Empty delta is allowed; still record an event for ordering.
-			deltaBytes = nil
-		}
 		// Determine shard by key to map to the correct raft node
-		shard := shardManager.GetShardForKey(c.Key())
+		key := c.Key()
+		shard := shardManager.GetShardForKey(key)
 		shardIdx := 0
 		if shard != nil {
 			shardIdx = shard.ID
 		}
-		// For each subscribed client to this key's fingerprint, propose a DATA_EVENT with sub-id as clientID:fp
-		fp := c.Fingerprint()
+
+		// Snapshot fingerprints for this key and their subscribers/commands under lock
+		type fpInfo struct {
+			fp   uint64
+			cmd  *cmd.Cmd
+			subs []string
+		}
+		fps := make([]fpInfo, 0, 4)
 		w.mu.RLock()
-		subs := make([]string, 0, len(w.fpClientMap[fp]))
-		for clientID := range w.fpClientMap[fp] {
-			subs = append(subs, clientID)
+		for fp := range w.keyFPMap[key] {
+			_c := w.fpCmdMap[fp]
+			// Collect subscribers for this fingerprint
+			var subs []string
+			for clientID := range w.fpClientMap[fp] {
+				subs = append(subs, clientID)
+			}
+			fps = append(fps, fpInfo{fp: fp, cmd: _c, subs: subs})
 		}
 		w.mu.RUnlock()
-		for _, clientID := range subs {
-			subID := fmt.Sprintf("%s:%d", clientID, fp)
-			if err := shardManager.ProposeDataEvent(context.Background(), shardIdx, subID, deltaBytes); err != nil {
-				slog.Warn("emission-contract: propose DATA_EVENT failed", slog.String("sub_id", subID), slog.Any("error", err))
+
+		// For each fingerprint, execute the stored watch command to compute delta and propose events
+		for _, f := range fps {
+			if f.cmd == nil {
+				continue
+			}
+			// Execute the base command (strip .WATCH) to compute the delta value
+			baseName := f.cmd.C.Cmd
+			if strings.HasSuffix(baseName, ".WATCH") {
+				baseName = strings.TrimSuffix(baseName, ".WATCH")
+			}
+			baseCmd := &cmd.Cmd{C: &wire.Command{Cmd: baseName, Args: f.cmd.C.Args}}
+			res, err := baseCmd.Execute(shardManager)
+			if err != nil {
+				// WRONGTYPE and similar are common; log at debug and continue
+				slog.Debug("emission-contract: watch compute returned error", slog.Any("cmd", baseCmd.String()), slog.Any("error", err))
+				continue
+			}
+			var deltaStr string
+			if res != nil && res.Rs != nil {
+				// Prefer structured responses when available (e.g., GET)
+				switch x := res.Rs.Response.(type) {
+				case *wire.Result_GETRes:
+					deltaStr = x.GETRes.Value
+				default:
+					// Fallback to message for simple responses
+					deltaStr = res.Rs.Message
+				}
+			}
+			deltaBytes := []byte(deltaStr)
+			for _, clientID := range f.subs {
+				subID := fmt.Sprintf("%s:%d", clientID, f.fp)
+				if err := shardManager.ProposeDataEvent(context.Background(), shardIdx, subID, deltaBytes); err != nil {
+					slog.Warn("emission-contract: propose DATA_EVENT failed", slog.String("sub_id", subID), slog.Any("error", err))
+				}
 			}
 		}
 		return

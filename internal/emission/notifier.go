@@ -32,7 +32,8 @@ type Notifier struct {
 }
 
 func NewNotifier(mgr *Manager, sender Sender, proposer Proposer) *Notifier {
-	return &Notifier{mgr: mgr, sender: sender, proposer: proposer, ackCh: make(chan *ClientAck, 1024), interval: 20 * time.Millisecond, stopCh: make(chan struct{})}
+	// Use a small poll interval to keep delivery latency low in tests and stub-raft mode
+	return &Notifier{mgr: mgr, sender: sender, proposer: proposer, ackCh: make(chan *ClientAck, 1024), interval: 5 * time.Millisecond, stopCh: make(chan struct{})}
 }
 
 // Ack injects a client ack (test/simulated path for now).
@@ -76,6 +77,9 @@ func (n *Notifier) loop(ctx context.Context) {
 				if err := n.proposer.ProposePurge(ctx, ack.SubID, ack.EmitSeq); err != nil {
 					slog.Error("propose purge failed", slog.Any("error", err))
 				}
+			} else {
+				// Test/local fallback: apply purge directly when no raft proposer is wired.
+				n.mgr.ApplyOutboxPurge(ctx, ack.SubID, ack.EmitSeq)
 			}
 		case <-t.C:
 			// scan pending and send, sub by sub
