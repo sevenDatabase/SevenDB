@@ -126,6 +126,52 @@ Your `subscription` immediately receives:
 user:1 -> "Bob"
 ```
 
+#### Enable the Emission Contract (feature flag)
+
+Some advanced features, like durable outbox delivery and `EMITRECONNECT`, require the Emission Contract to be enabled.
+
+- CLI flag:
+
+  ```bash
+  sevendb --emission-contract-enabled=true \
+          --emission-notifier-poll-ms=5   # optional: tune notifier poll interval
+  ```
+
+- Config (`sevendb.yaml`):
+
+  ```yaml
+  emission-contract-enabled: true
+  emission-notifier-poll-ms: 5  # optional
+  ```
+
+With this enabled, emissions are written to a raft-backed outbox and delivered deterministically by a per-bucket notifier.
+
+### 5. Resuming after disconnect: EMITRECONNECT
+
+### 5. Resuming after disconnect: EMITRECONNECT
+
+If your client disconnects and later reconnects, you can resume emissions without gaps using `EMITRECONNECT`.
+
+- Purpose: tell SevenDB the last commit index you fully processed for a given subscription, so the notifier can resume from the next index.
+- Syntax: `EMITRECONNECT key sub_id last_commit_index`
+- Returns:
+  - `OK <next_index>` on success (resume from this next commit index)
+  - `STALE_SEQUENCE` if the server has compacted past your index
+  - `INVALID_SEQUENCE` if the provided index is invalid for this subscription
+  - `SUBSCRIPTION_NOT_FOUND` if the subscription isn’t active for the key
+
+Example (RESP/CLI style):
+
+```bash
+> EMITRECONNECT user:1 client123:987654321 42
+OK 43
+```
+
+Notes:
+
+- `sub_id` is the subscription identifier associated with your `GET.WATCH` (the client/fingerprint pair used by the server). If you’re using the official SevenDB client, it will surface this ID for reconnects.
+- This feature is available when the Emission Contract is enabled; see the docs below for configuration and operational details.
+
 ---
 
 ## What Makes Us Different from DiceDB
