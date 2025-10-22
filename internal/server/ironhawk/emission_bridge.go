@@ -58,7 +58,13 @@ func (b *BridgeSender) Send(ctx context.Context, ev *emission.DataEvent) error {
 				}
 			}
 			if err := thread.serverWire.Send(ctx, rs); err != nil {
-				slog.Warn("bridge send failed", slog.Any("error", err), slog.String("client", thread.ClientID), slog.String("sub_id", ev.SubID))
+				// Closed client wires are expected during disconnects; avoid spamming WARN.
+				msg := err.Error()
+				if strings.Contains(msg, "closed wire") || strings.Contains(msg, "closed") {
+					slog.Debug("bridge send failed", slog.Any("error", err), slog.String("client", thread.ClientID), slog.String("sub_id", ev.SubID))
+				} else {
+					slog.Warn("bridge send failed", slog.Any("error", err), slog.String("client", thread.ClientID), slog.String("sub_id", ev.SubID))
+				}
 			} else {
 				delivered = 1
 			}
@@ -71,7 +77,12 @@ func (b *BridgeSender) Send(ctx context.Context, ev *emission.DataEvent) error {
 			}
 			rs := &wire.Result{Status: wire.Status_OK, Message: string(ev.Delta)}
 			if err := thread.serverWire.Send(ctx, rs); err != nil {
-				slog.Warn("bridge send failed", slog.Any("error", err), slog.String("client", thread.ClientID), slog.String("sub_id", ev.SubID))
+				msg := err.Error()
+				if strings.Contains(msg, "closed wire") || strings.Contains(msg, "closed") {
+					slog.Debug("bridge send failed", slog.Any("error", err), slog.String("client", thread.ClientID), slog.String("sub_id", ev.SubID))
+				} else {
+					slog.Warn("bridge send failed", slog.Any("error", err), slog.String("client", thread.ClientID), slog.String("sub_id", ev.SubID))
+				}
 				continue
 			}
 			delivered++

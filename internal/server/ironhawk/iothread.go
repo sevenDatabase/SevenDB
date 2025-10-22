@@ -89,8 +89,8 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 			continue
 		}
 
-		res.Rs.Status = wire.Status_OK
-		if res.Rs.Message == "" {
+		// Preserve command-chosen status. Only default the message if status is OK and message is empty.
+		if res != nil && res.Rs != nil && res.Rs.Status == wire.Status_OK && res.Rs.Message == "" {
 			res.Rs.Message = "OK"
 		}
 

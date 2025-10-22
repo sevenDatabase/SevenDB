@@ -145,6 +145,22 @@ func getLocalSdk() *dicedb.Client {
 func RunTestServer(wg *sync.WaitGroup) {
 	// Ensure metadata dir exists as early as possible to avoid status writer errors
 	_ = os.MkdirAll(config.MetadataDir, 0o700)
+
+	// Always bind test server to an available ephemeral port to avoid collisions with
+	// any locally running sevendb instance or parallel test runs using the default port.
+	// We probe the OS for a free port using :0 then set config.Config.Port accordingly.
+	if config.Config.Port == 0 || true { // force dynamic port for test server
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err == nil {
+			addr := ln.Addr().(*net.TCPAddr)
+			_ = ln.Close()
+			config.Config.Host = "127.0.0.1"
+			config.Config.Port = addr.Port
+		} else {
+			// If ephemeral selection fails, keep existing port but continue; server.Run will report errors.
+			slog.Warn("could not choose ephemeral port; falling back to configured port", slog.Any("error", err))
+		}
+	}
 	// #1261: Added here to prevent resp integration tests from failing on lower-spec machines
 	gec := make(chan error)
 	shardManager := shardmanager.NewShardManager(1, gec)
@@ -159,16 +175,21 @@ func RunTestServer(wg *sync.WaitGroup) {
 	fmt.Println("Starting the test server on port", config.Config.Port)
 
 	shardManagerCtx, cancelShardManager := context.WithCancel(ctx)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	// Support nil WaitGroup callers by using an internal WaitGroup when not provided.
+	effectiveWG := wg
+	if effectiveWG == nil {
+		effectiveWG = &sync.WaitGroup{}
+	}
+	effectiveWG.Add(1)
+	go func(wgLocal *sync.WaitGroup) {
+		defer wgLocal.Done()
 		shardManager.Run(shardManagerCtx)
-	}()
+	}(effectiveWG)
 
 	// Start the server in a goroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	effectiveWG.Add(1)
+	go func(wgLocal *sync.WaitGroup) {
+		defer wgLocal.Done()
 		if err := testServer.Run(ctx); err != nil {
 			if errors.Is(err, derrors.ErrAborted) {
 				cancelShardManager()
@@ -177,7 +198,7 @@ func RunTestServer(wg *sync.WaitGroup) {
 			slog.Error("Test server encountered an error", slog.Any("error", err))
 			os.Exit(1)
 		}
-	}()
+	}(effectiveWG)
 
 	go func() {
 		for err := range gec {
