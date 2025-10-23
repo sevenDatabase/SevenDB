@@ -100,6 +100,11 @@ type DiceDBConfig struct {
 	EmissionContractEnabled bool `mapstructure:"emission-contract-enabled" default:"false" description:"enable deterministic emission contract (raft-backed outbox + notifier)"`
 	// EmissionNotifierPollMs controls the notifier poll interval in milliseconds (tests can lower this).
 	EmissionNotifierPollMs int `mapstructure:"emission-notifier-poll-ms" default:"5" description:"notifier poll interval in milliseconds when emission contract is enabled"`
+
+	// Observability: Optional HTTP /metrics endpoint for Prometheus and periodic compact metrics log
+	MetricsHTTPEnabled   bool   `mapstructure:"metrics-http-enabled" default:"false" description:"enable HTTP /metrics endpoint for Prometheus scraping"`
+	MetricsHTTPAddr      string `mapstructure:"metrics-http-addr" default:":9090" description:"listen address for metrics HTTP server (host:port)"`
+	MetricsLogIntervalSec int   `mapstructure:"metrics-log-interval-sec" default:"0" description:"if >0, emit a compact emission metrics log line every N seconds"`
 }
 
 func Load(flags *pflag.FlagSet) {
