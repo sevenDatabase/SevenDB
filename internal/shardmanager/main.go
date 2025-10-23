@@ -109,7 +109,7 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 
 			// Emission contract wiring (single-notifier per shard) behind flag
 			if config.Config.EmissionContractEnabled {
-				mgr := emission.NewManager()
+				mgr := emission.NewManager(cfg.ShardID)
 				// Register replication handler to apply OUTBOX_* directly on commit (idempotent with applier)
 				emission.RegisterWithShard(rn, mgr)
 				// Start applier to translate DATA_EVENT/ACK to OUTBOX_* and apply
@@ -118,7 +118,7 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 				// Sender bridge is wired later after IOThreads available; start with a no-op sender that logs
 				sender := &noopSender{}
 				proposer := &emission.RaftProposer{Node: rn, BucketID: cfg.ShardID}
-				notifier := emission.NewNotifier(mgr, sender, proposer)
+				notifier := emission.NewNotifier(mgr, sender, proposer, cfg.ShardID)
 				notifier.Start(context.Background())
 				sm.emissionMgrs[i] = mgr
 				sm.emissionNotifiers[i] = notifier
@@ -234,6 +234,11 @@ func (manager *ShardManager) Run(ctx context.Context) {
 			writeOnce := func() {
 				snaps := manager.RaftStatusSnapshots()
 				payload := map[string]interface{}{"ts_unix": time.Now().Unix(), "nodes": snaps}
+				// Attach emission metrics snapshot if emission is enabled.
+				if config.Config != nil && config.Config.EmissionContractEnabled {
+					// import cycle safe: shardmanager already depends on emission
+					payload["emission_metrics"] = emission.Metrics.Snapshot()
+				}
 				b, err := json.MarshalIndent(payload, "", "  ")
 				if err != nil {
 					slog.Debug("status marshal failed", slog.Any("error", err))
@@ -294,6 +299,48 @@ func (manager *ShardManager) Run(ctx context.Context) {
 							}
 						}
 					}()
+					// Optional compact emission metrics log every N seconds
+					if config.Config != nil && config.Config.EmissionContractEnabled && config.Config.MetricsLogIntervalSec > 0 {
+						now := time.Now().Unix()
+						if now%int64(config.Config.MetricsLogIntervalSec) == 0 {
+							m := emission.Metrics.Snapshot()
+							getI64 := func(k string) int64 {
+								if v, ok := m[k]; ok {
+									switch t := v.(type) {
+									case int64:
+										return t
+									case int:
+										return int64(t)
+									case uint64:
+										return int64(t)
+									}
+								}
+								return 0
+							}
+							getF := func(k string) float64 {
+								if v, ok := m[k]; ok {
+									switch t := v.(type) {
+									case float64:
+										return t
+									case int64:
+										return float64(t)
+									case int:
+										return float64(t)
+									}
+								}
+								return 0
+							}
+							slog.Info("emission_metrics",
+								slog.Int64("pending", getI64("pending_entries")),
+								slog.Int64("subs", getI64("subs_with_pending")),
+								slog.Int64("sends_per_sec", getI64("sends_per_sec")),
+								slog.Int64("acks_per_sec", getI64("acks_per_sec")),
+								slog.Float64("lat_ms_avg", getF("send_latency_ms_avg")),
+								slog.Int64("reconnect_ok", getI64("reconnects_ok_total")),
+								slog.Int64("reconnect_stale", getI64("reconnects_stale_total")),
+							)
+						}
+					}
 				}
 			}
 		}()
