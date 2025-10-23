@@ -34,15 +34,17 @@ type Notifier struct {
 	// resumeFrom optionally holds the next commit index to resume from per sub after reconnect
 	resumeMu   sync.Mutex
 	resumeFrom map[string]uint64
+	// bucketID labels metrics for this notifier's shard/bucket
+	bucketID string
 }
 
-func NewNotifier(mgr *Manager, sender Sender, proposer Proposer) *Notifier {
+func NewNotifier(mgr *Manager, sender Sender, proposer Proposer, bucketID string) *Notifier {
 	// Use configured poll interval when available; default to 5ms.
 	pollMs := 5
 	if config.Config != nil && config.Config.EmissionNotifierPollMs > 0 {
 		pollMs = config.Config.EmissionNotifierPollMs
 	}
-	return &Notifier{mgr: mgr, sender: sender, proposer: proposer, ackCh: make(chan *ClientAck, 1024), interval: time.Duration(pollMs) * time.Millisecond, stopCh: make(chan struct{}), resumeFrom: make(map[string]uint64)}
+	return &Notifier{mgr: mgr, sender: sender, proposer: proposer, ackCh: make(chan *ClientAck, 1024), interval: time.Duration(pollMs) * time.Millisecond, stopCh: make(chan struct{}), resumeFrom: make(map[string]uint64), bucketID: bucketID}
 }
 
 // Ack injects a client ack (test/simulated path for now).
@@ -82,6 +84,11 @@ func (n *Notifier) loop(ctx context.Context) {
 				slog.Warn("ACK regression or duplicate", slog.String("sub_id", ack.SubID), slog.String("emit_seq", ack.EmitSeq.String()))
 				continue
 			}
+			if n.bucketID != "" {
+				Metrics.IncAckFor(n.bucketID)
+			} else {
+				Metrics.IncAck()
+			}
 			if n.proposer != nil {
 				if err := n.proposer.ProposePurge(ctx, ack.SubID, ack.EmitSeq); err != nil {
 					slog.Error("propose purge failed", slog.Any("error", err))
@@ -93,6 +100,11 @@ func (n *Notifier) loop(ctx context.Context) {
 		case <-t.C:
 			// scan pending and send, sub by sub
 			subs := n.mgr.SubsWithPending()
+			if n.bucketID != "" {
+				Metrics.SetSubsWithPendingFor(n.bucketID, len(subs))
+			} else {
+				Metrics.SetSubsWithPending(len(subs))
+			}
 			for _, sub := range subs {
 				entries := n.mgr.Pending(sub)
 				for _, e := range entries {
@@ -109,9 +121,15 @@ func (n *Notifier) loop(ctx context.Context) {
 						slog.Warn("no sender set; skipping delivery", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 						break
 					}
+					start := time.Now()
 					if err := sender.Send(ctx, ev); err != nil {
 						slog.Warn("send failed; will retry on next tick", slog.Any("error", err), slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 						break // backoff this sub until next tick
+					}
+					if n.bucketID != "" {
+						Metrics.ObserveSendFor(n.bucketID, time.Since(start))
+					} else {
+						Metrics.ObserveSend(time.Since(start))
 					}
 					slog.Debug("SEND", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 					// If we had a resume threshold and we reached/surpassed it, clear it
