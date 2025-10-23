@@ -44,6 +44,9 @@ type ShardManager struct {
 	emissionMgrs      []*emission.Manager
 	emissionNotifiers []*emission.Notifier
 	emissionAppliers  []*emission.Applier
+	// gating and controllers for leader-as-notifier
+	emissionGates       []*gatedSender
+	notifierControllers []*leaderNotifierController
 }
 
 var globalManager *ShardManager
@@ -93,6 +96,8 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 			sm.emissionMgrs = make([]*emission.Manager, shardCount)
 			sm.emissionNotifiers = make([]*emission.Notifier, shardCount)
 			sm.emissionAppliers = make([]*emission.Applier, shardCount)
+			sm.emissionGates = make([]*gatedSender, shardCount)
+			sm.notifierControllers = make([]*leaderNotifierController, shardCount)
 		}
 		for i := 0; i < shardCount; i++ {
 			cfg := raft.RaftConfig{ShardID: string(rune('a' + i)), Engine: config.Config.RaftEngine, HeartbeatMillis: config.Config.RaftHeartbeatMillis, ElectionTimeoutMillis: config.Config.RaftElectionTimeoutMillis, NodeID: fmt.Sprintf("%d", sm.localRaftID), Peers: canonical, DataDir: config.Config.RaftPersistentDir}
@@ -115,14 +120,16 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 				// Start applier to translate DATA_EVENT/ACK to OUTBOX_* and apply
 				applier := emission.NewApplier(rn, mgr, cfg.ShardID)
 				applier.Start(context.Background())
-				// Sender bridge is wired later after IOThreads available; start with a no-op sender that logs
-				sender := &noopSender{}
+				// Sender bridge is wired later after IOThreads available; wrap with a gate
+				gate := newGatedSender(nil)
 				proposer := &emission.RaftProposer{Node: rn, BucketID: cfg.ShardID}
-				notifier := emission.NewNotifier(mgr, sender, proposer, cfg.ShardID)
+				notifier := emission.NewNotifier(mgr, gate, proposer, cfg.ShardID)
 				notifier.Start(context.Background())
 				sm.emissionMgrs[i] = mgr
 				sm.emissionNotifiers[i] = notifier
 				sm.emissionAppliers[i] = applier
+				sm.emissionGates[i] = gate
+				sm.notifierControllers[i] = newLeaderNotifierController(cfg.ShardID, rn, gate)
 				slog.Info("emission contract enabled for shard", slog.Int("shard", i), slog.String("bucket_uuid", cfg.ShardID))
 			}
 		}
@@ -208,6 +215,15 @@ func (manager *ShardManager) Run(ctx context.Context) {
 			gt := raft.NewGRPCTransport(manager.localRaftID, rn.ShardID(), resolver)
 			rn.SetTransport(gt)
 			go gt.Start(shardCtx)
+		}
+	}
+
+	// Start leader-as-notifier controllers (only when emission is enabled)
+	if manager.emissionGates != nil && manager.notifierControllers != nil {
+		for _, ctl := range manager.notifierControllers {
+			if ctl != nil {
+				ctl.Start(shardCtx)
+			}
 		}
 	}
 
@@ -403,8 +419,14 @@ func (manager *ShardManager) SetEmissionSenderForKey(key string, sender emission
 	if idx < 0 || idx >= len(manager.emissionNotifiers) {
 		return
 	}
-	n := manager.emissionNotifiers[idx]
-	if n != nil {
+	// Prefer updating gate if present to preserve leader-only semantics
+	if manager.emissionGates != nil && idx < len(manager.emissionGates) {
+		if g := manager.emissionGates[idx]; g != nil {
+			g.SetUnderlying(sender)
+			return
+		}
+	}
+	if n := manager.emissionNotifiers[idx]; n != nil {
 		n.SetSender(sender)
 	}
 }
@@ -478,8 +500,13 @@ func (manager *ShardManager) SetEmissionSender(shardIdx int, sender emission.Sen
 	if manager == nil || shardIdx < 0 || shardIdx >= len(manager.emissionNotifiers) {
 		return
 	}
-	n := manager.emissionNotifiers[shardIdx]
-	if n != nil {
+	if manager.emissionGates != nil && shardIdx < len(manager.emissionGates) {
+		if g := manager.emissionGates[shardIdx]; g != nil {
+			g.SetUnderlying(sender)
+			return
+		}
+	}
+	if n := manager.emissionNotifiers[shardIdx]; n != nil {
 		n.SetSender(sender)
 	}
 }
