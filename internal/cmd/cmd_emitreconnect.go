@@ -49,7 +49,9 @@ var cEMITRECONNECT = &CommandMeta{
         // Since Notifier exposes no getter, add a small helper here by using shard manager's emission manager accessor.
         // Workaround: the shard manager doesn't expose manager; instead we can rely on reconnect not mutating state and use ACK watermark stored in manager.
         // Provide a minimal pathway: add a helper on shard manager to run reconnect (implemented there) and set resume on notifier when OK.
-        ack := sm.EmissionReconnectForKey(key, req)
+    ack := sm.EmissionReconnectForKey(key, req)
+    // Observe reconnect outcome for observability (label by bucket/shard)
+    emission.Metrics.IncReconnectFor(rn.ShardID(), ack.Status)
         switch ack.Status {
         case emission.ReconnectOK:
             if n != nil {
