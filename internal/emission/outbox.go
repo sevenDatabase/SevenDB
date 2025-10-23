@@ -26,22 +26,24 @@ func newOutboxState() *outboxState {
 	return &outboxState{bySub: make(map[string]map[uint64]*OutboxEntry), epochs: make(map[string]EpochID)}
 }
 
-func (o *outboxState) write(e *OutboxEntry) {
+func (o *outboxState) write(e *OutboxEntry) (newSub bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if _, ok := o.bySub[e.SubID]; !ok {
 		o.bySub[e.SubID] = make(map[uint64]*OutboxEntry)
+		newSub = true
 	}
 	o.bySub[e.SubID][e.Seq.CommitIndex] = e
+	return
 }
 
 // purge removes all entries up to and including the given commit index for sub.
-func (o *outboxState) purge(sub string, upTo uint64) int {
+func (o *outboxState) purge(sub string, upTo uint64) (int, bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	m := o.bySub[sub]
 	if m == nil {
-		return 0
+		return 0, false
 	}
 	removed := 0
 	for idx := range m {
@@ -50,10 +52,12 @@ func (o *outboxState) purge(sub string, upTo uint64) int {
 			removed++
 		}
 	}
+	emptied := false
 	if len(m) == 0 {
 		delete(o.bySub, sub)
+		emptied = true
 	}
-	return removed
+	return removed, emptied
 }
 
 // pendingSorted returns pending entries for a sub ordered by commit index.
@@ -85,15 +89,31 @@ type Manager struct {
 	lastAck map[string]uint64
 	// compaction watermark for validation; in MVP this can be set by caller.
 	compactThrough map[string]uint64
+	// bucketID labels metrics updates for this manager's shard/bucket
+	bucketID string
 }
 
-func NewManager() *Manager {
-	return &Manager{ob: newOutboxState(), lastAck: make(map[string]uint64), compactThrough: make(map[string]uint64)}
+func NewManager(bucketID string) *Manager {
+	return &Manager{ob: newOutboxState(), lastAck: make(map[string]uint64), compactThrough: make(map[string]uint64), bucketID: bucketID}
 }
 
 // ApplyOutboxWrite records a durable outbox entry as per raft apply.
 func (m *Manager) ApplyOutboxWrite(ctx context.Context, sub string, seq EmitSeq, delta []byte) {
-	m.ob.write(&OutboxEntry{SubID: sub, Seq: seq, Delta: delta})
+	if newSub := m.ob.write(&OutboxEntry{SubID: sub, Seq: seq, Delta: delta}); newSub {
+		// a new sub now has pending entries; update gauge best-effort under read lock
+		m.ob.mu.RLock()
+		if m.bucketID != "" {
+			Metrics.SetSubsWithPendingFor(m.bucketID, len(m.ob.bySub))
+		} else {
+			Metrics.SetSubsWithPending(len(m.ob.bySub))
+		}
+		m.ob.mu.RUnlock()
+	}
+	if m.bucketID != "" {
+		Metrics.AddPendingFor(m.bucketID, 1)
+	} else {
+		Metrics.AddPending(1)
+	}
 	slog.Debug("OUTBOX_WRITE",
 		slog.String("sub_id", sub),
 		slog.String("emit_seq", seq.String()),
@@ -102,9 +122,25 @@ func (m *Manager) ApplyOutboxWrite(ctx context.Context, sub string, seq EmitSeq,
 
 // ApplyOutboxPurge removes entries up to the provided position (inclusive).
 func (m *Manager) ApplyOutboxPurge(ctx context.Context, sub string, upTo EmitSeq) {
-	removed := m.ob.purge(sub, upTo.CommitIndex)
+	removed, emptied := m.ob.purge(sub, upTo.CommitIndex)
 	// Update compaction watermark so reconnect can detect stale sequences
 	m.SetCompactedThrough(sub, upTo.CommitIndex)
+	if removed > 0 {
+		if m.bucketID != "" {
+			Metrics.AddPendingFor(m.bucketID, -int64(removed))
+		} else {
+			Metrics.AddPending(-int64(removed))
+		}
+	}
+	if emptied {
+		m.ob.mu.RLock()
+		if m.bucketID != "" {
+			Metrics.SetSubsWithPendingFor(m.bucketID, len(m.ob.bySub))
+		} else {
+			Metrics.SetSubsWithPending(len(m.ob.bySub))
+		}
+		m.ob.mu.RUnlock()
+	}
 	slog.Debug("OUTBOX_PURGE", slog.String("sub_id", sub), slog.String("up_to", upTo.String()), slog.Int("removed", removed))
 }
 
