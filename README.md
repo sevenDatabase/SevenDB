@@ -172,6 +172,52 @@ Notes:
 - `sub_id` is the subscription identifier associated with your `GET.WATCH` (the client/fingerprint pair used by the server). If you’re using the official SevenDB client, it will surface this ID for reconnects.
 - This feature is available when the Emission Contract is enabled; see the docs below for configuration and operational details.
 
+## Metrics and Observability
+
+SevenDB exposes lightweight emission metrics for visibility during development and ops.
+
+- Per-shard/bucket breakdown: metrics are labeled by `bucket` (the internal shard ID) when the Emission Contract is enabled.
+- Aggregate metrics are also exported for quick at-a-glance checks.
+
+Options:
+
+- Enable a Prometheus endpoint (off by default):
+
+  ```bash
+  sevendb \
+    --emission-contract-enabled=true \
+    --metrics-http-enabled=true \
+    --metrics-http-addr=":9090"
+  ```
+
+  Then scrape `http://<host>:9090/metrics`. Example metric names:
+  - `sevendb_emission_pending_entries{bucket="a"}`
+  - `sevendb_emission_sends_per_sec{bucket="a"}`
+  - `sevendb_emission_reconnects_total{bucket="a",outcome="ok|stale|invalid|not_found"}`
+
+  Config (`sevendb.yaml`):
+
+  ```yaml
+  metrics-http-enabled: true
+  metrics-http-addr: ":9090"
+  ```
+
+- Emit a compact log line every N seconds (off by default):
+
+  ```bash
+  sevendb --metrics-log-interval-sec=10
+  ```
+
+  You’ll see lines like:
+
+  ```
+  level=INFO msg=emission_metrics pending=0 subs=0 sends_per_sec=0 acks_per_sec=0 lat_ms_avg=0 reconnect_ok=0 reconnect_stale=0
+  ```
+
+Notes:
+- Labeling per bucket enables per-shard analysis but adds minor bookkeeping overhead.
+- The `/metrics` endpoint only includes SevenDB application metrics (no Go runtime by default) to keep output small and stable.
+
 ---
 
 ## What Makes Us Different from DiceDB
