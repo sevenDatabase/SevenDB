@@ -22,9 +22,9 @@ func waitUntil(t *testing.T, timeout time.Duration, fn func() bool) {
 }
 
 func TestOutboxSendAndAck(t *testing.T) {
-	mgr := emission.NewManager()
+	mgr := emission.NewManager("a")
 	sender := &emission.MemorySender{}
-	n := emission.NewNotifier(mgr, sender, nil)
+	n := emission.NewNotifier(mgr, sender, nil, "a")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	n.Start(ctx)
@@ -54,7 +54,7 @@ func TestOutboxSendAndAck(t *testing.T) {
 }
 
 func TestReconnectSemantics(t *testing.T) {
-	mgr := emission.NewManager()
+	mgr := emission.NewManager("a")
 	// Mark compaction through index 5 for sub
 	mgr.SetCompactedThrough("s1", 5)
 	// Record last ack 10 via ValidateAck path

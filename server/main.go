@@ -25,6 +25,7 @@ import (
 	"github.com/sevenDatabase/SevenDB/internal/cmd"
 	"github.com/sevenDatabase/SevenDB/internal/server/ironhawk"
 	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
+    "github.com/sevenDatabase/SevenDB/internal/observability"
 
 	"github.com/sevenDatabase/SevenDB/internal/wal"
 
@@ -233,6 +234,19 @@ func Start() {
 	}
 
 	slog.Info("ready to accept connections")
+
+	// Optional HTTP /metrics for Prometheus scraping
+	if config.Config != nil && config.Config.MetricsHTTPEnabled {
+		mux := http.NewServeMux()
+		observability.SetupPrometheus(mux)
+		addr := config.Config.MetricsHTTPAddr
+		slog.Info("metrics http server starting", slog.String("addr", addr))
+		go func() {
+			if err := http.ListenAndServe(addr, mux); err != nil && err != http.ErrServerClosed {
+				slog.Error("metrics http server exited", slog.Any("error", err))
+			}
+		}()
+	}
 	serverWg.Add(1)
 	go runServer(ctx, &serverWg, ironhawkServer, serverErrCh)
 
