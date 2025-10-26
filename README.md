@@ -12,57 +12,6 @@ We’re not just a database that can _react_ — we’re building a database whe
 
 ---
 
-## Why SevenDB?
-
-Traditional databases excel at storing and querying, but they treat _reactivity_ as an afterthought. Systems bolt on triggers, changefeeds, or pub/sub layers — often at the cost of correctness, scalability, or painful race conditions.
-
-**SevenDB takes a different path: reactivity is core.**
-We extend the excellent work of DiceDB with new primitives that make _subscriptions as fundamental as inserts and updates_.
-
----
-
-## Design Plan
-
-[**View the Design Plan PDF**](./docs/design-plan.pdf)
-
-Additional docs:
-
-- [WAL manifest, UWAL1, and integrity preamble](./docs/WAL_MANIFEST_AND_UWAL.md)
-- [Raft testing: deterministic and multi-machine](./docs/TESTING_RAFT.md#real-world-multi-machine-testing)
-- [Emission Contract architecture](./docs/src/content/docs/architecture/emission-contract.mdx)
-- [Emission Contract – operations & config](./docs/src/content/docs/emission-contract-ops.mdx)
-
-## Core Concepts
-
-### 1. Buckets
-
-- Data is partitioned into **buckets**, each with its own Raft log, subscriptions, and notifier.
-- A bucket is the atomic unit of replication, computation, and failover.
-- Subscriptions bind to the buckets that hold their data, ensuring updates are always ordered and consistent.
-
-### 2. Compute Sharding
-
-- Reactive computation is heavy — evaluating deltas and emitting them at scale.
-- SevenDB spreads this load by **sharding compute across buckets**, with two modes:
-  - **Hot mode**: every replica shadow-evaluates for instant failover.
-  - **Cold mode**: only the notifier evaluates, others checkpoint for efficiency.
-- This lets us trade failover speed vs CPU cost per bucket.
-
-### 3. Deterministic Subscriptions
-
-- `SUBSCRIBE` / `UNSUBSCRIBE` are **first-class operations**, logged like `INSERT` or `UPDATE`.
-- Every subscription is replayable and deterministic, enforced by plan-hash checks.
-- Failovers and replays always converge to the same state, eliminating divergence.
-
-### 4. Durable Notifier Outbox
-
-- Emissions aren’t ephemeral.
-- Every computed delta is first written as an **outbox entry into the bucket log**, then sent.
-- If a notifier crashes, the next one replays the outbox, guaranteeing _no lost updates_.
-- Clients deduplicate using `(sub_id, emit_seq)` for “effective-once” delivery.
-
----
-
 ## How to get sevenDB running
 
 SevenDB speaks the same **RESP protocol** as Redis.
@@ -219,6 +168,58 @@ Notes:
 - The `/metrics` endpoint only includes SevenDB application metrics (no Go runtime by default) to keep output small and stable.
 
 ---
+
+## Why SevenDB?
+
+Traditional databases excel at storing and querying, but they treat _reactivity_ as an afterthought. Systems bolt on triggers, changefeeds, or pub/sub layers — often at the cost of correctness, scalability, or painful race conditions.
+
+**SevenDB takes a different path: reactivity is core.**
+We extend the excellent work of DiceDB with new primitives that make _subscriptions as fundamental as inserts and updates_.
+
+---
+
+## Design Plan
+
+[**View the Design Plan PDF**](./docs/design-plan.pdf)
+
+Additional docs:
+
+- [WAL manifest, UWAL1, and integrity preamble](./docs/WAL_MANIFEST_AND_UWAL.md)
+- [Raft testing: deterministic and multi-machine](./docs/TESTING_RAFT.md#real-world-multi-machine-testing)
+- [Emission Contract architecture](./docs/src/content/docs/architecture/emission-contract.mdx)
+- [Emission Contract – operations & config](./docs/src/content/docs/emission-contract-ops.mdx)
+
+## Core Concepts
+
+### 1. Buckets
+
+- Data is partitioned into **buckets**, each with its own Raft log, subscriptions, and notifier.
+- A bucket is the atomic unit of replication, computation, and failover.
+- Subscriptions bind to the buckets that hold their data, ensuring updates are always ordered and consistent.
+
+### 2. Compute Sharding
+
+- Reactive computation is heavy — evaluating deltas and emitting them at scale.
+- SevenDB spreads this load by **sharding compute across buckets**, with two modes:
+  - **Hot mode**: every replica shadow-evaluates for instant failover.
+  - **Cold mode**: only the notifier evaluates, others checkpoint for efficiency.
+- This lets us trade failover speed vs CPU cost per bucket.
+
+### 3. Deterministic Subscriptions
+
+- `SUBSCRIBE` / `UNSUBSCRIBE` are **first-class operations**, logged like `INSERT` or `UPDATE`.
+- Every subscription is replayable and deterministic, enforced by plan-hash checks.
+- Failovers and replays always converge to the same state, eliminating divergence.
+
+### 4. Durable Notifier Outbox
+
+- Emissions aren’t ephemeral.
+- Every computed delta is first written as an **outbox entry into the bucket log**, then sent.
+- If a notifier crashes, the next one replays the outbox, guaranteeing _no lost updates_.
+- Clients deduplicate using `(sub_id, emit_seq)` for “effective-once” delivery.
+
+---
+
 
 ## What Makes Us Different from DiceDB
 
