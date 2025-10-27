@@ -53,12 +53,19 @@ func evalHELLOCmd(c *Cmd, s *dstore.Store) (*CmdRes, error) {
     if c.ClientID == "" {
         c.ClientID = genUUID()
     }
+    // Include multiple synonymous keys for client id to maximize compatibility with clients:
+    // - "clientId" (preferred by modern clients)
+    // - "client_id" and "client" as fallbacks
     resp := map[string]interface{}{
-        "proto":   2,
-        "id":      fmt.Sprintf("%s:%d", host, port),
-        "role":    "master",
-        "modules": []interface{}{},
+        "proto":     2,
+        "id":        fmt.Sprintf("%s:%d", host, port),
+        "role":      "master",
+        "modules":   []interface{}{},
+        "clientId":  c.ClientID,
         "client_id": c.ClientID,
+        "client":    c.ClientID,
+        "serverVersion": config.DiceDBVersion,
+        "version":       config.DiceDBVersion,
     }
     b, _ := json.Marshal(resp)
     return &CmdRes{Rs: &wire.Result{Status: wire.Status_OK, Message: string(b)}}, nil
