@@ -206,18 +206,21 @@ func (w *WatchManager) CleanupThreadWatchSubscriptions(t *IOThread) {
 }
 
 func (w *WatchManager) NotifyWatchers(c *cmd.Cmd, shardManager *shardmanager.ShardManager, t *IOThread) {
-	// If emission-contract is enabled, do not send directly.
-	// The emission path will propose OUTBOX_WRITE via raft and the Notifier will deliver.
-	if config.Config != nil && config.Config.EmissionContractEnabled {
-		// Determine shard by key to map to the correct raft node
+	// If emission-contract is enabled and raft is available, use the durable outbox path.
+	// Otherwise, fall back to legacy direct-send behavior.
+	if config.Config != nil && config.Config.EmissionContractEnabled && config.Config.RaftEnabled {
+		// Determine shard by key to map to the correct raft node; ensure raft node exists
 		key := c.Key()
 		shard := shardManager.GetShardForKey(key)
 		shardIdx := 0
 		if shard != nil {
 			shardIdx = shard.ID
 		}
-
-		// Snapshot fingerprints for this key and their subscribers/commands under lock
+		// If raft is not enabled for this key/shard (nil rn), skip emission path and use legacy send
+		if rn := shardManager.GetRaftNodeForKey(key); rn == nil {
+			// fallthrough to legacy path below
+		} else {
+			// Snapshot fingerprints for this key and their subscribers/commands under lock
 		type fpInfo struct {
 			fp   uint64
 			cmd  *cmd.Cmd
@@ -235,44 +238,44 @@ func (w *WatchManager) NotifyWatchers(c *cmd.Cmd, shardManager *shardmanager.Sha
 			fps = append(fps, fpInfo{fp: fp, cmd: _c, subs: subs})
 		}
 		w.mu.RUnlock()
-
-		// For each fingerprint, execute the stored watch command to compute delta and propose events
-		for _, f := range fps {
-			if f.cmd == nil {
-				continue
-			}
-			// Execute the base command (strip .WATCH) to compute the delta value
-			baseName := f.cmd.C.Cmd
-			if strings.HasSuffix(baseName, ".WATCH") {
-				baseName = strings.TrimSuffix(baseName, ".WATCH")
-			}
-			baseCmd := &cmd.Cmd{C: &wire.Command{Cmd: baseName, Args: f.cmd.C.Args}}
-			res, err := baseCmd.Execute(shardManager)
-			if err != nil {
-				// WRONGTYPE and similar are common; log at debug and continue
-				slog.Debug("emission-contract: watch compute returned error", slog.Any("cmd", baseCmd.String()), slog.Any("error", err))
-				continue
-			}
-			var deltaStr string
-			if res != nil && res.Rs != nil {
-				// Prefer structured responses when available (e.g., GET)
-				switch x := res.Rs.Response.(type) {
-				case *wire.Result_GETRes:
-					deltaStr = x.GETRes.Value
-				default:
-					// Fallback to message for simple responses
-					deltaStr = res.Rs.Message
+			// For each fingerprint, execute the stored watch command to compute delta and propose events
+			for _, f := range fps {
+				if f.cmd == nil {
+					continue
+				}
+				// Execute the base command (strip .WATCH) to compute the delta value
+				baseName := f.cmd.C.Cmd
+				if strings.HasSuffix(baseName, ".WATCH") {
+					baseName = strings.TrimSuffix(baseName, ".WATCH")
+				}
+				baseCmd := &cmd.Cmd{C: &wire.Command{Cmd: baseName, Args: f.cmd.C.Args}}
+				res, err := baseCmd.Execute(shardManager)
+				if err != nil {
+					// WRONGTYPE and similar are common; log at debug and continue
+					slog.Debug("emission-contract: watch compute returned error", slog.Any("cmd", baseCmd.String()), slog.Any("error", err))
+					continue
+				}
+				var deltaStr string
+				if res != nil && res.Rs != nil {
+					// Prefer structured responses when available (e.g., GET)
+					switch x := res.Rs.Response.(type) {
+					case *wire.Result_GETRes:
+						deltaStr = x.GETRes.Value
+					default:
+						// Fallback to message for simple responses
+						deltaStr = res.Rs.Message
+					}
+				}
+				deltaBytes := []byte(deltaStr)
+				for _, clientID := range f.subs {
+					subID := fmt.Sprintf("%s:%d", clientID, f.fp)
+					if err := shardManager.ProposeDataEvent(context.Background(), shardIdx, subID, deltaBytes); err != nil {
+						slog.Warn("emission-contract: propose DATA_EVENT failed", slog.String("sub_id", subID), slog.Any("error", err))
+					}
 				}
 			}
-			deltaBytes := []byte(deltaStr)
-			for _, clientID := range f.subs {
-				subID := fmt.Sprintf("%s:%d", clientID, f.fp)
-				if err := shardManager.ProposeDataEvent(context.Background(), shardIdx, subID, deltaBytes); err != nil {
-					slog.Warn("emission-contract: propose DATA_EVENT failed", slog.String("sub_id", subID), slog.Any("error", err))
-				}
-			}
+			return
 		}
-		return
 	}
 	// Use RLock instead as we are not really modifying any shared maps here.
 	w.mu.RLock()
