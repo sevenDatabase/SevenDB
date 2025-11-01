@@ -1,6 +1,6 @@
 # <img src="logo.png" alt="SevenDB Logo" width="40"/> SevenDB
 
-**SevenDB** is a next-generation **reactive database**, building on [DiceDB](https://github.com/DiceDB/dice) and extending it with a stronger foundation for **deterministic subscriptions, bucket-based sharding, and compute scalability**.
+**SevenDB** is a **reactive database**, building on [DiceDB](https://github.com/DiceDB/dice) and extending it with a stronger foundation for **deterministic subscriptions, bucket-based sharding, and compute scalability**.
 
 ---
 
