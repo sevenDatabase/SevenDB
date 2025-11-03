@@ -41,8 +41,8 @@ func (g *gatedSender) SetUnderlying(under emission.Sender) {
 // Send implements emission.Sender with gating semantics.
 func (g *gatedSender) Send(ctx context.Context, ev *emission.DataEvent) error {
     if !g.enabled.Load() {
-        // follower: drop silently to avoid retry storms
-        return nil
+        // follower: signal not-leader so notifier will retry later and not mark as delivered
+        return &notLeaderError{}
     }
     g.mu.RLock()
     s := g.underlying
@@ -57,6 +57,10 @@ func (g *gatedSender) Send(ctx context.Context, ev *emission.DataEvent) error {
 type noTransportError struct{}
 
 func (e *noTransportError) Error() string { return "emission: no transport" }
+
+type notLeaderError struct{}
+
+func (e *notLeaderError) Error() string { return "emission: not leader" }
 
 // leaderNotifierController observes raft leadership for a shard and toggles the gate.
 // It provides a clean seam to swap out later with an independent election mechanism.
