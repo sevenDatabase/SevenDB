@@ -6,6 +6,7 @@ package ironhawk
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/dicedb/dicedb-go"
@@ -155,6 +156,17 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 		}
 
 		watchManager.RegisterThread(t)
+
+		// On successful EMITRECONNECT, rebind the subscription fingerprint to this connection's clientID
+		if c.Cmd == "EMITRECONNECT" && res != nil && res.Rs != nil && res.Rs.Status == wire.Status_OK && len(c.Args) >= 3 {
+			// c.Args[1] is sub_id => clientId:fp
+			parts := strings.SplitN(c.Args[1], ":", 2)
+			if len(parts) == 2 {
+				if fp, perr := strconv.ParseUint(parts[1], 10, 64); perr == nil {
+					watchManager.RebindClientForFP(fp, t.ClientID)
+				}
+			}
+		}
 
 		// Send responses:
 		// - Non-watch commands: always send directly (legacy behavior)
