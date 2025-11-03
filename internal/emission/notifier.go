@@ -109,68 +109,7 @@ func (n *Notifier) loop(ctx context.Context) {
 				n.mgr.ApplyOutboxPurge(ctx, ack.SubID, ack.EmitSeq)
 			}
 		case <-t.C:
-			// scan pending and send, sub by sub
-			subs := n.mgr.SubsWithPending()
-			if n.bucketID != "" {
-				Metrics.SetSubsWithPendingFor(n.bucketID, len(subs))
-			} else {
-				Metrics.SetSubsWithPending(len(subs))
-			}
-			for _, sub := range subs {
-				entries := n.mgr.Pending(sub)
-				for _, e := range entries {
-					// Skip resending entries already sent up to this commit index.
-					n.sentMu.Lock()
-					lastSent := n.sentThrough[sub]
-					n.sentMu.Unlock()
-					if e.Seq.CommitIndex <= lastSent {
-						continue
-					}
-					// honor resume point if present for this sub
-					n.resumeMu.Lock()
-					resumeIdx := n.resumeFrom[sub]
-					n.resumeMu.Unlock()
-					if resumeIdx > 0 && e.Seq.CommitIndex < resumeIdx {
-						continue // skip older entries until reaching resume point
-					}
-					ev := &DataEvent{SubID: sub, EmitSeq: e.Seq, Delta: e.Delta}
-					sender := n.getSender()
-					if sender == nil {
-						slog.Warn("no sender set; skipping delivery", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
-						break
-					}
-					start := time.Now()
-					if err := sender.Send(ctx, ev); err != nil {
-						// Differentiate expected transient conditions to avoid noisy logs.
-						msg := err.Error()
-						if strings.Contains(msg, "not leader") || strings.Contains(msg, "no transport") ||
-							strings.Contains(msg, "no active thread") || strings.Contains(msg, "no recipients") {
-							slog.Debug("send deferred", slog.String("reason", msg), slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
-						} else {
-							slog.Warn("send failed; will retry on next tick", slog.Any("error", err), slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
-						}
-						break // backoff this sub until next tick
-					}
-					// Mark this commit index as sent for this subscription to avoid spamming until ACK.
-					n.sentMu.Lock()
-					if lastSent < e.Seq.CommitIndex {
-						n.sentThrough[sub] = e.Seq.CommitIndex
-					}
-					n.sentMu.Unlock()
-					if n.bucketID != "" {
-						Metrics.ObserveSendFor(n.bucketID, time.Since(start))
-					} else {
-						Metrics.ObserveSend(time.Since(start))
-					}
-					slog.Debug("SEND", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
-					// If we had a resume threshold and we reached/surpassed it, clear it
-					if resumeIdx > 0 && e.Seq.CommitIndex >= resumeIdx {
-						n.resumeMu.Lock()
-						delete(n.resumeFrom, sub)
-						n.resumeMu.Unlock()
-					}
-				}
-			}
+			n.processTick(ctx)
 		}
 	}
 }
@@ -192,4 +131,102 @@ func (n *Notifier) SetResumeFrom(sub string, nextCommitIdx uint64) {
 		n.sentThrough[sub] = nextCommitIdx - 1
 	}
 	n.sentMu.Unlock()
+}
+
+// processAcks drains the ack channel once and applies purges/metrics. Intended for deterministic tests.
+func (n *Notifier) processAcks(ctx context.Context) {
+	for {
+		select {
+		case ack := <-n.ackCh:
+			if ok := n.mgr.ValidateAck(ack.SubID, ack.EmitSeq); !ok {
+				slog.Warn("ACK regression or duplicate", slog.String("sub_id", ack.SubID), slog.String("emit_seq", ack.EmitSeq.String()))
+				continue
+			}
+			n.sentMu.Lock()
+			if last, ok := n.sentThrough[ack.SubID]; !ok || last < ack.EmitSeq.CommitIndex {
+				n.sentThrough[ack.SubID] = ack.EmitSeq.CommitIndex
+			}
+			n.sentMu.Unlock()
+			if n.bucketID != "" {
+				Metrics.IncAckFor(n.bucketID)
+			} else {
+				Metrics.IncAck()
+			}
+			if n.proposer != nil {
+				if err := n.proposer.ProposePurge(ctx, ack.SubID, ack.EmitSeq); err != nil {
+					slog.Error("propose purge failed", slog.Any("error", err))
+				}
+			} else {
+				n.mgr.ApplyOutboxPurge(ctx, ack.SubID, ack.EmitSeq)
+			}
+		default:
+			return
+		}
+	}
+}
+
+// processTick performs one deterministic scan-send pass over pending entries. Intended for tests.
+func (n *Notifier) processTick(ctx context.Context) {
+	// scan pending and send, sub by sub
+	subs := n.mgr.SubsWithPending()
+	if n.bucketID != "" {
+		Metrics.SetSubsWithPendingFor(n.bucketID, len(subs))
+	} else {
+		Metrics.SetSubsWithPending(len(subs))
+	}
+	for _, sub := range subs {
+		entries := n.mgr.Pending(sub)
+		for _, e := range entries {
+			// Skip resending entries already sent up to this commit index.
+			n.sentMu.Lock()
+			lastSent := n.sentThrough[sub]
+			n.sentMu.Unlock()
+			if e.Seq.CommitIndex <= lastSent {
+				continue
+			}
+			// honor resume point if present for this sub
+			n.resumeMu.Lock()
+			resumeIdx := n.resumeFrom[sub]
+			n.resumeMu.Unlock()
+			if resumeIdx > 0 && e.Seq.CommitIndex < resumeIdx {
+				continue // skip older entries until reaching resume point
+			}
+			ev := &DataEvent{SubID: sub, EmitSeq: e.Seq, Delta: e.Delta}
+			sender := n.getSender()
+			if sender == nil {
+				slog.Warn("no sender set; skipping delivery", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
+				break
+			}
+			start := time.Now()
+			if err := sender.Send(ctx, ev); err != nil {
+				// Differentiate expected transient conditions to avoid noisy logs.
+				msg := err.Error()
+				if strings.Contains(msg, "not leader") || strings.Contains(msg, "no transport") ||
+					strings.Contains(msg, "no active thread") || strings.Contains(msg, "no recipients") {
+					slog.Debug("send deferred", slog.String("reason", msg), slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
+				} else {
+					slog.Warn("send failed; will retry on next tick", slog.Any("error", err), slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
+				}
+				break // backoff this sub until next tick
+			}
+			// Mark this commit index as sent for this subscription to avoid spamming until ACK.
+			n.sentMu.Lock()
+			if lastSent < e.Seq.CommitIndex {
+				n.sentThrough[sub] = e.Seq.CommitIndex
+			}
+			n.sentMu.Unlock()
+			if n.bucketID != "" {
+				Metrics.ObserveSendFor(n.bucketID, time.Since(start))
+			} else {
+				Metrics.ObserveSend(time.Since(start))
+			}
+			slog.Debug("SEND", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
+			// If we had a resume threshold and we reached/surpassed it, clear it
+			if resumeIdx > 0 && e.Seq.CommitIndex >= resumeIdx {
+				n.resumeMu.Lock()
+				delete(n.resumeFrom, sub)
+				n.resumeMu.Unlock()
+			}
+		}
+	}
 }
