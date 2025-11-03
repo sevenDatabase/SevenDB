@@ -2,6 +2,7 @@ package ironhawk
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -71,6 +72,9 @@ func (b *BridgeSender) Send(ctx context.Context, ev *emission.DataEvent) error {
 			} else {
 				delivered = 1
 			}
+		} else {
+			// No active thread for the target client; signal back so caller can retry later or rebind.
+			return fmt.Errorf("bridge: no active thread for client %s", clientID)
 		}
 	} else {
 		// Fallback: broadcast (development only)
@@ -93,6 +97,10 @@ func (b *BridgeSender) Send(ctx context.Context, ev *emission.DataEvent) error {
 		}
 	}
 	slog.Debug("bridge delivered", slog.Int("count", delivered), slog.String("sub_id", ev.SubID), slog.String("emit_seq", ev.EmitSeq.String()))
+	if delivered == 0 {
+		// If we reached here, either broadcast delivered none (no clients), or sub_id path had no thread.
+		return fmt.Errorf("bridge: no recipients for sub_id %s", ev.SubID)
+	}
 	return nil
 }
 

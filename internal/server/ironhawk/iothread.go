@@ -139,6 +139,11 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 				continue
 			}
 			watchRegistered = true
+			// Ensure this fingerprint routes to the current connection's clientID.
+			// This addresses the case where, after a restart, WAL-replayed subscriptions
+			// still point at a stale clientID. Rebind to this connection so future
+			// emissions are delivered here.
+			watchManager.RebindClientForFP(_c.Fingerprint(), t.ClientID)
 		} else if strings.HasSuffix(c.Cmd, "UNWATCH") {
 			if err := watchManager.HandleUnwatch(_c, t); err != nil {
 				errRes := &wire.Result{Status: wire.Status_ERR, Message: err.Error()}

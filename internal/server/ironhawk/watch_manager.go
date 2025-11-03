@@ -37,6 +37,22 @@ func NewWatchManager() *WatchManager {
 	}
 }
 
+// RebindClientForFP updates the subscription mapping for a given fingerprint to the provided clientID.
+// This is useful after server restarts where WAL-replayed subscriptions may reference stale client IDs.
+// It ensures future emissions for this fingerprint target the active connection's clientID.
+func (w *WatchManager) RebindClientForFP(fp uint64, newClientID string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.fpClientMap[fp] == nil {
+		w.fpClientMap[fp] = make(map[string]bool)
+	}
+	// Remove all existing clientIDs for this fingerprint and bind only the new one.
+	for cid := range w.fpClientMap[fp] {
+		delete(w.fpClientMap[fp], cid)
+	}
+	w.fpClientMap[fp][newClientID] = true
+}
+
 func (w *WatchManager) RegisterThread(t *IOThread) {
 	// Register (or refresh) the IOThread for the client irrespective of its mode.
 	//
