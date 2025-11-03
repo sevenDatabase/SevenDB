@@ -232,23 +232,23 @@ func (w *WatchManager) NotifyWatchers(c *cmd.Cmd, shardManager *shardmanager.Sha
 			// fallthrough to legacy path below
 		} else {
 			// Snapshot fingerprints for this key and their subscribers/commands under lock
-		type fpInfo struct {
-			fp   uint64
-			cmd  *cmd.Cmd
-			subs []string
-		}
-		fps := make([]fpInfo, 0, 4)
-		w.mu.RLock()
-		for fp := range w.keyFPMap[key] {
-			_c := w.fpCmdMap[fp]
-			// Collect subscribers for this fingerprint
-			var subs []string
-			for clientID := range w.fpClientMap[fp] {
-				subs = append(subs, clientID)
+			type fpInfo struct {
+				fp   uint64
+				cmd  *cmd.Cmd
+				subs []string
 			}
-			fps = append(fps, fpInfo{fp: fp, cmd: _c, subs: subs})
-		}
-		w.mu.RUnlock()
+			fps := make([]fpInfo, 0, 4)
+			w.mu.RLock()
+			for fp := range w.keyFPMap[key] {
+				_c := w.fpCmdMap[fp]
+				// Collect subscribers for this fingerprint
+				var subs []string
+				for clientID := range w.fpClientMap[fp] {
+					subs = append(subs, clientID)
+				}
+				fps = append(fps, fpInfo{fp: fp, cmd: _c, subs: subs})
+			}
+			w.mu.RUnlock()
 			// For each fingerprint, execute the stored watch command to compute delta and propose events
 			for _, f := range fps {
 				if f.cmd == nil {

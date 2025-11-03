@@ -138,10 +138,14 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 		slog.Info("raft enabled for shards", slog.Int("count", shardCount), slog.Uint64("local_id", sm.localRaftID))
 		// Log initial leadership snapshot for quick diagnostics after restart
 		for i, rn := range sm.raftNodes {
-			if rn == nil { continue }
+			if rn == nil {
+				continue
+			}
 			st := rn.Status()
 			role := "follower"
-			if st.IsLeader { role = "leader" }
+			if st.IsLeader {
+				role = "leader"
+			}
 			slog.Info("raft shard status", slog.Int("shard", i), slog.String("role", role), slog.Uint64("lastApplied", st.LastAppliedIndex))
 		}
 		// Early best-effort initial status write (honors explicit status-file-path if provided)

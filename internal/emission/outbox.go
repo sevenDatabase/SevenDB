@@ -189,7 +189,7 @@ func (m *Manager) RebindByFingerprint(fp uint64, newClientID string) (string, st
 	m.ob.mu.RUnlock()
 	if oldSub == "" {
 		// Nothing to migrate
-		return "", newClientID+":"+strconv.FormatUint(fp, 10), 0
+		return "", newClientID + ":" + strconv.FormatUint(fp, 10), 0
 	}
 	newSub := newClientID + ":" + strconv.FormatUint(fp, 10)
 	if oldSub == newSub {
