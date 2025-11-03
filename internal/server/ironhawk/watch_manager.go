@@ -211,11 +211,6 @@ func (w *WatchManager) NotifyWatchers(c *cmd.Cmd, shardManager *shardmanager.Sha
 	if config.Config != nil && config.Config.EmissionContractEnabled && config.Config.RaftEnabled {
 		// Determine shard by key to map to the correct raft node; ensure raft node exists
 		key := c.Key()
-		shard := shardManager.GetShardForKey(key)
-		shardIdx := 0
-		if shard != nil {
-			shardIdx = shard.ID
-		}
 		// If raft is not enabled for this key/shard (nil rn), skip emission path and use legacy send
 		if rn := shardManager.GetRaftNodeForKey(key); rn == nil {
 			// fallthrough to legacy path below
@@ -269,7 +264,8 @@ func (w *WatchManager) NotifyWatchers(c *cmd.Cmd, shardManager *shardmanager.Sha
 				deltaBytes := []byte(deltaStr)
 				for _, clientID := range f.subs {
 					subID := fmt.Sprintf("%s:%d", clientID, f.fp)
-					if err := shardManager.ProposeDataEvent(context.Background(), shardIdx, subID, deltaBytes); err != nil {
+					// Propose by key to ensure the correct shard's raft group is used
+					if err := shardManager.ProposeDataEventForKey(context.Background(), key, subID, deltaBytes); err != nil {
 						slog.Warn("emission-contract: propose DATA_EVENT failed", slog.String("sub_id", subID), slog.Any("error", err))
 					}
 				}

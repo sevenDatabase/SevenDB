@@ -130,6 +130,8 @@ func NewShardManager(shardCount int, globalErrorChan chan error) *ShardManager {
 				sm.emissionAppliers[i] = applier
 				sm.emissionGates[i] = gate
 				sm.notifierControllers[i] = newLeaderNotifierController(cfg.ShardID, rn, gate)
+				// Start leader controller so the gated sender is enabled on the leader and disabled on followers.
+				sm.notifierControllers[i].Start(context.Background())
 				slog.Info("emission contract enabled for shard", slog.Int("shard", i), slog.String("bucket_uuid", cfg.ShardID))
 			}
 		}

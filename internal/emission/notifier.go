@@ -34,6 +34,10 @@ type Notifier struct {
 	// resumeFrom optionally holds the next commit index to resume from per sub after reconnect
 	resumeMu   sync.Mutex
 	resumeFrom map[string]uint64
+	// sentThrough tracks the highest commit index already sent to a sub (but not necessarily ACKed yet).
+	// This prevents resending the same entry on every poll tick and spamming clients when ACKs lag.
+	sentMu      sync.Mutex
+	sentThrough map[string]uint64
 	// bucketID labels metrics for this notifier's shard/bucket
 	bucketID string
 }
@@ -44,7 +48,7 @@ func NewNotifier(mgr *Manager, sender Sender, proposer Proposer, bucketID string
 	if config.Config != nil && config.Config.EmissionNotifierPollMs > 0 {
 		pollMs = config.Config.EmissionNotifierPollMs
 	}
-	return &Notifier{mgr: mgr, sender: sender, proposer: proposer, ackCh: make(chan *ClientAck, 1024), interval: time.Duration(pollMs) * time.Millisecond, stopCh: make(chan struct{}), resumeFrom: make(map[string]uint64), bucketID: bucketID}
+	return &Notifier{mgr: mgr, sender: sender, proposer: proposer, ackCh: make(chan *ClientAck, 1024), interval: time.Duration(pollMs) * time.Millisecond, stopCh: make(chan struct{}), resumeFrom: make(map[string]uint64), sentThrough: make(map[string]uint64), bucketID: bucketID}
 }
 
 // Ack injects a client ack (test/simulated path for now).
@@ -84,6 +88,12 @@ func (n *Notifier) loop(ctx context.Context) {
 				slog.Warn("ACK regression or duplicate", slog.String("sub_id", ack.SubID), slog.String("emit_seq", ack.EmitSeq.String()))
 				continue
 			}
+			// Advance sentThrough watermark up to the acked index for this sub.
+			n.sentMu.Lock()
+			if last, ok := n.sentThrough[ack.SubID]; !ok || last < ack.EmitSeq.CommitIndex {
+				n.sentThrough[ack.SubID] = ack.EmitSeq.CommitIndex
+			}
+			n.sentMu.Unlock()
 			if n.bucketID != "" {
 				Metrics.IncAckFor(n.bucketID)
 			} else {
@@ -108,6 +118,13 @@ func (n *Notifier) loop(ctx context.Context) {
 			for _, sub := range subs {
 				entries := n.mgr.Pending(sub)
 				for _, e := range entries {
+					// Skip resending entries already sent up to this commit index.
+					n.sentMu.Lock()
+					lastSent := n.sentThrough[sub]
+					n.sentMu.Unlock()
+					if e.Seq.CommitIndex <= lastSent {
+						continue
+					}
 					// honor resume point if present for this sub
 					n.resumeMu.Lock()
 					resumeIdx := n.resumeFrom[sub]
@@ -126,6 +143,12 @@ func (n *Notifier) loop(ctx context.Context) {
 						slog.Warn("send failed; will retry on next tick", slog.Any("error", err), slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 						break // backoff this sub until next tick
 					}
+					// Mark this commit index as sent for this subscription to avoid spamming until ACK.
+					n.sentMu.Lock()
+					if lastSent < e.Seq.CommitIndex {
+						n.sentThrough[sub] = e.Seq.CommitIndex
+					}
+					n.sentMu.Unlock()
 					if n.bucketID != "" {
 						Metrics.ObserveSendFor(n.bucketID, time.Since(start))
 					} else {
@@ -150,7 +173,15 @@ func (n *Notifier) SetResumeFrom(sub string, nextCommitIdx uint64) {
 	defer n.resumeMu.Unlock()
 	if nextCommitIdx == 0 {
 		delete(n.resumeFrom, sub)
+		// Do not reset sentThrough here; harmless to keep last sent watermark.
 		return
 	}
 	n.resumeFrom[sub] = nextCommitIdx
+	// Ensure sentThrough watermark does not prevent resuming from requested index.
+	n.sentMu.Lock()
+	if last, ok := n.sentThrough[sub]; ok && last >= nextCommitIdx {
+		// Set just before resume index so notifier will deliver from resume index next.
+		n.sentThrough[sub] = nextCommitIdx - 1
+	}
+	n.sentMu.Unlock()
 }
