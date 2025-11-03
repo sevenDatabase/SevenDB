@@ -471,6 +471,24 @@ func (manager *ShardManager) EmissionReconnectForKey(key string, req emission.Re
 	return mgr.Reconnect(req)
 }
 
+// EmissionRebindForKey migrates pending outbox entries for fingerprint fp to the current clientID for the shard owning key.
+// No-op if emission is disabled. Returns true if any entries were moved.
+func (manager *ShardManager) EmissionRebindForKey(key string, fp uint64, newClientID string) bool {
+	if manager == nil || manager.emissionMgrs == nil {
+		return false
+	}
+	idx := int(xxhash.Sum64String(key) % uint64(manager.ShardCount()))
+	if idx < 0 || idx >= len(manager.emissionMgrs) {
+		return false
+	}
+	mgr := manager.emissionMgrs[idx]
+	if mgr == nil {
+		return false
+	}
+	_, _, moved := mgr.RebindByFingerprint(fp, newClientID)
+	return moved > 0
+}
+
 // BucketLogFor returns a bucket log implementation for the shard index. When raft is enabled
 // it returns a RaftBucketLog; otherwise a file-backed log. Errors are logged and a nil may be returned.
 func (manager *ShardManager) BucketLogFor(shardIdx int) bucket.BucketLog {

@@ -2,6 +2,7 @@ package cmd
 
 import (
     "strconv"
+    "strings"
 
     "github.com/dicedb/dicedb-go/wire"
     "github.com/sevenDatabase/SevenDB/internal/emission"
@@ -56,6 +57,20 @@ var cEMITRECONNECT = &CommandMeta{
         case emission.ReconnectOK:
             if n != nil {
                 n.SetResumeFrom(subID, ack.NextCommitIndex)
+            }
+            // Rebind pending outbox entries and watermarks to the current client's subID
+            // Extract fingerprint from subID suffix and compute the new subID using this connection's clientID
+            // c.ClientID is the current connection id; subID is "oldClient:fp" possibly from before restart
+            var fp uint64
+            if parts := strings.SplitN(subID, ":", 2); len(parts) == 2 {
+                if v, perr := strconv.ParseUint(parts[1], 10, 64); perr == nil {
+                    fp = v
+                }
+            }
+            if fp != 0 {
+                // Run the rebind on the shard's manager
+                // We don't expose manager directly; add a helper through shard manager for this key
+                _ = sm.EmissionRebindForKey(key, fp, c.ClientID)
             }
             res.Rs.Status = wire.Status_OK
             res.Rs.Message = "OK " + strconv.FormatUint(ack.NextCommitIndex, 10)

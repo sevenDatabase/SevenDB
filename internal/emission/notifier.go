@@ -143,7 +143,8 @@ func (n *Notifier) loop(ctx context.Context) {
 					if err := sender.Send(ctx, ev); err != nil {
 						// Differentiate expected transient conditions to avoid noisy logs.
 						msg := err.Error()
-						if strings.Contains(msg, "not leader") || strings.Contains(msg, "no transport") {
+						if strings.Contains(msg, "not leader") || strings.Contains(msg, "no transport") ||
+							strings.Contains(msg, "no active thread") || strings.Contains(msg, "no recipients") {
 							slog.Debug("send deferred", slog.String("reason", msg), slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 						} else {
 							slog.Warn("send failed; will retry on next tick", slog.Any("error", err), slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sort"
+	"strconv"
 	"sync"
 )
 
@@ -169,6 +170,75 @@ func (m *Manager) SubsWithPending() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// RebindByFingerprint migrates all pending entries and watermarks for a subscription identified by
+// its fingerprint suffix to a new clientID (forming newSubID = clientID+":"+fp).
+// Returns the old subID it migrated from (if any), the new subID, and the number of entries moved.
+func (m *Manager) RebindByFingerprint(fp uint64, newClientID string) (string, string, int) {
+	fpSuffix := ":" + strconv.FormatUint(fp, 10)
+	var oldSub string
+	// Locate an existing sub that matches the fingerprint and has pending entries.
+	m.ob.mu.RLock()
+	for sub := range m.ob.bySub {
+		if len(sub) > len(fpSuffix) && sub[len(sub)-len(fpSuffix):] == fpSuffix {
+			oldSub = sub
+			break
+		}
+	}
+	m.ob.mu.RUnlock()
+	if oldSub == "" {
+		// Nothing to migrate
+		return "", newClientID+":"+strconv.FormatUint(fp, 10), 0
+	}
+	newSub := newClientID + ":" + strconv.FormatUint(fp, 10)
+	if oldSub == newSub {
+		return oldSub, newSub, 0
+	}
+
+	// Move entries under lock
+	m.ob.mu.Lock()
+	oldMap := m.ob.bySub[oldSub]
+	if oldMap == nil {
+		m.ob.mu.Unlock()
+		return oldSub, newSub, 0
+	}
+	if _, ok := m.ob.bySub[newSub]; !ok {
+		m.ob.bySub[newSub] = make(map[uint64]*OutboxEntry)
+	}
+	moved := 0
+	for idx, e := range oldMap {
+		// rewrite subID and move
+		if e != nil {
+			e.SubID = newSub
+		}
+		m.ob.bySub[newSub][idx] = e
+		delete(oldMap, idx)
+		moved++
+	}
+	if len(oldMap) == 0 {
+		delete(m.ob.bySub, oldSub)
+	}
+	m.ob.mu.Unlock()
+
+	// Move watermarks
+	m.mu.Lock()
+	if v, ok := m.lastAck[oldSub]; ok {
+		if cur, ok2 := m.lastAck[newSub]; !ok2 || v > cur {
+			m.lastAck[newSub] = v
+		}
+		delete(m.lastAck, oldSub)
+	}
+	if v, ok := m.compactThrough[oldSub]; ok {
+		if cur, ok2 := m.compactThrough[newSub]; !ok2 || v > cur {
+			m.compactThrough[newSub] = v
+		}
+		delete(m.compactThrough, oldSub)
+	}
+	m.mu.Unlock()
+
+	slog.Info("rebinding subscription", slog.String("from", oldSub), slog.String("to", newSub), slog.Int("moved_entries", moved))
+	return oldSub, newSub, moved
 }
 
 // SetCompactedThrough updates per-sub compacted watermark.
