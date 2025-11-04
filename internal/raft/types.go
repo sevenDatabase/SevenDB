@@ -308,23 +308,26 @@ func (s *ShardRaftNode) SetReplicationHandler(handler func(*ReplicationPayload) 
 
 // invokeReplicationHandler centralizes decoding & error policy for application
 // command entries.
-func (s *ShardRaftNode) invokeReplicationHandler(rec *RaftLogRecord) {
+// invokeReplicationHandler applies the replication handler and returns true when
+// a strict-mode fatal error occurred (caller should abort proposal rather than panic).
+func (s *ShardRaftNode) invokeReplicationHandler(rec *RaftLogRecord) (fatal bool) {
 	if rec == nil || rec.Type != RaftRecordTypeAppCommand || s.replicationHandler == nil || len(rec.Payload) == 0 {
-		return
+		return false
 	}
 	var pl ReplicationPayload
 	if err := json.Unmarshal(rec.Payload, &pl); err != nil {
 		slog.Warn("replication payload decode failed", slog.String("shard", s.shardID), slog.Any("error", err))
-		return
+		return false
 	}
 	if err := s.replicationHandler(&pl); err != nil {
 		if s.replicationStrict {
 			slog.Error("replication handler fatal error", slog.String("shard", s.shardID), slog.Any("error", err))
-			panic(fmt.Sprintf("replication handler error (strict): %v", err))
+			return true
 		}
 		slog.Warn("replication handler error", slog.String("shard", s.shardID), slog.Any("error", err))
 	}
-}
+	    return false
+	}
 
 // StatusSnapshot is a lightweight snapshot of raft node state for observability.
 type StatusSnapshot struct {
@@ -854,7 +857,15 @@ func (s *ShardRaftNode) apply(raftIndex uint64, rec *RaftLogRecord) {
 
 	cr := &CommittedRecord{RaftIndex: raftIndex, Term: 1, CommitIndex: commitIdx, Record: rec}
 	// Apply application-level state mutation (stub engine)
-	s.invokeReplicationHandler(rec)
+	fatal := s.invokeReplicationHandler(rec)
+	if fatal {
+		// Abort waiter with nil result to signal ErrProposalAborted to the proposer.
+		if waiter != nil {
+			waiter <- nil
+			close(waiter)
+		}
+		return
+	}
 	// TODO: optionally mirror shadow WAL here in stub engine to allow deterministic harness parity tests for migration.
 	// Non-blocking send with small timeout to avoid deadlock if consumer slow
 	select {
@@ -1327,7 +1338,15 @@ func (s *ShardRaftNode) processReady(rd etcdraft.Ready) {
 				s.mu.Unlock()
 				if rec.BucketID != "" { // only invoke handler & channel for real app commands
 					cr := &CommittedRecord{RaftIndex: ent.Index, Term: ent.Term, CommitIndex: commitIdx, Record: rec}
-					s.invokeReplicationHandler(rec)
+					fatal := s.invokeReplicationHandler(rec)
+					if fatal {
+						// Abort waiter in strict mode to propagate error to proposer without panicking.
+						if waiter != nil {
+							func(c chan *ProposalResult) { defer func() { recover() }(); c <- nil; close(c) }(waiter)
+						}
+						// Do not emit committed notification for aborted command.
+						continue
+					}
 					if committedCh != nil {
 						func() {
 							defer func() {
