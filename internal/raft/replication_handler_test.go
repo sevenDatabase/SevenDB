@@ -27,7 +27,7 @@ func TestReplicationHandlerInvoked(t *testing.T) {
     }
 }
 
-func TestReplicationHandlerStrictPanicsOnError(t *testing.T) {
+func TestReplicationHandlerStrictAbortsProposalOnError(t *testing.T) {
     n, err := NewShardRaftNode(RaftConfig{ShardID: "h2", Engine: "stub"})
     if err != nil { t.Fatalf("new node: %v", err) }
     defer n.Close()
@@ -35,14 +35,14 @@ func TestReplicationHandlerStrictPanicsOnError(t *testing.T) {
     n.SetReplicationHandler(func(pl *ReplicationPayload) error {
         return assertError("boom")
     }, true)
-
-    defer func() {
-        if r := recover(); r == nil {
-            t.Fatalf("expected panic in strict mode")
-        }
-    }()
     rec, _ := BuildReplicationRecord("h2", "X", nil)
-    _, _, _ = n.ProposeAndWait(context.Background(), rec)
+    _, _, perr := n.ProposeAndWait(context.Background(), rec)
+    if perr == nil {
+        t.Fatalf("expected proposal abort error in strict mode")
+    }
+    if perr != ErrProposalAborted {
+        t.Fatalf("expected ErrProposalAborted, got %v", perr)
+    }
 }
 
 // assertError implements error for test clarity.
