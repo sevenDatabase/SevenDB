@@ -42,6 +42,9 @@ type Notifier struct {
 	// simple ticker-based poll for pending.
 	interval time.Duration
 	stopCh   chan struct{}
+	// test hooks captured at start to avoid races with package-level test vars
+	hookBeforeSend           func(sub string, seq EmitSeq)
+	hookAfterSendBeforeAck   func(sub string, seq EmitSeq)
 	// resumeFrom optionally holds the next commit index to resume from per sub after reconnect
 	resumeMu   sync.Mutex
 	resumeFrom map[string]uint64
@@ -79,6 +82,9 @@ func (n *Notifier) getSender() Sender {
 }
 
 func (n *Notifier) Start(ctx context.Context) {
+	// Capture current test hooks once to avoid data races if tests mutate globals later.
+	n.hookBeforeSend = TestHookBeforeSend
+	n.hookAfterSendBeforeAck = TestHookAfterSendBeforeAck
 	go n.loop(ctx)
 }
 
@@ -207,9 +213,9 @@ func (n *Notifier) processTick(ctx context.Context) {
 				slog.Warn("no sender set; skipping delivery", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 				break
 			}
-			if TestHookBeforeSend != nil {
+			if n.hookBeforeSend != nil {
 				// Best-effort; hooks should not panic the notifier loop.
-				func() { defer func() { _ = recover() }(); TestHookBeforeSend(sub, e.Seq) }()
+				func() { defer func() { _ = recover() }(); n.hookBeforeSend(sub, e.Seq) }()
 				// If a test simulates a crash via context cancellation in the hook,
 				// skip sending on this tick to model crash-before-send.
 				select {
@@ -230,8 +236,8 @@ func (n *Notifier) processTick(ctx context.Context) {
 				}
 				break // backoff this sub until next tick
 			}
-			if TestHookAfterSendBeforeAck != nil {
-				func() { defer func() { _ = recover() }(); TestHookAfterSendBeforeAck(sub, e.Seq) }()
+			if n.hookAfterSendBeforeAck != nil {
+				func() { defer func() { _ = recover() }(); n.hookAfterSendBeforeAck(sub, e.Seq) }()
 			}
 			// Mark this commit index as sent for this subscription to avoid spamming until ACK.
 			n.sentMu.Lock()

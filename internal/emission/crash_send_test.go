@@ -47,18 +47,19 @@ func TestEmission_CrashBeforeSend_ExactlyOnce(t *testing.T) {
     ctx, cancel := context.WithCancel(context.Background())
     defer cancel()
     ap := emission.NewApplier(n, mgr, "crash-sym"); ap.Start(ctx)
-    sender1 := &emission.MemorySender{}
-    nt1 := emission.NewNotifier(mgr, sender1, &emission.RaftProposer{Node: n, BucketID: "crash-sym"}, "crash-sym")
-    nt1.Start(ctx)
 
-    waitLeader(t, n, 2*time.Second)
-
-    // Crash just before the first send
+    // Install hook BEFORE starting notifier to avoid data-race and ensure capture.
     var once sync.Once
     emission.TestHookBeforeSend = func(sub string, seq emission.EmitSeq) {
         once.Do(func(){ cancel() /* stop notifier/applier */ })
     }
     t.Cleanup(func(){ emission.TestHookBeforeSend = nil })
+
+    sender1 := &emission.MemorySender{}
+    nt1 := emission.NewNotifier(mgr, sender1, &emission.RaftProposer{Node: n, BucketID: "crash-sym"}, "crash-sym")
+    nt1.Start(ctx)
+
+    waitLeader(t, n, 2*time.Second)
 
     // Propose a single data event
     rec, _ := raft.BuildReplicationRecord("crash-sym", "DATA_EVENT", []string{"c1:424242", "payload-1"})
@@ -95,18 +96,19 @@ func TestEmission_CrashAfterSendBeforeAck_AtLeastOnceWithDedupe(t *testing.T) {
     emission.RegisterWithShard(n, mgr)
     ctx, cancel := context.WithCancel(context.Background())
     ap := emission.NewApplier(n, mgr, "crash-sym2"); ap.Start(ctx)
-    sender1 := &emission.MemorySender{}
-    nt1 := emission.NewNotifier(mgr, sender1, &emission.RaftProposer{Node: n, BucketID: "crash-sym2"}, "crash-sym2")
-    nt1.Start(ctx)
 
-    waitLeader(t, n, 2*time.Second)
-
-    // Crash right after the first successful send, before any ack
+    // Install hook BEFORE starting notifier to avoid data-race and ensure capture.
     var once sync.Once
     emission.TestHookAfterSendBeforeAck = func(sub string, seq emission.EmitSeq) {
         once.Do(func(){ cancel() })
     }
     t.Cleanup(func(){ emission.TestHookAfterSendBeforeAck = nil })
+
+    sender1 := &emission.MemorySender{}
+    nt1 := emission.NewNotifier(mgr, sender1, &emission.RaftProposer{Node: n, BucketID: "crash-sym2"}, "crash-sym2")
+    nt1.Start(ctx)
+
+    waitLeader(t, n, 2*time.Second)
 
     rec, _ := raft.BuildReplicationRecord("crash-sym2", "DATA_EVENT", []string{"c1:424242", "payload-1"})
     if _, _, err := n.ProposeAndWait(context.Background(), rec); err != nil { t.Fatalf("propose: %v", err) }
