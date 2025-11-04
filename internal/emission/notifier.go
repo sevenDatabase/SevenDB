@@ -10,6 +10,16 @@ import (
 	"github.com/sevenDatabase/SevenDB/config"
 )
 
+// Test hooks for crash window simulations in tests. These are no-ops in production
+// unless set by tests. Keep exported so external package tests can assign closures.
+// They MUST be fast and side-effect free unless intentionally used to simulate failures.
+var (
+	// TestHookBeforeSend fires right before a DataEvent is sent to the client.
+	TestHookBeforeSend func(sub string, seq EmitSeq)
+	// TestHookAfterSendBeforeAck fires immediately after a successful send, before any ACK is processed.
+	TestHookAfterSendBeforeAck func(sub string, seq EmitSeq)
+)
+
 // Sender abstracts transport to clients. Implementation can be gRPC/Websocket/etc.
 type Sender interface {
 	Send(ctx context.Context, ev *DataEvent) error
@@ -197,6 +207,17 @@ func (n *Notifier) processTick(ctx context.Context) {
 				slog.Warn("no sender set; skipping delivery", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 				break
 			}
+			if TestHookBeforeSend != nil {
+				// Best-effort; hooks should not panic the notifier loop.
+				func() { defer func() { _ = recover() }(); TestHookBeforeSend(sub, e.Seq) }()
+				// If a test simulates a crash via context cancellation in the hook,
+				// skip sending on this tick to model crash-before-send.
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+			}
 			start := time.Now()
 			if err := sender.Send(ctx, ev); err != nil {
 				// Differentiate expected transient conditions to avoid noisy logs.
@@ -208,6 +229,9 @@ func (n *Notifier) processTick(ctx context.Context) {
 					slog.Warn("send failed; will retry on next tick", slog.Any("error", err), slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 				}
 				break // backoff this sub until next tick
+			}
+			if TestHookAfterSendBeforeAck != nil {
+				func() { defer func() { _ = recover() }(); TestHookAfterSendBeforeAck(sub, e.Seq) }()
 			}
 			// Mark this commit index as sent for this subscription to avoid spamming until ACK.
 			n.sentMu.Lock()
