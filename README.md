@@ -187,7 +187,11 @@ Additional docs:
 - [WAL manifest, UWAL1, and integrity preamble](./docs/WAL_MANIFEST_AND_UWAL.md)
 - [Raft testing: deterministic and multi-machine](./docs/TESTING_RAFT.md#real-world-multi-machine-testing)
 - [Emission Contract architecture](./docs/src/content/docs/architecture/emission-contract.mdx)
-- [Emission Contract – operations & config](./docs/src/content/docs/emission-contract-ops.mdx)
+- [Emission} Contract – operations & config](./docs/src/content/docs/emission-contract-ops.mdx)
+
+##Determinism tests
+
+`go test ./internal/emission -run 'Determinism_Repeat100' -count=1` 
 
 ## Core Concepts
 
