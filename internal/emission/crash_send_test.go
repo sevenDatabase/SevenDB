@@ -65,8 +65,10 @@ func TestEmission_CrashBeforeSend_ExactlyOnce(t *testing.T) {
     rec, _ := raft.BuildReplicationRecord("crash-sym", "DATA_EVENT", []string{"c1:424242", "payload-1"})
     if _, _, err := n.ProposeAndWait(context.Background(), rec); err != nil { t.Fatalf("propose: %v", err) }
 
-    // Allow a few notifier ticks; since hook cancels context, nothing should be sent
-    time.Sleep(50 * time.Millisecond)
+    // Wait until the outbox reflects the DATA_EVENT as an OUTBOX_WRITE so notifier has something to send.
+    waitPending(t, mgr, 500*time.Millisecond)
+    // Deterministically process one notifier cycle; since hook cancels context, nothing should be sent
+    nt1.TestTickOnce(ctx)
     if got := len(sender1.Snapshot()); got != 0 { t.Fatalf("unexpected sends before restart: %d", got) }
 
     // Start a fresh notifier (simulating process restart of notifier) on the same manager
@@ -113,8 +115,10 @@ func TestEmission_CrashAfterSendBeforeAck_AtLeastOnceWithDedupe(t *testing.T) {
     rec, _ := raft.BuildReplicationRecord("crash-sym2", "DATA_EVENT", []string{"c1:424242", "payload-1"})
     if _, _, err := n.ProposeAndWait(context.Background(), rec); err != nil { t.Fatalf("propose: %v", err) }
 
-    // Wait for first notifier to (likely) deliver once before crash hook cancels it
-    time.Sleep(50 * time.Millisecond)
+    // Wait until the outbox reflects the DATA_EVENT as an OUTBOX_WRITE so notifier has something to send.
+    waitPending(t, mgr, 500*time.Millisecond)
+    // Deterministically process one notifier cycle to trigger the send before crash hook cancels it
+    nt1.TestTickOnce(ctx)
     firstSends := len(sender1.Snapshot())
     if firstSends < 1 { t.Fatalf("expected at least one send before crash, got %d", firstSends) }
 
@@ -125,14 +129,10 @@ func TestEmission_CrashAfterSendBeforeAck_AtLeastOnceWithDedupe(t *testing.T) {
     nt2 := emission.NewNotifier(mgr, sender2, &emission.RaftProposer{Node: n, BucketID: "crash-sym2"}, "crash-sym2")
     nt2.Start(ctx2)
 
-    // Collect resends and dedupe on client side
+    // Collect resends and dedupe on client side (drive a couple of cycles deterministically)
     d := &deduper{}
-    deadline := time.Now().Add(2 * time.Second)
-    for time.Now().Before(deadline) {
-        take := sender2.Snapshot()
-        if len(take) >= 1 { break }
-        time.Sleep(10 * time.Millisecond)
-    }
+    nt2.TestTickOnce(ctx2)
+    nt2.TestTickOnce(ctx2)
     totalSends := firstSends + len(sender2.Snapshot())
     if totalSends < 2 { t.Fatalf("expected duplicate resend across crash, total sends=%d", totalSends) }
     // Apply dedupe: only one unique (fp, emit_seq)
@@ -141,4 +141,20 @@ func TestEmission_CrashAfterSendBeforeAck_AtLeastOnceWithDedupe(t *testing.T) {
         if d.add(ev.SubID, ev.EmitSeq.CommitIndex) { uniq++ }
     }
     if uniq != 1 { t.Fatalf("expected 1 unique event after dedupe, got %d", uniq) }
+}
+
+// waitPending waits until at least one subscription has pending outbox entries
+// or fails after the provided timeout. This avoids racy sleeps and ensures the
+// Applier has proposed and applied OUTBOX_WRITE before notifier ticks.
+func waitPending(t *testing.T, mgr *emission.Manager, timeout time.Duration) {
+    t.Helper()
+    deadline := time.Now().Add(timeout)
+    for time.Now().Before(deadline) {
+        subs := mgr.SubsWithPending()
+        if len(subs) > 0 {
+            return
+        }
+        time.Sleep(5 * time.Millisecond)
+    }
+    t.Fatalf("outbox did not show pending entries within %v", timeout)
 }
