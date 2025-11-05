@@ -130,6 +130,16 @@ func (n *Notifier) loop(ctx context.Context) {
 	}
 }
 
+// TestTickOnce executes one deterministic cycle: drain acks and perform a single send scan.
+// Exported strictly for tests to avoid reliance on time.Ticker and sleeps.
+func (n *Notifier) TestTickOnce(ctx context.Context) {
+	n.processAcks(ctx)
+	n.processTick(ctx)
+}
+
+// TestProcessAcks drains the ack channel once (for tests).
+func (n *Notifier) TestProcessAcks(ctx context.Context) { n.processAcks(ctx) }
+
 // SetResumeFrom sets the next commit index to resume sending for a subscription.
 func (n *Notifier) SetResumeFrom(sub string, nextCommitIdx uint64) {
 	n.resumeMu.Lock()
@@ -210,7 +220,8 @@ func (n *Notifier) processTick(ctx context.Context) {
 			ev := &DataEvent{SubID: sub, EmitSeq: e.Seq, Delta: e.Delta}
 			sender := n.getSender()
 			if sender == nil {
-				slog.Warn("no sender set; skipping delivery", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
+				// follower or sender not yet wired; skip quietly to avoid log spam in multi-node tests
+				slog.Debug("no sender set; skipping delivery", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 				break
 			}
 			if n.hookBeforeSend != nil {
