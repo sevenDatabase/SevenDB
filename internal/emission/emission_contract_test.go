@@ -27,15 +27,14 @@ func TestOutboxSendAndAck(t *testing.T) {
 	n := emission.NewNotifier(mgr, sender, nil, "a")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	n.Start(ctx)
 
 	epoch := emission.EpochID{BucketUUID: "a", EpochCounter: 0}
 	// Apply two outbox writes
 	mgr.ApplyOutboxWrite(ctx, "c1:1", emission.EmitSeq{Epoch: epoch, CommitIndex: 1}, []byte("d1"))
 	mgr.ApplyOutboxWrite(ctx, "c1:1", emission.EmitSeq{Epoch: epoch, CommitIndex: 2}, []byte("d2"))
 
-	// Expect two sends in order
-	waitUntil(t, 2*time.Second, func() bool { return len(sender.Snapshot()) >= 2 })
+	// Expect two sends in order; drive deterministically
+	for i := 0; i < 200; i++ { if len(sender.Snapshot()) >= 2 { break }; n.TestTickOnce(ctx) }
 	evs := sender.Snapshot()
 	if evs[0].EmitSeq.CommitIndex != 1 || evs[1].EmitSeq.CommitIndex != 2 {
 		t.Fatalf("unexpected emit order: %+v", []uint64{evs[0].EmitSeq.CommitIndex, evs[1].EmitSeq.CommitIndex})
@@ -43,14 +42,21 @@ func TestOutboxSendAndAck(t *testing.T) {
 
 	// Ack first event (should leave second pending)
 	n.Ack(&emission.ClientAck{SubID: "c1:1", EmitSeq: emission.EmitSeq{Epoch: epoch, CommitIndex: 1}})
-	waitUntil(t, time.Second, func() bool { return len(mgr.Pending("c1:1")) == 1 })
+	// Process acks deterministically
+	n.TestProcessAcks(ctx)
+	if len(mgr.Pending("c1:1")) != 1 {
+		t.Fatalf("expected exactly one pending after first ack")
+	}
 	if got := mgr.Pending("c1:1")[0].Seq.CommitIndex; got != 2 {
 		t.Fatalf("expected only commit 2 pending, got %d", got)
 	}
 
 	// Ack second event (outbox empty)
 	n.Ack(&emission.ClientAck{SubID: "c1:1", EmitSeq: emission.EmitSeq{Epoch: epoch, CommitIndex: 2}})
-	waitUntil(t, time.Second, func() bool { return len(mgr.Pending("c1:1")) == 0 })
+	n.TestProcessAcks(ctx)
+	if len(mgr.Pending("c1:1")) != 0 {
+		t.Fatalf("expected no pending after second ack")
+	}
 }
 
 func TestReconnectSemantics(t *testing.T) {

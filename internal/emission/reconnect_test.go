@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/sevenDatabase/SevenDB/internal/determinism"
@@ -64,12 +63,12 @@ func TestEmission_Reconnect_OK_ResumesFromNextIndex(t *testing.T) {
 
 	// Resume from next index
 	n.SetResumeFrom(newSub, ack.NextCommitIndex)
-	n.Start(ctx)
-
+	// Drive deterministically until two sends are observed
+	for i := 0; i < 200; i++ {
+		if len(sender.Snapshot()) >= 2 { break }
+		n.TestTickOnce(ctx)
+	}
 	// Expect deliveries of 4 and 5 only
-	n.TestTickOnce(ctx)
-	n.TestTickOnce(ctx)
-	waitUntil(t, 2*time.Second, func() bool { return len(sender.Snapshot()) >= 2 })
 	evs := sender.Snapshot()
 	if len(evs) != 2 || evs[0].EmitSeq.CommitIndex != 4 || evs[1].EmitSeq.CommitIndex != 5 {
 		t.Fatalf("unexpected resume stream: got %v entries with heads %v,%v", len(evs),
@@ -108,8 +107,8 @@ func runReconnectOKHash(t *testing.T) string {
 		t.Fatalf("bad ack: %+v", ack)
 	}
 	n.SetResumeFrom(newSub, ack.NextCommitIndex)
-	n.Start(ctx)
-	waitUntil(t, 2*time.Second, func() bool { return len(sender.Snapshot()) >= 2 })
+	// Deterministically drive until two events delivered
+	for i := 0; i < 200; i++ { if len(sender.Snapshot()) >= 2 { break }; n.TestTickOnce(ctx) }
 	return reconHash(sender.Snapshot())
 }
 
@@ -148,13 +147,11 @@ func TestEmission_Reconnect_Stale_ResumesFromCompactedIndex(t *testing.T) {
 	}
 
 	n.SetResumeFrom(newSub, ack.NextCommitIndex)
-	n.Start(ctx)
-
-	// Expect deliveries starting at 4 (snapshot) then 5,6
-	n.TestTickOnce(ctx)
-	n.TestTickOnce(ctx)
-	n.TestTickOnce(ctx)
-	waitUntil(t, 2*time.Second, func() bool { return len(sender.Snapshot()) >= 3 })
+	// Expect deliveries starting at 4 (snapshot) then 5,6; drive deterministically
+	for i := 0; i < 300; i++ {
+		if len(sender.Snapshot()) >= 3 { break }
+		n.TestTickOnce(ctx)
+	}
 	evs := sender.Snapshot()
 	if len(evs) < 3 || evs[0].EmitSeq.CommitIndex != 4 || string(evs[0].Delta) != "SNAPSHOT@4" {
 		t.Fatalf("expected snapshot@4 first, got len=%d head=(%d,%s)", len(evs), evs[0].EmitSeq.CommitIndex, string(evs[0].Delta))

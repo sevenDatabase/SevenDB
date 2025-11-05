@@ -64,7 +64,6 @@ func TestEmission_CrashBeforeSend_ExactlyOnce(t *testing.T) {
 
 	sender1 := &emission.MemorySender{}
 	nt1 := emission.NewNotifier(mgr, sender1, &emission.RaftProposer{Node: n, BucketID: "crash-sym"}, "crash-sym")
-	nt1.Start(ctx)
 
 	waitLeader(t, n, 2*time.Second)
 
@@ -87,15 +86,10 @@ func TestEmission_CrashBeforeSend_ExactlyOnce(t *testing.T) {
 	defer cancel2()
 	sender2 := &emission.MemorySender{}
 	nt2 := emission.NewNotifier(mgr, sender2, &emission.RaftProposer{Node: n, BucketID: "crash-sym"}, "crash-sym")
-	nt2.Start(ctx2)
-
-	// Wait for exactly one delivery
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(sender2.Snapshot()) >= 1 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	// Deterministically drive until exactly one delivery observed
+	for i := 0; i < 200; i++ {
+		if len(sender2.Snapshot()) >= 1 { break }
+		nt2.TestTickOnce(ctx2)
 	}
 	if got := len(sender2.Snapshot()); got != 1 {
 		t.Fatalf("expected exactly one send after restart, got %d", got)
@@ -126,7 +120,6 @@ func TestEmission_CrashAfterSendBeforeAck_AtLeastOnceWithDedupe(t *testing.T) {
 
 	sender1 := &emission.MemorySender{}
 	nt1 := emission.NewNotifier(mgr, sender1, &emission.RaftProposer{Node: n, BucketID: "crash-sym2"}, "crash-sym2")
-	nt1.Start(ctx)
 
 	waitLeader(t, n, 2*time.Second)
 
@@ -149,8 +142,6 @@ func TestEmission_CrashAfterSendBeforeAck_AtLeastOnceWithDedupe(t *testing.T) {
 	defer cancel2()
 	sender2 := &emission.MemorySender{}
 	nt2 := emission.NewNotifier(mgr, sender2, &emission.RaftProposer{Node: n, BucketID: "crash-sym2"}, "crash-sym2")
-	nt2.Start(ctx2)
-
 	// Collect resends and dedupe on client side (drive a couple of cycles deterministically)
 	d := &deduper{}
 	nt2.TestTickOnce(ctx2)

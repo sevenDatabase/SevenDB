@@ -224,9 +224,14 @@ func (n *Notifier) processTick(ctx context.Context) {
 				slog.Debug("no sender set; skipping delivery", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 				break
 			}
-			if n.hookBeforeSend != nil {
+			// Resolve hook: prefer instance-captured, else fall back to package-level for tests
+			hookBefore := n.hookBeforeSend
+			if hookBefore == nil {
+				hookBefore = TestHookBeforeSend
+			}
+			if hookBefore != nil {
 				// Best-effort; hooks should not panic the notifier loop.
-				func() { defer func() { _ = recover() }(); n.hookBeforeSend(sub, e.Seq) }()
+				func() { defer func() { _ = recover() }(); hookBefore(sub, e.Seq) }()
 				// If a test simulates a crash via context cancellation in the hook,
 				// skip sending on this tick to model crash-before-send.
 				select {
@@ -247,8 +252,12 @@ func (n *Notifier) processTick(ctx context.Context) {
 				}
 				break // backoff this sub until next tick
 			}
-			if n.hookAfterSendBeforeAck != nil {
-				func() { defer func() { _ = recover() }(); n.hookAfterSendBeforeAck(sub, e.Seq) }()
+			hookAfter := n.hookAfterSendBeforeAck
+			if hookAfter == nil {
+				hookAfter = TestHookAfterSendBeforeAck
+			}
+			if hookAfter != nil {
+				func() { defer func() { _ = recover() }(); hookAfter(sub, e.Seq) }()
 			}
 			// Mark this commit index as sent for this subscription to avoid spamming until ACK.
 			n.sentMu.Lock()
