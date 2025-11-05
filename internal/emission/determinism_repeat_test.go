@@ -226,6 +226,104 @@ func TestDeterminism_Repeat100_Reconnect_OK(t *testing.T) {
 	}
 }
 
+// --- Reconnect (STALE) determinism ---
+
+func runReconnectStaleTranscript(t *testing.T) []byte {
+	t.Helper()
+	mgr := emission.NewManager("bucket-r-stale-100")
+	sender := &emission.MemorySender{}
+	n := emission.NewNotifier(mgr, sender, nil, "bucket-r-stale-100")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	epoch := emission.EpochID{BucketUUID: "bucket-r-stale-100", EpochCounter: 0}
+	oldSub := "old:7"
+	// Build entries 1..6; mark compaction through 4 with a snapshot-like payload
+	for i := uint64(1); i <= 6; i++ {
+		payload := []byte("d" + strconv.FormatUint(i, 10))
+		if i == 4 {
+			payload = []byte("SNAPSHOT@4")
+		}
+		mgr.ApplyOutboxWrite(ctx, oldSub, emission.EmitSeq{Epoch: epoch, CommitIndex: i}, payload)
+	}
+	mgr.SetCompactedThrough(oldSub, 4)
+
+	// Rebind and reconnect with stale position 2
+	_, newSub, _ := mgr.RebindByFingerprint(7, "new")
+	ack := mgr.Reconnect(emission.ReconnectRequest{SubID: newSub, LastProcessedEmitSeq: emission.EmitSeq{Epoch: epoch, CommitIndex: 2}})
+	if ack.Status != emission.ReconnectStaleSequence || ack.NextCommitIndex != 4 {
+		t.Fatalf("bad stale ack: %+v", ack)
+	}
+
+	// Resume from compacted boundary and drain deterministically to collect 3 events: 4,5,6
+	n.SetResumeFrom(newSub, ack.NextCommitIndex)
+	for i := 0; i < 300; i++ {
+		if len(sender.Snapshot()) >= 3 { break }
+		n.TestTickOnce(ctx)
+	}
+	return transcriptCommitIndex(sender.Snapshot())
+}
+
+func TestDeterminism_Repeat100_Reconnect_Stale(t *testing.T) {
+	var base []byte
+	for i := 0; i < 100; i++ {
+		got := runReconnectStaleTranscript(t)
+		if i == 0 {
+			base = got
+		} else if !bytes.Equal(base, got) {
+			t.Fatalf("reconnect(STALE) transcript mismatch at run %d", i+1)
+		}
+	}
+}
+
+// --- Reconnect (INVALID) determinism ---
+
+func runReconnectInvalidTranscript(t *testing.T) []byte {
+	t.Helper()
+	mgr := emission.NewManager("bucket-r-invalid-100")
+	sender := &emission.MemorySender{}
+	n := emission.NewNotifier(mgr, sender, nil, "bucket-r-invalid-100")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	epoch := emission.EpochID{BucketUUID: "bucket-r-invalid-100", EpochCounter: 0}
+	oldSub := "s:9"
+	// Build entries 1..6 and simulate last acknowledged as 5
+	for i := uint64(1); i <= 6; i++ {
+		mgr.ApplyOutboxWrite(ctx, oldSub, emission.EmitSeq{Epoch: epoch, CommitIndex: i}, []byte("v"+strconv.FormatUint(i, 10)))
+	}
+	if !mgr.ValidateAck(oldSub, emission.EmitSeq{Epoch: epoch, CommitIndex: 5}) {
+		t.Fatal("setup ack failed")
+	}
+
+	// Rebind; client claims future position (10) -> INVALID with next=6
+	_, newSub, _ := mgr.RebindByFingerprint(9, "cli")
+	ack := mgr.Reconnect(emission.ReconnectRequest{SubID: newSub, LastProcessedEmitSeq: emission.EmitSeq{Epoch: epoch, CommitIndex: 10}})
+	if ack.Status != emission.ReconnectInvalidSequence || ack.NextCommitIndex != 6 {
+		t.Fatalf("bad invalid ack: %+v", ack)
+	}
+
+	// Resume from suggested next and deliver deterministically; expect a single send at 6
+	n.SetResumeFrom(newSub, ack.NextCommitIndex)
+	for i := 0; i < 200; i++ {
+		if len(sender.Snapshot()) >= 1 { break }
+		n.TestTickOnce(ctx)
+	}
+	return transcriptCommitIndex(sender.Snapshot())
+}
+
+func TestDeterminism_Repeat100_Reconnect_Invalid(t *testing.T) {
+	var base []byte
+	for i := 0; i < 100; i++ {
+		got := runReconnectInvalidTranscript(t)
+		if i == 0 {
+			base = got
+		} else if !bytes.Equal(base, got) {
+			t.Fatalf("reconnect(INVALID) transcript mismatch at run %d", i+1)
+		}
+	}
+}
+
 // --- Multi-replica symmetry (3 nodes) determinism ---
 
 func runMultiReplicaTranscript(t *testing.T) []byte {
