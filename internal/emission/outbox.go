@@ -188,8 +188,27 @@ func (m *Manager) RebindByFingerprint(fp uint64, newClientID string) (string, st
 	}
 	m.ob.mu.RUnlock()
 	if oldSub == "" {
-		// Nothing to migrate
-		return "", newClientID + ":" + strconv.FormatUint(fp, 10), 0
+		// If no pending entries exist under the old sub, try to locate by watermarks
+		m.mu.RLock()
+		for sub := range m.lastAck {
+			if len(sub) > len(fpSuffix) && sub[len(sub)-len(fpSuffix):] == fpSuffix {
+				oldSub = sub
+				break
+			}
+		}
+		if oldSub == "" {
+			for sub := range m.compactThrough {
+				if len(sub) > len(fpSuffix) && sub[len(sub)-len(fpSuffix):] == fpSuffix {
+					oldSub = sub
+					break
+				}
+			}
+		}
+		m.mu.RUnlock()
+		if oldSub == "" {
+			// Nothing to migrate
+			return "", newClientID + ":" + strconv.FormatUint(fp, 10), 0
+		}
 	}
 	newSub := newClientID + ":" + strconv.FormatUint(fp, 10)
 	if oldSub == newSub {
@@ -197,27 +216,25 @@ func (m *Manager) RebindByFingerprint(fp uint64, newClientID string) (string, st
 	}
 
 	// Move entries under lock
+	moved := 0
 	m.ob.mu.Lock()
 	oldMap := m.ob.bySub[oldSub]
-	if oldMap == nil {
-		m.ob.mu.Unlock()
-		return oldSub, newSub, 0
-	}
-	if _, ok := m.ob.bySub[newSub]; !ok {
-		m.ob.bySub[newSub] = make(map[uint64]*OutboxEntry)
-	}
-	moved := 0
-	for idx, e := range oldMap {
-		// rewrite subID and move
-		if e != nil {
-			e.SubID = newSub
+	if oldMap != nil {
+		if _, ok := m.ob.bySub[newSub]; !ok {
+			m.ob.bySub[newSub] = make(map[uint64]*OutboxEntry)
 		}
-		m.ob.bySub[newSub][idx] = e
-		delete(oldMap, idx)
-		moved++
-	}
-	if len(oldMap) == 0 {
-		delete(m.ob.bySub, oldSub)
+		for idx, e := range oldMap {
+			// rewrite subID and move
+			if e != nil {
+				e.SubID = newSub
+			}
+			m.ob.bySub[newSub][idx] = e
+			delete(oldMap, idx)
+			moved++
+		}
+		if len(oldMap) == 0 {
+			delete(m.ob.bySub, oldSub)
+		}
 	}
 	m.ob.mu.Unlock()
 
