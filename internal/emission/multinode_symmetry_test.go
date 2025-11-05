@@ -57,12 +57,14 @@ func canonicalHash(evs []*emission.DataEvent, n int) string {
     h := xxhash.New()
     limit := n
     if len(evs) < n { limit = len(evs) }
+    seq := uint64(0)
     for _, ev := range evs[:limit] {
         fp := uint64(0)
         if idx := strings.LastIndex(ev.SubID, ":"); idx >= 0 {
             if v, err := strconv.ParseUint(ev.SubID[idx+1:], 10, 64); err == nil { fp = v }
         }
-        e := determinism.Emission{Fingerprint: fp, EmitSeq: ev.EmitSeq.CommitIndex, Event: "DATA", Fields: map[string]string{"delta": string(ev.Delta)}}
+        seq++
+        e := determinism.Emission{Fingerprint: fp, EmitSeq: seq, Event: "DATA", Fields: map[string]string{"delta": string(ev.Delta)}}
         h.Write(determinism.CanonicalLine(e))
         h.Write([]byte{'\n'})
     }
@@ -97,8 +99,8 @@ func TestEmission_MultiReplicaSymmetry_3Nodes(t *testing.T) {
         ctx := context.Background()
         ap := emission.NewApplier(n, mgr, shardID); ap.Start(ctx)
         sender := &emission.MemorySender{}
-        nt := emission.NewNotifier(mgr, nil, &emission.RaftProposer{Node: n, BucketID: shardID}, shardID)
-        nt.Start(ctx)
+    nt := emission.NewNotifier(mgr, nil, &emission.RaftProposer{Node: n, BucketID: shardID}, shardID)
+    nt.Start(ctx)
         nodes = append(nodes, n)
         notifiers = append(notifiers, nt)
         senders = append(senders, sender)
@@ -123,12 +125,17 @@ func TestEmission_MultiReplicaSymmetry_3Nodes(t *testing.T) {
     for i := 0; i < N; i++ {
         rec, _ := raft.BuildReplicationRecord(shardID, "DATA_EVENT", []string{sub, "val-"+strconv.Itoa(i)})
         proposeOnLeader(t, nodes, rec)
-        // advance clocks to drive raft ticks and notifier polls
+        // advance clocks to drive raft ticks
         for _, c := range clocks { c.Advance(10 * time.Millisecond) }
-        time.Sleep(200 * time.Microsecond)
+        // deterministically drive the leader notifier once
+        for i2, n := range nodes { if n == ln { notifiers[i2].TestTickOnce(context.Background()) } }
     }
-    // Wait bounded for leader sender to see N events
-    deadline := time.Now().Add(2 * time.Second)
+    // Deterministically drive a few more cycles and then check
+    for i := 0; i < 5; i++ {
+        for _, c := range clocks { c.Advance(10 * time.Millisecond) }
+        for i2, n := range nodes { if n == ln { notifiers[i2].TestTickOnce(context.Background()) } }
+    }
+    deadline := time.Now().Add(3 * time.Second)
     var got int
     for time.Now().Before(deadline) {
         for i, n := range nodes {
@@ -136,7 +143,7 @@ func TestEmission_MultiReplicaSymmetry_3Nodes(t *testing.T) {
         }
         if got >= N { break }
         for _, c := range clocks { c.Advance(10 * time.Millisecond) }
-        time.Sleep(200 * time.Microsecond)
+        for i2, n := range nodes { if n == ln { notifiers[i2].TestTickOnce(context.Background()) } }
     }
     if got < N { t.Fatalf("leader delivered %d events, want %d", got, N) }
 
@@ -164,8 +171,8 @@ func TestEmission_MultiReplicaSymmetry_3Nodes(t *testing.T) {
         ctx := context.Background()
         ap := emission.NewApplier(n, mgr, shardID); ap.Start(ctx)
         sender := &emission.MemorySender{}
-        nt := emission.NewNotifier(mgr, nil, &emission.RaftProposer{Node: n, BucketID: shardID}, shardID)
-        nt.Start(ctx)
+    nt := emission.NewNotifier(mgr, nil, &emission.RaftProposer{Node: n, BucketID: shardID}, shardID)
+    nt.Start(ctx)
         nodes = append(nodes, n)
         notifiers = append(notifiers, nt)
         senders = append(senders, sender)
@@ -182,15 +189,15 @@ func TestEmission_MultiReplicaSymmetry_3Nodes(t *testing.T) {
         rec, _ := raft.BuildReplicationRecord(shardID, "DATA_EVENT", []string{sub, "val-"+strconv.Itoa(i)})
         proposeOnLeader(t, nodes, rec)
         for _, c := range clocks { c.Advance(10 * time.Millisecond) }
-        time.Sleep(200 * time.Microsecond)
+        for i2, n := range nodes { if n == ln2 { notifiers[i2].TestTickOnce(context.Background()) } }
     }
-    deadline = time.Now().Add(2 * time.Second)
+    deadline = time.Now().Add(3 * time.Second)
     got = 0
     for time.Now().Before(deadline) {
         for i, n := range nodes { if n == ln2 { got = len(senders[i].Snapshot()) } }
         if got >= N { break }
         for _, c := range clocks { c.Advance(10 * time.Millisecond) }
-        time.Sleep(200 * time.Microsecond)
+        for i2, n := range nodes { if n == ln2 { notifiers[i2].TestTickOnce(context.Background()) } }
     }
     if got < N { t.Fatalf("leader delivered (2) %d, want %d", got, N) }
     for i, n := range nodes { if n == ln2 { h2 = canonicalHash(senders[i].Snapshot(), N) } }

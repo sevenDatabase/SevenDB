@@ -66,11 +66,13 @@ func (a *Applier) applyCommand(ctx context.Context, cr *raftimpl.CommittedRecord
 		sub := pl.Args[0]
 		delta := []byte(pl.Args[1])
 		seq := EmitSeq{Epoch: a.epoch, CommitIndex: cr.CommitIndex}
-		// Propose OUTBOX_WRITE
-		out := &raftimpl.ReplicationPayload{Version: 1, Cmd: "OUTBOX_WRITE", Args: []string{sub, a.epoch.BucketUUID, formatUint(a.epoch.EpochCounter), formatUint(seq.CommitIndex), string(delta)}}
-		b, _ := json.Marshal(out)
-		if _, _, err := a.node.ProposeAndWait(ctx, &raftimpl.RaftLogRecord{BucketID: a.epoch.BucketUUID, Type: raftimpl.RaftRecordTypeAppCommand, Payload: b}); err != nil {
-			slog.Error("propose OUTBOX_WRITE failed", slog.Any("error", err))
+		// Only the leader should propose the OUTBOX_WRITE; followers will apply it via the handler
+		if a.node.IsLeader() {
+			out := &raftimpl.ReplicationPayload{Version: 1, Cmd: "OUTBOX_WRITE", Args: []string{sub, a.epoch.BucketUUID, formatUint(a.epoch.EpochCounter), formatUint(seq.CommitIndex), string(delta)}}
+			b, _ := json.Marshal(out)
+			if _, _, err := a.node.ProposeAndWait(ctx, &raftimpl.RaftLogRecord{BucketID: a.epoch.BucketUUID, Type: raftimpl.RaftRecordTypeAppCommand, Payload: b}); err != nil {
+				slog.Error("propose OUTBOX_WRITE failed", slog.Any("error", err))
+			}
 		}
 	case "OUTBOX_WRITE":
 		// Args: sub_id, bucket_uuid, epoch_counter, commit_index, delta
@@ -92,11 +94,13 @@ func (a *Applier) applyCommand(ctx context.Context, cr *raftimpl.CommittedRecord
 			slog.Warn("ACK regression/duplicate in apply", slog.String("sub_id", sub), slog.String("emit_seq", seq.String()))
 			return
 		}
-		// Propose a purge for acked position
-		out := &raftimpl.ReplicationPayload{Version: 1, Cmd: "OUTBOX_PURGE", Args: []string{sub, seq.Epoch.BucketUUID, formatUint(seq.Epoch.EpochCounter), formatUint(seq.CommitIndex)}}
-		b, _ := json.Marshal(out)
-		if _, _, err := a.node.ProposeAndWait(ctx, &raftimpl.RaftLogRecord{BucketID: seq.Epoch.BucketUUID, Type: raftimpl.RaftRecordTypeAppCommand, Payload: b}); err != nil {
-			slog.Error("propose OUTBOX_PURGE failed", slog.Any("error", err))
+		// Only leader proposes purge; followers observe via handler
+		if a.node.IsLeader() {
+			out := &raftimpl.ReplicationPayload{Version: 1, Cmd: "OUTBOX_PURGE", Args: []string{sub, seq.Epoch.BucketUUID, formatUint(seq.Epoch.EpochCounter), formatUint(seq.CommitIndex)}}
+			b, _ := json.Marshal(out)
+			if _, _, err := a.node.ProposeAndWait(ctx, &raftimpl.RaftLogRecord{BucketID: seq.Epoch.BucketUUID, Type: raftimpl.RaftRecordTypeAppCommand, Payload: b}); err != nil {
+				slog.Error("propose OUTBOX_PURGE failed", slog.Any("error", err))
+			}
 		}
 	case "OUTBOX_PURGE":
 		// Args: sub_id, bucket_uuid, epoch_counter, commit_index

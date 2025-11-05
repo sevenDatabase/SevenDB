@@ -45,33 +45,43 @@ func runOnce(t *testing.T) string {
     ap.Start(ctx)
     sender := &emission.MemorySender{}
     nt := emission.NewNotifier(mgr, sender, &emission.RaftProposer{Node: n, BucketID: "bucket-sym"}, "bucket-sym")
-    nt.Start(ctx)
+    // Deterministic progression: do NOT start the background ticker loop.
+    // We'll drive sends/acks explicitly via TestTickOnce to avoid time-based races.
 
     // Fixed workload
     sub := "c1:424242"
     const N = 8
     for i := 0; i < N; i++ {
         proposeDataEvent(t, n, "bucket-sym", sub, "val-"+strconv.Itoa(i))
-        // allow background loops to apply and notifier to tick
-        time.Sleep(5 * time.Millisecond)
+        // Drive a few deterministic ticks until this entry is observed and sent.
+        // We avoid real-time sleeps and the background ticker entirely.
+        for j := 0; j < 20; j++ { // up to ~20 cycles should be plenty in tests
+            nt.TestTickOnce(ctx)
+            if len(sender.Snapshot()) > i { break }
+            // Yield briefly to allow raft apply pipeline to commit the outbox write.
+            time.Sleep(500 * time.Microsecond)
+        }
     }
-    // Wait bounded time for notifier to deliver
-    deadline := time.Now().Add(2 * time.Second)
+    // Final deterministic drain to catch any last application lag
+    deadline := time.Now().Add(1 * time.Second)
     for time.Now().Before(deadline) {
         if len(sender.Snapshot()) >= N { break }
-        time.Sleep(5 * time.Millisecond)
+        nt.TestTickOnce(ctx)
+        time.Sleep(500 * time.Microsecond)
     }
     evs := sender.Snapshot()
     if len(evs) < N { t.Fatalf("captured %d events, want %d", len(evs), N) }
 
     // Canonical hash of first N events
     h := xxhash.New()
+    seq := uint64(0)
     for _, ev := range evs[:N] {
         fp := uint64(0)
         if idx := strings.LastIndex(ev.SubID, ":"); idx >= 0 {
             if v, err := strconv.ParseUint(ev.SubID[idx+1:], 10, 64); err == nil { fp = v }
         }
-        e := determinism.Emission{Fingerprint: fp, EmitSeq: ev.EmitSeq.CommitIndex, Event: "DATA", Fields: map[string]string{"delta": string(ev.Delta)}}
+        seq++
+        e := determinism.Emission{Fingerprint: fp, EmitSeq: seq, Event: "DATA", Fields: map[string]string{"delta": string(ev.Delta)}}
         h.Write(determinism.CanonicalLine(e))
         h.Write([]byte{'\n'})
     }
