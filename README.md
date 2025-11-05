@@ -189,9 +189,19 @@ Additional docs:
 - [Emission Contract architecture](./docs/src/content/docs/architecture/emission-contract.mdx)
 - [Emission} Contract – operations & config](./docs/src/content/docs/emission-contract-ops.mdx)
 
-##Determinism tests
+## Determinism
 
-`go test ./internal/emission -run 'Determinism_Repeat100' -count=1` 
+See docs: [Determinism: scope, harness, and how to run](./docs/DETERMINISM.md)
+
+Quick runs:
+
+```zsh
+# Emission determinism (100-run cases)
+go test ./internal/emission -run 'Determinism_Repeat100' -count=1
+
+# WAL determinism (rotation and prune)
+go test ./internal/raftwal -run 'Determinism_Repeat100' -count=1
+```
 
 ## Core Concepts
 
