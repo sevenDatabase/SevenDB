@@ -2,7 +2,7 @@
 
 package raft
 
-import ()
+import "testing"
 
 // buildDataEvent rec builds a raft application record for DATA_EVENT.
 func buildDataEvent(bucket, sub, delta string) *RaftLogRecord { return nil }

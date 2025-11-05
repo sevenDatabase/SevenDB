@@ -326,8 +326,8 @@ func (s *ShardRaftNode) invokeReplicationHandler(rec *RaftLogRecord) (fatal bool
 		}
 		slog.Warn("replication handler error", slog.String("shard", s.shardID), slog.Any("error", err))
 	}
-	    return false
-	}
+	return false
+}
 
 // StatusSnapshot is a lightweight snapshot of raft node state for observability.
 type StatusSnapshot struct {

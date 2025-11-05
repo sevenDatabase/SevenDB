@@ -43,8 +43,8 @@ type Notifier struct {
 	interval time.Duration
 	stopCh   chan struct{}
 	// test hooks captured at start to avoid races with package-level test vars
-	hookBeforeSend           func(sub string, seq EmitSeq)
-	hookAfterSendBeforeAck   func(sub string, seq EmitSeq)
+	hookBeforeSend         func(sub string, seq EmitSeq)
+	hookAfterSendBeforeAck func(sub string, seq EmitSeq)
 	// resumeFrom optionally holds the next commit index to resume from per sub after reconnect
 	resumeMu   sync.Mutex
 	resumeFrom map[string]uint64
