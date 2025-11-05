@@ -138,6 +138,11 @@ func TestAOFWithExat(t *testing.T) {
 
 	defer os.Remove(testFile)
 
+	// Use shared variables to avoid recomputing time-based expectations across subtests.
+	// This eliminates flakiness from second-level rollovers between subtests.
+	var exat1 int64 // EXAT for key1
+	var exat2 int64 // EXAT for key2
+
 	t.Run("Create and Write with EXAT", func(t *testing.T) {
 		aof, err := NewAOF(testFile)
 		if err != nil {
@@ -145,9 +150,9 @@ func TestAOFWithExat(t *testing.T) {
 		}
 		defer aof.Close()
 
-		futureTime := time.Now().Unix() + 60
+		exat1 = time.Now().Unix() + 60
 		operations := []string{
-			"SET key1 value1 EXAT " + strconv.FormatInt(futureTime, 10),
+			"SET key1 value1 EXAT " + strconv.FormatInt(exat1, 10),
 		}
 
 		for _, op := range operations {
@@ -169,9 +174,8 @@ func TestAOFWithExat(t *testing.T) {
 			t.Fatalf("Failed to load operations: %v", err)
 		}
 
-		futureTime := time.Now().Unix() + 60
 		expectedOps := []string{
-			"SET key1 value1 EXAT " + strconv.FormatInt(futureTime, 10),
+			"SET key1 value1 EXAT " + strconv.FormatInt(exat1, 10),
 		}
 
 		if !reflect.DeepEqual(loadedOps, expectedOps) {
@@ -186,8 +190,8 @@ func TestAOFWithExat(t *testing.T) {
 			t.Fatalf("Failed to open existing AOF: %v", err)
 		}
 
-		newFutureTime := time.Now().Unix() + 120
-		newOp := "SET key2 value2 EXAT " + strconv.FormatInt(newFutureTime, 10)
+		exat2 = time.Now().Unix() + 120
+		newOp := "SET key2 value2 EXAT " + strconv.FormatInt(exat2, 10)
 		if err := aof.Write(newOp); err != nil {
 			t.Errorf("Failed to append operation: %v", err)
 		}
@@ -206,7 +210,7 @@ func TestAOFWithExat(t *testing.T) {
 		}
 
 		expectedOps := []string{
-			"SET key1 value1 EXAT " + strconv.FormatInt(time.Now().Unix()+60, 10),
+			"SET key1 value1 EXAT " + strconv.FormatInt(exat1, 10),
 			newOp,
 		}
 
