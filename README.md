@@ -182,6 +182,39 @@ Notes:
 - Labeling per bucket enables per-shard analysis but adds minor bookkeeping overhead.
 - The `/metrics` endpoint only includes SevenDB application metrics (no Go runtime by default) to keep output small and stable.
 
+### WAL Durability (Per-Command)
+
+SevenDB's WAL normally buffers writes and flushes/fsyncs on an interval (`--wal-buffer-sync-interval-ms`). For many workloads this amortizes IO and is sufficient. You can opt a specific `SET` write into **synchronous durability**:
+
+1. Enable the feature flag and WAL at startup:
+
+```bash
+sevendb \
+  --enable-wal=true \
+  --wal-enable-durable-set=true \
+  --wal-dir=logs
+```
+
+2. Issue a durable write:
+
+```bash
+SET mykey "value" DURABLE
+# or
+SET mykey "value" SYNC
+```
+
+Behavior:
+- Without `DURABLE` / `SYNC`: SevenDB appends the command to the WAL buffer and replies `OK` (fsync happens later).
+- With `DURABLE` / `SYNC`: SevenDB flushes and fsyncs the WAL segment before replying `OK`, ensuring the change is on disk (subject to filesystem semantics) when acknowledged.
+- If the WAL is disabled or the feature flag is off, the tokens are ignored and the write behaves as buffered.
+- On fsync failure, the server returns an `ERR wal sync failed: <reason>` instead of `OK`.
+
+Metrics:
+- `sevendb_set_durable_sync_total`: count of SETs that forced an immediate WAL sync.
+- `sevendb_set_buffered_total`: count of SETs written without a durability request.
+
+Use this for critical keys (e.g., transaction commits, idempotency markers) without globally forcing synchronous writes.
+
 ---
 
 ## Why SevenDB?
