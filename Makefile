@@ -2,7 +2,7 @@ VERSION := $(shell cat VERSION)
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 
-.PHONY: build test build-docker run test-one
+.PHONY: build test build-docker run test-one bench
 
 build:
 	@echo "Building SevenDB for $(GOOS)/$(GOARCH)"
@@ -42,6 +42,9 @@ unittest-one: ## run a single unit test function by name (e.g. make unittest-one
 ##@ Development
 run: ## run sevendb with the default configuration
 	go run main.go --engine ironhawk --log-level debug --enable-wal
+
+bench: ## run the benchmark tool with defaults (override flags via ARGS="...")
+	go run ./scripts/bench/main.go $(ARGS)
 
 format: ## format the code using go fmt
 	go fmt ./...

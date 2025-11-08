@@ -2,17 +2,17 @@
   "emission_metrics": {
     "acks_per_sec": 0,
     "acks_total": 0,
-    "pending_entries": 2,
+    "pending_entries": 0,
     "reconnects_invalid_total": 0,
     "reconnects_not_found_total": 0,
-    "reconnects_ok_total": 10,
+    "reconnects_ok_total": 11,
     "reconnects_stale_total": 0,
-    "send_latency_count": 1,
+    "send_latency_count": 0,
     "send_latency_ms_avg": 0,
     "send_latency_ms_max": 0,
     "send_latency_ms_min": 0,
     "sends_per_sec": 0,
-    "sends_total": 1,
+    "sends_total": 0,
     "subs_with_pending": 0
   },
   "nodes": [
@@ -107,9 +107,7 @@
       "last_applied_index": 0,
       "last_snapshot_index": 0,
       "committed_since_snapshot": 0,
-      "per_bucket_commit": {
-        "h": 2
-      },
+      "per_bucket_commit": {},
       "pruned_through_index": 0,
       "transport_peers_total": 0,
       "transport_peers_connected": 0
@@ -211,5 +209,5 @@
       "transport_peers_connected": 0
     }
   ],
-  "ts_unix": 1762186780
+  "ts_unix": 1762346097
 }
