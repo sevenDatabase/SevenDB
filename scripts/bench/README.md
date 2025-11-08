@@ -1,4 +1,4 @@
-# SevenDB benchmark (throughput and reactive latency)
+# SevenDB benchmark (throughput, reactive probe, optional emission latency)
 
 This is a small load generator for SevenDB that measures:
 
@@ -7,7 +7,7 @@ This is a small load generator for SevenDB that measures:
 - Reactive latency (low-frequency probe latency to reflect user-perceived responsiveness under load)
 
 It uses the official Go client (`github.com/dicedb/dicedb-go`) and supports configurable
-connections, workers, keyspace size, value size, GET/SET mix, and JSON output.
+connections, workers, keyspace size, value size, GET/SET mix, JSON output, a reactive **probe** (periodic PING), and an **opt-in emission latency benchmark** (SET → GET.WATCH delivery).
 
 ## Quick start
 
@@ -21,7 +21,7 @@ make run
 
 ```bash
 # 30s, 16 conns, 16 workers, 100k keyspace, value size 16B, GET:SET=50:50
-# reactive probe every 100ms
+# reactive probe every 100ms (emission benchmark is OFF by default)
 GOFLAGS="" go run ./scripts/bench/main.go \
   -host localhost \
   -port 7379 \
@@ -101,12 +101,20 @@ go run ./scripts/bench/main.go -duration 20s -conns 64 -workers 256 -mix 80:20
 - `-cmd` (string): command mix: `GETSET` | `GET` | `SET` | `PING` (default `GETSET`)
 - `-reactive` (bool): measure reactive latency with periodic probe (default `true`)
 - `-reactive-interval` (duration): probe interval (default `100ms`)
+- `-reactive-bench` (bool): emission latency (SET→watch) benchmark (default `false` – enable cautiously)
+- `-reactive-watchers` (int): watcher clients for emission benchmark (default `1`)
+- `-reactive-keyspace` (int): number of watch keys (default `10000`)
+- `-emit-max-inflight` (int): cap tracked SET tokens to bound memory (default `10000`)
+- `-op-timeout` (duration): connect & operation timeout for reactive benchmark (default `5s`)
 - `-json` (bool): print JSON results (default `false`)
 - `-seed` (int64): random seed (default: current time)
 
 ## Notes
 
-- Reactive latency uses a dedicated client sending `PING` at a fixed interval, running alongside the main load, to approximate perceived responsiveness during traffic spikes.
+- Reactive probe latency uses a dedicated client sending `PING` at a fixed interval, running alongside the main load, to approximate perceived responsiveness during traffic spikes.
+- Emission benchmark (when enabled) spawns watcher clients subscribing with `GET.WATCH` to a stripe of keys and measures end-to-end latency from issuing a tokenized `SET` to receiving its watch emission.
+- Emission benchmark is opt-in because it adds overhead and can increase memory usage if not bounded; use `-emit-max-inflight` to cap outstanding tokenized writes.
+- If `PING` is unsupported, the bench falls back to `HELLO` for the probe.
 - If `PING` is unsupported, the bench falls back to `HELLO` for the probe.
 - Keyspace is preloaded a bit during warmup so GETs are meaningful.
 - For consistent runs, fix `-seed` and pin CPU scaling on your test box.
@@ -114,3 +122,28 @@ go run ./scripts/bench/main.go -duration 20s -conns 64 -workers 256 -mix 80:20
 ---
 
 If you prefer to ship this inside `sevendb-cli` later, this tool is already self-contained and can be ported with minimal changes (keep the flags and metrics output). For now it lives under `scripts/bench` for convenience.
+
+## Emission benchmark example
+
+```bash
+go run ./scripts/bench/main.go \
+  -duration 60s -warmup 10s \
+  -reactive-bench \
+  -reactive-watchers 2 \
+  -reactive-keyspace 20000 \
+  -emit-max-inflight 15000 \
+  -op-timeout 5s \
+  -json
+```
+
+Sample (truncated) JSON fields for emission metrics:
+
+```json
+{
+  "emitCount": 598234,
+  "emitP50Ms": 1.12,
+  "emitP95Ms": 3.87,
+  "emitP99Ms": 6.54,
+  "emitMaxMs": 18.31
+}
+```
