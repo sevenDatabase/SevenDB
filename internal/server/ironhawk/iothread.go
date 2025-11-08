@@ -19,6 +19,8 @@ import (
 	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
 	"github.com/sevenDatabase/SevenDB/internal/types"
 	"github.com/sevenDatabase/SevenDB/internal/wal"
+	"sync/atomic"
+	"github.com/sevenDatabase/SevenDB/internal/observability"
 )
 
 type IOThread struct {
@@ -26,6 +28,21 @@ type IOThread struct {
 	Mode       string
 	Session    *auth.Session
 	serverWire *dicedb.ServerWire
+}
+
+var durableSetSyncCount uint64 // atomically incremented each time a DURABLE/SYNC SET forces WAL.Sync()
+var bufferedSetCount uint64    // atomically incremented for SET without durability request
+
+func init() {
+	// Register lightweight metrics for durable vs buffered SET writes
+	observability.RegisterCustomCollector(func() []string {
+		ds := atomic.LoadUint64(&durableSetSyncCount)
+		bs := atomic.LoadUint64(&bufferedSetCount)
+		return []string{
+			fmt.Sprintf("sevendb_set_durable_sync_total %d", ds),
+			fmt.Sprintf("sevendb_set_buffered_total %d", bs),
+		}
+	})
 }
 
 func NewIOThread(clientFD int) (*IOThread, error) {
@@ -115,8 +132,15 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 						if syncErr := wal.DefaultWAL.Sync(); syncErr != nil {
 							// Surface the sync error to the client instead of acknowledging success.
 							res = &cmd.CmdRes{Rs: &wire.Result{Status: wire.Status_ERR, Message: fmt.Sprintf("wal sync failed: %v", syncErr)}}
+						} else {
+							atomic.AddUint64(&durableSetSyncCount, 1)
 						}
+					} else {
+						// Non-durable SET (no DURABLE/SYNC flag requested)
+						atomic.AddUint64(&bufferedSetCount, 1)
 					}
+				} else if c.Cmd == "SET" { // durable feature disabled but SET executed
+					atomic.AddUint64(&bufferedSetCount, 1)
 				}
 			}
 		}
