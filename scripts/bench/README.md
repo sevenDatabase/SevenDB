@@ -1,4 +1,4 @@
-# SevenDB benchmark (throughput, reactive probe, optional emission latency)
+# SevenDB benchmark (throughput, reactive probe, optional emission latency, optional DURABLE SET)
 
 This is a small load generator for SevenDB that measures:
 
@@ -7,7 +7,7 @@ This is a small load generator for SevenDB that measures:
 - Reactive latency (low-frequency probe latency to reflect user-perceived responsiveness under load)
 
 It uses the official Go client (`github.com/dicedb/dicedb-go`) and supports configurable
-connections, workers, keyspace size, value size, GET/SET mix, JSON output, a reactive **probe** (periodic PING), and an **opt-in emission latency benchmark** (SET → GET.WATCH delivery).
+connections, workers, keyspace size, value size, GET/SET mix, JSON output, a reactive **probe** (periodic PING), an **opt-in emission latency benchmark** (SET → GET.WATCH delivery), and an **opt-in per-command durability mode** that appends `DURABLE` to every `SET`.
 
 ## Quick start
 
@@ -47,6 +47,14 @@ Ops: total=123456 success=123456 failed=0
 Throughput: 41234 ops/s
 Latency (ms): p50=0.210 p95=0.900 p99=1.600 max=5.200
 Reactive latency (ms): p50=0.250 p95=0.850 p99=1.500 max=4.900 (interval=100ms)
+
+If run with `-durable-set`, the header will be annotated and a note added:
+
+```
+SevenDB benchmark — GETSET (DURABLE)
+...
+Note: SET operations were issued with DURABLE for synchronous WAL flush+fsync.
+```
 ```
 
 To emit machine-readable JSON:
@@ -99,6 +107,7 @@ go run ./scripts/bench/main.go -duration 20s -conns 64 -workers 256 -mix 80:20
 - `-value-size` (int): SET value size (bytes, default `16`)
 - `-mix` (string): GET:SET ratio, e.g. `80:20` (default `50:50`)
 - `-cmd` (string): command mix: `GETSET` | `GET` | `SET` | `PING` (default `GETSET`)
+- `-durable-set` (bool): append `DURABLE` to every `SET` to force synchronous WAL flush+fsync (requires server started with `--wal-enable-durable-set=true` and WAL enabled)
 - `-reactive` (bool): measure reactive latency with periodic probe (default `true`)
 - `-reactive-interval` (duration): probe interval (default `100ms`)
 - `-reactive-bench` (bool): emission latency (SET→watch) benchmark (default `false` – enable cautiously)
@@ -123,7 +132,7 @@ go run ./scripts/bench/main.go -duration 20s -conns 64 -workers 256 -mix 80:20
 
 If you prefer to ship this inside `sevendb-cli` later, this tool is already self-contained and can be ported with minimal changes (keep the flags and metrics output). For now it lives under `scripts/bench` for convenience.
 
-## Emission benchmark example
+## Emission + DURABLE benchmark example
 
 ```bash
 go run ./scripts/bench/main.go \
@@ -132,11 +141,12 @@ go run ./scripts/bench/main.go \
   -reactive-watchers 2 \
   -reactive-keyspace 20000 \
   -emit-max-inflight 15000 \
+  -durable-set \
   -op-timeout 5s \
   -json
 ```
 
-Sample (truncated) JSON fields for emission metrics:
+Sample (truncated) JSON fields for emission metrics (with durability flag included):
 
 ```json
 {
@@ -144,6 +154,7 @@ Sample (truncated) JSON fields for emission metrics:
   "emitP50Ms": 1.12,
   "emitP95Ms": 3.87,
   "emitP99Ms": 6.54,
-  "emitMaxMs": 18.31
+  "emitMaxMs": 18.31,
+  "durableSet": true
 }
 ```

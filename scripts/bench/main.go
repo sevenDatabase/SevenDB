@@ -34,6 +34,10 @@ type benchConfig struct {
 	RatioGet         int
 	RatioSet         int
 	Command          string
+	// DurableSet: when true, append "DURABLE" to every SET issued by the benchmark
+	// (including tokenized SETs used by the emission latency benchmark).
+	// This forces the server to flush+fsync before replying OK (when enabled on server).
+	DurableSet       bool
 	ReactiveProbe    bool
 	ReactiveInterval time.Duration
 	// Emission latency (watch) benchmark – opt-in and cautious by default
@@ -68,6 +72,7 @@ type benchResults struct {
 	EmitP95Ms float64 `json:"emitP95Ms"`
 	EmitP99Ms float64 `json:"emitP99Ms"`
 	EmitMaxMs float64 `json:"emitMaxMs"`
+	DurableSet bool    `json:"durableSet"`
 }
 
 func main() {
@@ -108,7 +113,11 @@ func main() {
 	preloadN := min(cfg.Keyspace, cfg.Workers*10)
 	for i := 0; i < preloadN; i++ {
 		cli := clients[i%len(clients)]
-		_ = fire(cli, "SET", keys[i], value)
+		if cfg.DurableSet {
+			_ = fire(cli, "SET", keys[i], value, "DURABLE")
+		} else {
+			_ = fire(cli, "SET", keys[i], value)
+		}
 	}
 
 	// Warm-up
@@ -127,7 +136,11 @@ func main() {
 					if op == "GET" {
 						_ = fire(cli, "GET", key)
 					} else {
-						_ = fire(cli, "SET", key, value)
+						if cfg.DurableSet {
+							_ = fire(cli, "SET", key, value, "DURABLE")
+						} else {
+							_ = fire(cli, "SET", key, value)
+						}
 					}
 				}
 			}(w)
@@ -295,7 +308,11 @@ func main() {
 						// cap inflight tokens to avoid unbounded memory
 						if max := cfg.EmitMaxInflight; max > 0 && int(atomic.LoadUint64(&inflightCnt)) >= max {
 							// skip tokenization; plain SET
-							err = fireWithTimeout(cli, "SET", key, value)
+							if cfg.DurableSet {
+								err = fireWithTimeout(cli, "SET", key, value, "DURABLE")
+							} else {
+								err = fireWithTimeout(cli, "SET", key, value)
+							}
 							break
 						}
 						seq := atomic.AddUint64(&tokenSeq, 1)
@@ -308,9 +325,17 @@ func main() {
 						val := tok + "|" + padded
 						issueTimes.Store(tok, t0)
 						atomic.AddUint64(&inflightCnt, 1)
-						err = fireWithTimeout(cli, "SET", key, val)
+						if cfg.DurableSet {
+							err = fireWithTimeout(cli, "SET", key, val, "DURABLE")
+						} else {
+							err = fireWithTimeout(cli, "SET", key, val)
+						}
 					} else {
-						err = fire(cli, "SET", key, value)
+						if cfg.DurableSet {
+							err = fire(cli, "SET", key, value, "DURABLE")
+						} else {
+							err = fire(cli, "SET", key, value)
+						}
 					}
 				case "PING":
 					err = fire(cli, "PING")
@@ -394,6 +419,7 @@ func main() {
 		EmitP95Ms:        ep95,
 		EmitP99Ms:        ep99,
 		EmitMaxMs:        emax,
+		DurableSet:       cfg.DurableSet,
 	}
 
 	if cfg.JSON {
@@ -404,7 +430,11 @@ func main() {
 	}
 
 	// Human readable output
-	fmt.Printf("SevenDB benchmark — %s\n", cfg.Command)
+	benchName := cfg.Command
+	if cfg.DurableSet && strings.Contains(benchName, "SET") { // annotate if durability applies
+		benchName += " (DURABLE)"
+	}
+	fmt.Printf("SevenDB benchmark — %s\n", benchName)
 	fmt.Printf("Target: %s:%d, conns=%d, workers=%d, keyspace=%d, valueSize=%dB, mix=GET:%d/SET:%d\n",
 		cfg.Host, cfg.Port, cfg.Conns, cfg.Workers, cfg.Keyspace, cfg.ValueSize, cfg.RatioGet, cfg.RatioSet)
 	fmt.Printf("Warmup: %s, Duration: %s\n", cfg.Warmup, cfg.Duration)
@@ -413,6 +443,9 @@ func main() {
 	fmt.Printf("Latency (ms): p50=%.3f p95=%.3f p99=%.3f max=%.3f\n", p50, p95, p99, pmax)
 	if cfg.ReactiveProbe {
 		fmt.Printf("Reactive latency (ms): p50=%.3f p95=%.3f p99=%.3f max=%.3f (interval=%s)\n", rp50, rp95, rp99, rpmax, cfg.ReactiveInterval)
+	}
+	if cfg.DurableSet {
+		fmt.Println("Note: SET operations were issued with DURABLE for synchronous WAL flush+fsync.")
 	}
 }
 
@@ -428,6 +461,7 @@ func parseFlags() benchConfig {
 		vsize      = flag.Int("value-size", 16, "size of SET values in bytes")
 		mix        = flag.String("mix", "50:50", "GET:SET percentage mix, e.g., 80:20")
 		cmd        = flag.String("cmd", "GETSET", "command mix: GETSET | GET | SET | PING")
+		durableSet = flag.Bool("durable-set", false, "append DURABLE to every SET to force synchronous WAL flush+fsync (requires server feature flag)")
 		reactive   = flag.Bool("reactive", true, "measure reactive latency with a low-frequency probe")
 		rinterval  = flag.Duration("reactive-interval", 100*time.Millisecond, "probe interval for reactive latency")
 		reactBench = flag.Bool("reactive-bench", false, "enable emission latency benchmark using GET.WATCH + SET (cautious, opt-in)")
@@ -453,6 +487,7 @@ func parseFlags() benchConfig {
 		RatioGet:         rg,
 		RatioSet:         rs,
 		Command:          strings.ToUpper(*cmd),
+		DurableSet:       *durableSet,
 		ReactiveProbe:    *reactive,
 		ReactiveInterval: *rinterval,
 		ReactiveBench:    *reactBench,
