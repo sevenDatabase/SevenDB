@@ -18,6 +18,8 @@ const (
 	XX      Param = "XX"
 	NX      Param = "NX"
 	KEEPTTL Param = "KEEPTTL"
+	DURABLE Param = "DURABLE" // forces synchronous WAL fsync for supported commands (currently SET)
+	SYNC    Param = "SYNC"    // alias for DURABLE; forces synchronous WAL fsync
 
 	PERSIST Param = "PERSIST"
 )

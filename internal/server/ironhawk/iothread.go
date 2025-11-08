@@ -5,6 +5,7 @@ package ironhawk
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/sevenDatabase/SevenDB/internal/auth"
 	"github.com/sevenDatabase/SevenDB/internal/cmd"
 	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
+	"github.com/sevenDatabase/SevenDB/internal/types"
 	"github.com/sevenDatabase/SevenDB/internal/wal"
 )
 
@@ -104,6 +106,18 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 		if wal.DefaultWAL != nil && !_c.IsReplay && !isWatchCmd && c.Cmd != "UNWATCH" {
 			if err := wal.DefaultWAL.LogCommand(_c.C); err != nil {
 				slog.Error("failed to log command to WAL", slog.Any("error", err))
+			} else {
+				// If the SET command includes the DURABLE or SYNC flag, force a synchronous WAL fsync before responding.
+				// We inspect args for the literal token; command layer has already validated syntax.
+				// This behavior is gated by config.Config.WALEnableDurableSet to allow opt-in per deployment.
+				if c.Cmd == "SET" && config.Config != nil && config.Config.WALEnableDurableSet {
+					if durableRequested(c.Args) {
+						if syncErr := wal.DefaultWAL.Sync(); syncErr != nil {
+							// Surface the sync error to the client instead of acknowledging success.
+							res = &cmd.CmdRes{Rs: &wire.Result{Status: wire.Status_ERR, Message: fmt.Sprintf("wal sync failed: %v", syncErr)}}
+						}
+					}
+				}
 			}
 		}
 
@@ -198,4 +212,15 @@ func (t *IOThread) Stop() error {
 	t.serverWire.Close()
 	t.Session.Expire()
 	return nil
+}
+
+// durableRequested reports whether the SET command's args include a request for
+// synchronous durability via the DURABLE or SYNC tokens.
+func durableRequested(args []string) bool {
+	for _, a := range args {
+		if strings.EqualFold(a, string(types.DURABLE)) || strings.EqualFold(a, string(types.SYNC)) {
+			return true
+		}
+	}
+	return false
 }

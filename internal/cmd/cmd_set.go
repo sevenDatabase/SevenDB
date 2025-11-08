@@ -24,20 +24,23 @@ const (
 // This should involve checking of the old value and the new value.
 var cSET = &CommandMeta{
 	Name:      "SET",
-	Syntax:    "SET key value [EX seconds | PX milliseconds] [EXAT timestamp | PXAT timestamp] [XX | NX] [KEEPTTL]",
+	Syntax:    "SET key value [EX seconds | PX milliseconds] [EXAT timestamp | PXAT timestamp] [XX | NX] [KEEPTTL] [DURABLE|SYNC]",
 	HelpShort: "SET puts or updates an existing value for a key",
 	HelpLong: `
 SET puts or updates an existing value for a key.
 
 SET stores the value as its native type - be it int or string. SET supports the following options:
 
-- EX seconds: set the expiration time in seconds
-- PX milliseconds: set the expiration time in milliseconds
-- EXAT timestamp: set the expiration time in seconds since epoch
-- PXAT timestamp: set the expiration time in milliseconds since epoch
-- XX: only set the key if it already exists
-- NX: only set the key if it does not already exist
-- KEEPTTL: keep the existing TTL of the key even if some expiration param like EX, etc is provided
+ - EX seconds: set the expiration time in seconds
+ - PX milliseconds: set the expiration time in milliseconds
+ - EXAT timestamp: set the expiration time in seconds since epoch
+ - PXAT timestamp: set the expiration time in milliseconds since epoch
+ - XX: only set the key if it already exists
+ - NX: only set the key if it does not already exist
+ - KEEPTTL: keep the existing TTL of the key even if some expiration param like EX, etc is provided
+ - DURABLE | SYNC: force a synchronous WAL flush+fsync before replying. Guarantees the write is
+	 durable on disk (subject to filesystem semantics) when the client receives OK. Ignored if WAL is disabled
+	 or if per-command durability is not enabled (config: --wal-enable-durable-set=true).
 
 Returns "OK" if the SET operation was successful.
 	`,
@@ -58,6 +61,10 @@ localhost:7379> SET k 43 NX
 OK
 localhost:7379> SET k 43 KEEPTTL
 OK
+localhost:7379> SET k 43 DURABLE
+OK
+	localhost:7379> SET k 43 SYNC
+	OK
 	`,
 	Eval:    evalSET,
 	Execute: executeSET,
@@ -93,7 +100,7 @@ func parseParams(args []string) (params map[types.Param]string, nonParams []stri
 		case types.EX, types.PX, types.EXAT, types.PXAT:
 			params[arg] = args[i+1]
 			i++
-		case types.XX, types.NX, types.KEEPTTL, types.LT, types.GT, types.CH, types.INCR:
+		case types.XX, types.NX, types.KEEPTTL, types.LT, types.GT, types.CH, types.INCR, types.DURABLE, types.SYNC:
 			params[arg] = "true"
 		default:
 			nonParams = append(nonParams, args[i])

@@ -75,6 +75,11 @@ type DiceDBConfig struct {
 	WALSegmentRotationTimeSec   int    `mapstructure:"wal-max-segment-rotation-time-sec" default:"60" description:"the time interval (in seconds) after which wal a segment is rotated"`
 	WALBufferSyncIntervalMillis int    `mapstructure:"wal-buffer-sync-interval-ms" default:"200" description:"the interval (in milliseconds) at which the wal write buffer is synced to disk"`
 
+	// If true, any SET command marked with the DURABLE option will force a synchronous
+	// WAL flush+fsync before replying OK. This provides per-command write durability
+	// without globally changing the buffer sync cadence.
+	WALEnableDurableSet bool `mapstructure:"wal-enable-durable-set" default:"false" description:"enable per-command durable SET (DURABLE flag forces immediate WAL fsync)"`
+
 	// WAL manifest & format enforcement
 	WALAutoCreateManifest bool   `mapstructure:"wal-auto-create-manifest" default:"true" description:"auto-create WAL.MANIFEST on startup if missing using detected format"`
 	WALRequireUWAL1       bool   `mapstructure:"wal-require-uwal1" default:"false" description:"if true and no manifest, require UWAL1 format; fail startup if legacy/mixed detected"`
