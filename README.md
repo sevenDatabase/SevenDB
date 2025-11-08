@@ -6,9 +6,24 @@
 
 ## Vision
 
-SevenDB aims to be the **foundation for reactive applications at scale** — where subscriptions are as reliable as reads and as scalable as writes. Imagine collaborative apps, trading systems, or IoT backends where every change is streamed consistently, with no hacks or bolt-ons.
+SevenDB aims to be the **foundation for reactive applications at scale** — where subscriptions are as reliable as reads and as scalable as writes.
 
-We’re not just a database that can _react_ — we’re building a database where reactivity, scalability and correctness is as fundamental as storage.
+---
+
+## Benchmarks
+
+you can run this using `make bench` , here are the single-machine results on my ryzen-7 5700
+
+```bash
+SevenDB benchmark — GETSET
+Target: localhost:7379, conns=16, workers=16, keyspace=100000, valueSize=16B, mix=GET:50/SET:50
+Warmup: 5s, Duration: 30s
+Ops: total=3695354 success=3695354 failed=0
+Throughput: 123178 ops/s
+Latency (ms): p50=0.111 p95=0.226 p99=0.349 max=15.663
+Reactive latency (ms): p50=0.145 p95=0.358 p99=0.988 max=7.979 (interval=100ms)
+```
+
 
 ---
 
