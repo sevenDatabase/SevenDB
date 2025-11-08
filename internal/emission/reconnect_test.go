@@ -65,7 +65,9 @@ func TestEmission_Reconnect_OK_ResumesFromNextIndex(t *testing.T) {
 	n.SetResumeFrom(newSub, ack.NextCommitIndex)
 	// Drive deterministically until two sends are observed
 	for i := 0; i < 200; i++ {
-		if len(sender.Snapshot()) >= 2 { break }
+		if len(sender.Snapshot()) >= 2 {
+			break
+		}
 		n.TestTickOnce(ctx)
 	}
 	// Expect deliveries of 4 and 5 only
@@ -108,7 +110,12 @@ func runReconnectOKHash(t *testing.T) string {
 	}
 	n.SetResumeFrom(newSub, ack.NextCommitIndex)
 	// Deterministically drive until two events delivered
-	for i := 0; i < 200; i++ { if len(sender.Snapshot()) >= 2 { break }; n.TestTickOnce(ctx) }
+	for i := 0; i < 200; i++ {
+		if len(sender.Snapshot()) >= 2 {
+			break
+		}
+		n.TestTickOnce(ctx)
+	}
 	return reconHash(sender.Snapshot())
 }
 
@@ -149,7 +156,9 @@ func TestEmission_Reconnect_Stale_ResumesFromCompactedIndex(t *testing.T) {
 	n.SetResumeFrom(newSub, ack.NextCommitIndex)
 	// Expect deliveries starting at 4 (snapshot) then 5,6; drive deterministically
 	for i := 0; i < 300; i++ {
-		if len(sender.Snapshot()) >= 3 { break }
+		if len(sender.Snapshot()) >= 3 {
+			break
+		}
 		n.TestTickOnce(ctx)
 	}
 	evs := sender.Snapshot()

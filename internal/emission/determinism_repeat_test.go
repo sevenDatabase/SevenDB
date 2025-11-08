@@ -102,7 +102,9 @@ func runCrashBeforeSendTranscript(t *testing.T) []byte {
 	nt2 := emission.NewNotifier(mgr, sender2, &emission.RaftProposer{Node: n, BucketID: "crash-before"}, "crash-before")
 	// Drive deterministically until one send observed (bounded loop, no real sleeps)
 	for i := 0; i < 200; i++ {
-		if len(sender2.Snapshot()) >= 1 { break }
+		if len(sender2.Snapshot()) >= 1 {
+			break
+		}
 		nt2.TestTickOnce(ctx2)
 	}
 	if len(sender2.Snapshot()) != 1 {
@@ -208,7 +210,9 @@ func runReconnectOKTranscript(t *testing.T) []byte {
 	}
 	n.SetResumeFrom(newSub, ack.NextCommitIndex)
 	for i := 0; i < 200; i++ { // drive deterministically
-		if len(sender.Snapshot()) >= 2 { break }
+		if len(sender.Snapshot()) >= 2 {
+			break
+		}
 		n.TestTickOnce(ctx)
 	}
 	return transcriptCommitIndex(sender.Snapshot())
@@ -258,7 +262,9 @@ func runReconnectStaleTranscript(t *testing.T) []byte {
 	// Resume from compacted boundary and drain deterministically to collect 3 events: 4,5,6
 	n.SetResumeFrom(newSub, ack.NextCommitIndex)
 	for i := 0; i < 300; i++ {
-		if len(sender.Snapshot()) >= 3 { break }
+		if len(sender.Snapshot()) >= 3 {
+			break
+		}
 		n.TestTickOnce(ctx)
 	}
 	return transcriptCommitIndex(sender.Snapshot())
@@ -306,7 +312,9 @@ func runReconnectInvalidTranscript(t *testing.T) []byte {
 	// Resume from suggested next and deliver deterministically; expect a single send at 6
 	n.SetResumeFrom(newSub, ack.NextCommitIndex)
 	for i := 0; i < 200; i++ {
-		if len(sender.Snapshot()) >= 1 { break }
+		if len(sender.Snapshot()) >= 1 {
+			break
+		}
 		n.TestTickOnce(ctx)
 	}
 	return transcriptCommitIndex(sender.Snapshot())
@@ -364,10 +372,21 @@ func runMultiReplicaTranscript(t *testing.T) []byte {
 	// drive elections deterministically (no real-time sleeps)
 	var leader *raft.ShardRaftNode
 	for i := 0; i < 2000 && leader == nil; i++ {
-		for _, c := range clocks { c.Advance(10 * time.Millisecond) }
-		for _, n := range nodes { if n.Status().IsLeader { leader = n; break } }
-		if leader != nil { break }
-		for _, c := range clocks { c.Advance(5 * time.Millisecond) }
+		for _, c := range clocks {
+			c.Advance(10 * time.Millisecond)
+		}
+		for _, n := range nodes {
+			if n.Status().IsLeader {
+				leader = n
+				break
+			}
+		}
+		if leader != nil {
+			break
+		}
+		for _, c := range clocks {
+			c.Advance(5 * time.Millisecond)
+		}
 	}
 	if leader == nil {
 		t.Fatalf("no leader elected")
@@ -388,12 +407,30 @@ func runMultiReplicaTranscript(t *testing.T) []byte {
 	for i := 0; i < N; i++ {
 		// re-evaluate leader and attach sender to ensure we always capture from the leader
 		leader = nil
-		for _, n := range nodes { if n.Status().IsLeader { leader = n; break } }
-		if leader == nil {
-			for _, c := range clocks { c.Advance(5 * time.Millisecond) }
-			for _, n := range nodes { if n.Status().IsLeader { leader = n; break } }
+		for _, n := range nodes {
+			if n.Status().IsLeader {
+				leader = n
+				break
+			}
 		}
-		for ii, n := range nodes { if n == leader { notifiers[ii].SetSender(collector) } else { notifiers[ii].SetSender(nil) } }
+		if leader == nil {
+			for _, c := range clocks {
+				c.Advance(5 * time.Millisecond)
+			}
+			for _, n := range nodes {
+				if n.Status().IsLeader {
+					leader = n
+					break
+				}
+			}
+		}
+		for ii, n := range nodes {
+			if n == leader {
+				notifiers[ii].SetSender(collector)
+			} else {
+				notifiers[ii].SetSender(nil)
+			}
+		}
 		rec, _ := raft.BuildReplicationRecord(shardID, "DATA_EVENT", []string{sub, "val-" + strconv.Itoa(i)})
 		// propose on current leader (retry if transient not-leader)
 		proposeOnLeader(t, nodes, rec)
@@ -401,20 +438,43 @@ func runMultiReplicaTranscript(t *testing.T) []byte {
 			c.Advance(10 * time.Millisecond)
 		}
 		// drive leader notifier once
-		for i2, n := range nodes { if n == leader { notifiers[i2].TestTickOnce(context.Background()) } }
+		for i2, n := range nodes {
+			if n == leader {
+				notifiers[i2].TestTickOnce(context.Background())
+			}
+		}
 	}
 
 	// drain until N deliveries observed on the shared collector (bounded deterministic loops)
 	var got int
 	for step := 0; step < 1000; step++ {
 		got = len(collector.Snapshot())
-		if got >= N { break }
-		for _, c := range clocks { c.Advance(10 * time.Millisecond) }
+		if got >= N {
+			break
+		}
+		for _, c := range clocks {
+			c.Advance(10 * time.Millisecond)
+		}
 		// ensure sender remains on current leader during drain
 		leader = nil
-		for _, n := range nodes { if n.Status().IsLeader { leader = n; break } }
-		for ii, n := range nodes { if n == leader { notifiers[ii].SetSender(collector) } else { notifiers[ii].SetSender(nil) } }
-		for i2, n := range nodes { if n == leader { notifiers[i2].TestTickOnce(context.Background()) } }
+		for _, n := range nodes {
+			if n.Status().IsLeader {
+				leader = n
+				break
+			}
+		}
+		for ii, n := range nodes {
+			if n == leader {
+				notifiers[ii].SetSender(collector)
+			} else {
+				notifiers[ii].SetSender(nil)
+			}
+		}
+		for i2, n := range nodes {
+			if n == leader {
+				notifiers[i2].TestTickOnce(context.Background())
+			}
+		}
 	}
 	if got < N {
 		t.Fatalf("leader delivered %d, want %d", got, N)

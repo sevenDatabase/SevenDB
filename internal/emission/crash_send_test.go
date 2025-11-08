@@ -88,7 +88,9 @@ func TestEmission_CrashBeforeSend_ExactlyOnce(t *testing.T) {
 	nt2 := emission.NewNotifier(mgr, sender2, &emission.RaftProposer{Node: n, BucketID: "crash-sym"}, "crash-sym")
 	// Deterministically drive until exactly one delivery observed
 	for i := 0; i < 200; i++ {
-		if len(sender2.Snapshot()) >= 1 { break }
+		if len(sender2.Snapshot()) >= 1 {
+			break
+		}
 		nt2.TestTickOnce(ctx2)
 	}
 	if got := len(sender2.Snapshot()); got != 1 {

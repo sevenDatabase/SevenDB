@@ -183,15 +183,15 @@ func main() {
 
 	// Emission (GET.WATCH) benchmark setup (opt-in and guarded)
 	var (
-		watcherStop   = make(chan struct{})
+		watcherStop    = make(chan struct{})
 		watcherClients []*dicedb.Client
-		emitLatCh     = make(chan float64, 100_000)
-		emitLatSlice  []float64
-		emitWg        sync.WaitGroup
-		issueTimes   sync.Map // token(string) -> time.Time
-		inflightCnt  uint64   // number of outstanding tokens to cap memory
-		tokenSeq     uint64   // monotonic token sequence
-		reactiveKeys []string
+		emitLatCh      = make(chan float64, 100_000)
+		emitLatSlice   []float64
+		emitWg         sync.WaitGroup
+		issueTimes     sync.Map // token(string) -> time.Time
+		inflightCnt    uint64   // number of outstanding tokens to cap memory
+		tokenSeq       uint64   // monotonic token sequence
+		reactiveKeys   []string
 	)
 	// collector for emission latencies
 	emitWg.Add(1)
@@ -418,25 +418,25 @@ func main() {
 
 func parseFlags() benchConfig {
 	var (
-		host      = flag.String("host", "localhost", "server host")
-		port      = flag.Int("port", 7379, "server port")
-		duration  = flag.Duration("duration", 30*time.Second, "test duration")
-		warmup    = flag.Duration("warmup", 5*time.Second, "warmup duration")
-		conns     = flag.Int("conns", 16, "number of TCP connections")
-		workers   = flag.Int("workers", 16, "number of concurrent workers (goroutines)")
-		keyspace  = flag.Int("keyspace", 100_000, "number of distinct keys")
-		vsize     = flag.Int("value-size", 16, "size of SET values in bytes")
-		mix       = flag.String("mix", "50:50", "GET:SET percentage mix, e.g., 80:20")
-		cmd       = flag.String("cmd", "GETSET", "command mix: GETSET | GET | SET | PING")
-		reactive  = flag.Bool("reactive", true, "measure reactive latency with a low-frequency probe")
-		rinterval = flag.Duration("reactive-interval", 100*time.Millisecond, "probe interval for reactive latency")
+		host       = flag.String("host", "localhost", "server host")
+		port       = flag.Int("port", 7379, "server port")
+		duration   = flag.Duration("duration", 30*time.Second, "test duration")
+		warmup     = flag.Duration("warmup", 5*time.Second, "warmup duration")
+		conns      = flag.Int("conns", 16, "number of TCP connections")
+		workers    = flag.Int("workers", 16, "number of concurrent workers (goroutines)")
+		keyspace   = flag.Int("keyspace", 100_000, "number of distinct keys")
+		vsize      = flag.Int("value-size", 16, "size of SET values in bytes")
+		mix        = flag.String("mix", "50:50", "GET:SET percentage mix, e.g., 80:20")
+		cmd        = flag.String("cmd", "GETSET", "command mix: GETSET | GET | SET | PING")
+		reactive   = flag.Bool("reactive", true, "measure reactive latency with a low-frequency probe")
+		rinterval  = flag.Duration("reactive-interval", 100*time.Millisecond, "probe interval for reactive latency")
 		reactBench = flag.Bool("reactive-bench", false, "enable emission latency benchmark using GET.WATCH + SET (cautious, opt-in)")
 		rwatchers  = flag.Int("reactive-watchers", 1, "number of watcher clients to subscribe to keys")
 		rkeys      = flag.Int("reactive-keyspace", 10000, "number of keys to watch for emission benchmarking")
 		opto       = flag.Duration("op-timeout", 5*time.Second, "operation timeout for reactive client connect/fire (0 to disable)")
 		emaxflight = flag.Int("emit-max-inflight", 10000, "max in-flight tokenized SETs to cap memory; excess SETs are untracked")
-		jsonOut   = flag.Bool("json", false, "output results as JSON")
-		seed      = flag.Int64("seed", time.Now().UnixNano(), "random seed")
+		jsonOut    = flag.Bool("json", false, "output results as JSON")
+		seed       = flag.Int64("seed", time.Now().UnixNano(), "random seed")
 	)
 	flag.Parse()
 

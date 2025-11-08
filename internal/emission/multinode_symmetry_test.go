@@ -128,7 +128,7 @@ func TestEmission_MultiReplicaSymmetry_3Nodes(t *testing.T) {
 		ap := emission.NewApplier(n, mgr, shardID)
 		ap.Start(ctx)
 		sender := &emission.MemorySender{}
-	nt := emission.NewNotifier(mgr, nil, &emission.RaftProposer{Node: n, BucketID: shardID}, shardID)
+		nt := emission.NewNotifier(mgr, nil, &emission.RaftProposer{Node: n, BucketID: shardID}, shardID)
 		nodes = append(nodes, n)
 		notifiers = append(notifiers, nt)
 		senders = append(senders, sender)
@@ -240,7 +240,7 @@ func TestEmission_MultiReplicaSymmetry_3Nodes(t *testing.T) {
 		ap := emission.NewApplier(n, mgr, shardID)
 		ap.Start(ctx)
 		sender := &emission.MemorySender{}
-	nt := emission.NewNotifier(mgr, nil, &emission.RaftProposer{Node: n, BucketID: shardID}, shardID)
+		nt := emission.NewNotifier(mgr, nil, &emission.RaftProposer{Node: n, BucketID: shardID}, shardID)
 		nodes = append(nodes, n)
 		notifiers = append(notifiers, nt)
 		senders = append(senders, sender)

@@ -34,7 +34,12 @@ func TestOutboxSendAndAck(t *testing.T) {
 	mgr.ApplyOutboxWrite(ctx, "c1:1", emission.EmitSeq{Epoch: epoch, CommitIndex: 2}, []byte("d2"))
 
 	// Expect two sends in order; drive deterministically
-	for i := 0; i < 200; i++ { if len(sender.Snapshot()) >= 2 { break }; n.TestTickOnce(ctx) }
+	for i := 0; i < 200; i++ {
+		if len(sender.Snapshot()) >= 2 {
+			break
+		}
+		n.TestTickOnce(ctx)
+	}
 	evs := sender.Snapshot()
 	if evs[0].EmitSeq.CommitIndex != 1 || evs[1].EmitSeq.CommitIndex != 2 {
 		t.Fatalf("unexpected emit order: %+v", []uint64{evs[0].EmitSeq.CommitIndex, evs[1].EmitSeq.CommitIndex})
