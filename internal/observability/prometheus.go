@@ -9,6 +9,15 @@ import (
 	"github.com/sevenDatabase/SevenDB/internal/emission"
 )
 
+// customCollectors contains callbacks that return fully formatted Prometheus metric lines.
+// Other packages can register lightweight metrics without introducing dependencies here.
+var customCollectors []func() []string
+
+// RegisterCustomCollector adds a collector function whose returned lines will be emitted on /metrics.
+func RegisterCustomCollector(f func() []string) {
+    customCollectors = append(customCollectors, f)
+}
+
 // SetupPrometheus registers a minimal Prometheus-compatible text endpoint at /metrics.
 // This avoids pulling external dependencies while remaining scrape-friendly.
 func SetupPrometheus(mux *http.ServeMux) {
@@ -26,6 +35,19 @@ func SetupPrometheus(mux *http.ServeMux) {
 		sort.Strings(keys)
 		for _, b := range keys {
 			writeSnapshot(w, b, snaps[b])
+		}
+
+		// Emit custom registered metrics
+		for _, f := range customCollectors {
+			if f == nil {
+				continue
+			}
+			for _, line := range f() {
+				if line == "" {
+					continue
+				}
+				fmt.Fprintln(w, line)
+			}
 		}
 	})
 }
