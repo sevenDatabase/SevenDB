@@ -23,17 +23,17 @@ import (
 var opTimeout time.Duration
 
 type benchConfig struct {
-	Host             string
-	Port             int
-	Duration         time.Duration
-	Warmup           time.Duration
-	Conns            int
-	Workers          int
-	Keyspace         int
-	ValueSize        int
-	RatioGet         int
-	RatioSet         int
-	Command          string
+	Host      string
+	Port      int
+	Duration  time.Duration
+	Warmup    time.Duration
+	Conns     int
+	Workers   int
+	Keyspace  int
+	ValueSize int
+	RatioGet  int
+	RatioSet  int
+	Command   string
 	// DurableSet: when true, append "DURABLE" to every SET issued by the benchmark
 	// (including tokenized SETs used by the emission latency benchmark).
 	// This forces the server to flush+fsync before replying OK (when enabled on server).
@@ -67,11 +67,11 @@ type benchResults struct {
 	ReactiveP99Ms    float64   `json:"reactiveP99Ms"`
 	ReactiveMaxMs    float64   `json:"reactiveMaxMs"`
 	// Emission (watch) latency summary
-	EmitCount uint64  `json:"emitCount"`
-	EmitP50Ms float64 `json:"emitP50Ms"`
-	EmitP95Ms float64 `json:"emitP95Ms"`
-	EmitP99Ms float64 `json:"emitP99Ms"`
-	EmitMaxMs float64 `json:"emitMaxMs"`
+	EmitCount  uint64  `json:"emitCount"`
+	EmitP50Ms  float64 `json:"emitP50Ms"`
+	EmitP95Ms  float64 `json:"emitP95Ms"`
+	EmitP99Ms  float64 `json:"emitP99Ms"`
+	EmitMaxMs  float64 `json:"emitMaxMs"`
 	DurableSet bool    `json:"durableSet"`
 }
 

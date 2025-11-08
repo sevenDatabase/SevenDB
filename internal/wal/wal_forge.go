@@ -72,6 +72,15 @@ type walForge struct {
 	// manifest holds the loaded/created manifest and hash for enforcement and UWAL headers
 	manifest     *Manifest
 	manifestHash []byte
+
+	// group-commit synchronization for Sync()
+	// These fields coordinate concurrent Sync() callers so that a single
+	// flush+fsync can satisfy multiple durable requests that arrived around
+	// the same time. This preserves the "durable before ack" contract while
+	// avoiding one fsync per request under load.
+	syncInProgress bool
+	syncWaitCh     chan struct{}
+	durableLSN     uint64 // last LSN known to be durable on disk
 }
 
 // Test-only hooks (safe no-ops in production)
@@ -971,9 +980,54 @@ func (wl *walForge) Stop() {
 
 // Sync flushes the WAL buffer and fsyncs the current segment to ensure durability.
 func (wl *walForge) Sync() error {
-	wl.mu.Lock()
-	defer wl.mu.Unlock()
-	return wl.sync()
+	for {
+		// Fast-path: if our needed LSN is already durable, return immediately.
+		wl.mu.Lock()
+		// Capture the highest LSN at the time this Sync() is requested.
+		// The caller's append (if any) precedes this call, so its LSN <= need.
+		need := wl.lsn
+		if wl.durableLSN >= need {
+			wl.mu.Unlock()
+			return nil
+		}
+
+		// If a sync is already in progress, wait for it to complete and re-check.
+		if wl.syncInProgress {
+			ch := wl.syncWaitCh
+			wl.mu.Unlock()
+			// Wait without holding wl.mu so appends can proceed and be batched.
+			<-ch
+			// Loop to re-check whether our needed LSN is now durable; if not,
+			// we will either join the next in-progress sync or become leader.
+			continue
+		}
+
+		// Become the leader for this sync cycle.
+		wl.syncInProgress = true
+		wl.syncWaitCh = make(chan struct{})
+		wl.mu.Unlock()
+
+		// Perform the actual flush+fsync while holding wl.mu to serialize with appends
+		// and to guard pendingHS and rotation metadata.
+		wl.mu.Lock()
+		// Snapshot the highest LSN currently buffered; the ensuing sync() will
+		// make all data up to at least this LSN durable.
+		target := wl.lsn
+		err := wl.sync()
+		if err == nil {
+			// Advance durable frontier only on success
+			if target > wl.durableLSN {
+				wl.durableLSN = target
+			}
+		}
+		ch := wl.syncWaitCh
+		wl.syncInProgress = false
+		// Release waiters for this cycle
+		close(ch)
+		wl.mu.Unlock()
+
+		return err
+	}
 }
 
 // --- unified envelope helpers (non-exported) ---

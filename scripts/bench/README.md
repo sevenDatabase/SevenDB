@@ -51,10 +51,13 @@ Reactive latency (ms): p50=0.250 p95=0.850 p99=1.500 max=4.900 (interval=100ms)
 If run with `-durable-set`, the header will be annotated and a note added:
 
 ```
+
 SevenDB benchmark — GETSET (DURABLE)
 ...
 Note: SET operations were issued with DURABLE for synchronous WAL flush+fsync.
+
 ```
+
 ```
 
 To emit machine-readable JSON:
