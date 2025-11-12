@@ -12,15 +12,16 @@ import (
 
 	"github.com/dicedb/dicedb-go"
 
+	"sync/atomic"
+
 	"github.com/dicedb/dicedb-go/wire"
 	"github.com/sevenDatabase/SevenDB/config"
 	"github.com/sevenDatabase/SevenDB/internal/auth"
 	"github.com/sevenDatabase/SevenDB/internal/cmd"
+	"github.com/sevenDatabase/SevenDB/internal/observability"
 	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
 	"github.com/sevenDatabase/SevenDB/internal/types"
 	"github.com/sevenDatabase/SevenDB/internal/wal"
-	"sync/atomic"
-	"github.com/sevenDatabase/SevenDB/internal/observability"
 )
 
 type IOThread struct {

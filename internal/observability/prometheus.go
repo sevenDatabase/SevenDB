@@ -15,7 +15,7 @@ var customCollectors []func() []string
 
 // RegisterCustomCollector adds a collector function whose returned lines will be emitted on /metrics.
 func RegisterCustomCollector(f func() []string) {
-    customCollectors = append(customCollectors, f)
+	customCollectors = append(customCollectors, f)
 }
 
 // SetupPrometheus registers a minimal Prometheus-compatible text endpoint at /metrics.

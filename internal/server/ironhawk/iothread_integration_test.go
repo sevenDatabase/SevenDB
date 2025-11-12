@@ -15,12 +15,12 @@ import (
 
 // walDecorator wraps a WAL implementation to count Sync() calls.
 type walDecorator struct {
-	inner      wal.WAL
-	syncCalls  int
+	inner     wal.WAL
+	syncCalls int
 }
 
-func (w *walDecorator) Init() error { return w.inner.Init() }
-func (w *walDecorator) Stop()       { w.inner.Stop() }
+func (w *walDecorator) Init() error                      { return w.inner.Init() }
+func (w *walDecorator) Stop()                            { w.inner.Stop() }
 func (w *walDecorator) LogCommand(c *wire.Command) error { return w.inner.LogCommand(c) }
 func (w *walDecorator) Sync() error {
 	err := w.inner.Sync()
@@ -29,7 +29,9 @@ func (w *walDecorator) Sync() error {
 	}
 	return err
 }
-func (w *walDecorator) ReplayCommand(cb func(c *wire.Command) error) error { return w.inner.ReplayCommand(cb) }
+func (w *walDecorator) ReplayCommand(cb func(c *wire.Command) error) error {
+	return w.inner.ReplayCommand(cb)
+}
 
 // TestDurableSetTriggersSync initializes a minimal shard + WAL environment and asserts that
 // a SET with the DURABLE flag causes an immediate WAL Sync compared to a buffered SET.
@@ -88,7 +90,9 @@ func TestDurableSetTriggersSync(t *testing.T) {
 	}
 	var newestMod time.Time
 	for _, e := range entries {
-		if e.IsDir() { continue }
+		if e.IsDir() {
+			continue
+		}
 		fi, ferr := os.Stat(filepath.Join(tdir, e.Name()))
 		if ferr == nil && fi.ModTime().After(newestMod) {
 			newestMod = fi.ModTime()
