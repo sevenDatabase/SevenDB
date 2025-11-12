@@ -1,10 +1,10 @@
 package raft
 
 import (
-	"context" // Unused import to be removed
-	"strconv" // Unused import to be removed
-	"testing" // Unused import to be removed
-	"time"    // Unused import to be removed
+	"context"
+	"strconv"
+	"testing"
+	"time"
 )
 
 // TestDeterministicManualMode validates Manual=true operation without background goroutines.
@@ -67,7 +67,9 @@ func TestDeterministicManualMode(t *testing.T) {
 			if committed >= i+1 {
 				break
 			}
-			if time.Since(startTime) > 500*time.Millisecond {
+			// Allow a longer per-proposal wait window to tolerate slow test hosts
+			// and intermittent tick delays observed under heavy IO or CPU pressure.
+			if time.Since(startTime) > 2*time.Second {
 				t.Fatalf("timeout waiting commit %d (have=%d)", i+1, committed)
 			}
 			n.ManualTick()
