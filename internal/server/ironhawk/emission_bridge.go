@@ -32,9 +32,11 @@ func (b *BridgeSender) Send(ctx context.Context, ev *emission.DataEvent) error {
 		if thread, ok := b.wm.clientWatchThreadMap[clientID]; ok && thread != nil {
 			// If we can parse fingerprint and locate the original command, craft
 			// a structured response to mirror legacy NotifyWatchers behavior.
-			// Prefix Message with emit commit index so clients can auto-ACK reliably;
-			// retain raw delta in typed responses where applicable.
-			prefixedMsg := "[emit_commit_index=" + strconv.FormatUint(ev.EmitSeq.CommitIndex, 10) + "] " + string(ev.Delta)
+			// Prefix Message with emit epoch and commit index so clients can dedupe robustly
+			// across log restarts (epoch boundary) and auto-ACK reliably; retain raw delta
+			// in typed responses where applicable.
+			epochStr := ev.EmitSeq.Epoch.BucketUUID + ":" + strconv.FormatUint(uint64(ev.EmitSeq.Epoch.EpochCounter), 10)
+			prefixedMsg := "[emit_epoch=" + epochStr + ", emit_commit_index=" + strconv.FormatUint(ev.EmitSeq.CommitIndex, 10) + "] " + string(ev.Delta)
 			rs := &wire.Result{Status: wire.Status_OK, Message: prefixedMsg}
 			// Best-effort: embed command-specific response (e.g., GET) when known
 			if fpStr := parts[1]; fpStr != "" {
@@ -82,7 +84,8 @@ func (b *BridgeSender) Send(ctx context.Context, ev *emission.DataEvent) error {
 			if thread == nil {
 				continue
 			}
-			prefixedMsg := "[emit_commit_index=" + strconv.FormatUint(ev.EmitSeq.CommitIndex, 10) + "] " + string(ev.Delta)
+			epochStr := ev.EmitSeq.Epoch.BucketUUID + ":" + strconv.FormatUint(uint64(ev.EmitSeq.Epoch.EpochCounter), 10)
+			prefixedMsg := "[emit_epoch=" + epochStr + ", emit_commit_index=" + strconv.FormatUint(ev.EmitSeq.CommitIndex, 10) + "] " + string(ev.Delta)
 			rs := &wire.Result{Status: wire.Status_OK, Message: prefixedMsg}
 			if err := thread.serverWire.Send(ctx, rs); err != nil {
 				msg := err.Error()
