@@ -256,7 +256,7 @@ go test ./internal/raftwal -run 'Determinism_Repeat100' -count=1
 ### 1. Buckets
 
 - Data is partitioned into **buckets**, each with its own Raft log, subscriptions, and notifier.
-- A bucket is the atomic unit of replication, computation, and failover.(**Update**: Now Shards are the unit of replication , buckets as a raft group were too expensive)
+- A bucket is the atomic unit of replication, computation, and failover.(**Update**: Now Shards are the unit of replication , buckets as a raft node were too expensive)
 - Subscriptions bind to the buckets that hold their data, ensuring updates are always ordered and consistent.
 
 ### 2. Compute Sharding
