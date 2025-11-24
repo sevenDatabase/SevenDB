@@ -166,9 +166,19 @@ func (s *Server) AcceptConnectionRequests(ctx context.Context, wg *sync.WaitGrou
 func (s *Server) startIOThread(ctx context.Context, wg *sync.WaitGroup, thread *IOThread) {
 	defer wg.Done()
 	err := thread.Start(ctx, s.shardManager, s.watchManager)
+	
+	// Always cleanup subscriptions on thread exit (EOF or error)
+	if s.watchManager.CleanupThreadWatchSubscriptions(thread) {
+		// Only clear emission watermarks if we successfully cleaned up the thread.
+		// If CleanupThreadWatchSubscriptions returned false, it means a new thread
+		// has already taken over, so we should NOT clear watermarks (race condition).
+		if s.shardManager != nil {
+			s.shardManager.ClearEmissionWatermarksForClient(thread.ClientID)
+		}
+	}
+
 	if err != nil {
 		if err == io.EOF {
-			s.watchManager.CleanupThreadWatchSubscriptions(thread)
 			slog.Debug("client disconnected. io-thread stopped",
 				slog.String("client_id", thread.ClientID),
 				slog.String("mode", thread.Mode),
