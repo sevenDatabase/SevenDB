@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+    "github.com/sevenDatabase/SevenDB/internal/logging"
 	"strconv"
 	"strings"
 
@@ -88,7 +89,7 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 		case tmp := <-recvCh:
 			c = tmp
 			if c != nil {
-				slog.Info("iothread: received command", slog.String("cmd", c.Cmd), slog.Any("args", c.Args))
+				logging.VInfo("verbose", "iothread: received command", slog.String("cmd", c.Cmd), slog.Any("args", c.Args))
 			}
 		}
 
@@ -196,7 +197,7 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 			if shardManager != nil {
 				moved := shardManager.EmissionRebindForKey(_c.Key(), _c.Fingerprint(), "", t.ClientID)
 				if moved {
-					slog.Info("iothread: implicit rebind on WATCH", slog.String("key", _c.Key()), slog.Uint64("fp", _c.Fingerprint()), slog.String("newClient", t.ClientID))
+					logging.VInfo("verbose", "iothread: implicit rebind on WATCH", slog.String("key", _c.Key()), slog.Uint64("fp", _c.Fingerprint()), slog.String("newClient", t.ClientID))
 				}
 			}
 		} else if strings.HasSuffix(c.Cmd, "UNWATCH") {
@@ -210,7 +211,7 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 		}
 
 		watchManager.RegisterThread(t)
-		slog.Info("iothread: registered thread", slog.String("client_id", t.ClientID))
+		logging.VInfo("verbose", "iothread: registered thread", slog.String("client_id", t.ClientID))
 
 		// On successful EMITRECONNECT, rebind the subscription fingerprint to this connection's clientID
 		if strings.EqualFold(c.Cmd, "EMITRECONNECT") {
@@ -226,13 +227,13 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 					}
 				}
 				
-				if fp != 0 {
-					slog.Info("iothread: rebinding client for fp", slog.Uint64("fp", fp), slog.String("old_client", oldClientID), slog.String("client_id", t.ClientID))
+					if fp != 0 {
+					logging.VInfo("verbose", "iothread: rebinding client for fp", slog.Uint64("fp", fp), slog.String("old_client", oldClientID), slog.String("client_id", t.ClientID))
 					watchManager.RebindClientForFP(fp, t.ClientID)
 				} else if oldClientID != "" {
 					// Fallback: if fp is 0 (unknown), try to find the subscription by key and oldClientID
 					key := c.Args[0]
-					slog.Info("iothread: rebinding client for key", slog.String("key", key), slog.String("old_client", oldClientID), slog.String("client_id", t.ClientID))
+					logging.VInfo("verbose", "iothread: rebinding client for key", slog.String("key", key), slog.String("old_client", oldClientID), slog.String("client_id", t.ClientID))
 					watchManager.RebindClientForKey(key, oldClientID, t.ClientID)
 				}
 
@@ -257,7 +258,7 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 									if newSub != "" {
 										n.SetResumeFrom(subID, 0)
 										n.SetResumeFrom(newSub, nextIdx)
-										slog.Info("iothread: triggered resume", slog.String("old_sub", subID), slog.String("new_sub", newSub), slog.Uint64("next_idx", nextIdx))
+										logging.VInfo("verbose", "iothread: triggered resume", slog.String("old_sub", subID), slog.String("new_sub", newSub), slog.Uint64("next_idx", nextIdx))
 									}
 								} else {
 									slog.Error("iothread: notifier not found for key", slog.String("key", key))

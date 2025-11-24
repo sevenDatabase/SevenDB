@@ -32,6 +32,7 @@ import (
 
 	"github.com/sevenDatabase/SevenDB/config"
 	diceerrors "github.com/sevenDatabase/SevenDB/internal/errors"
+	"github.com/sevenDatabase/SevenDB/internal/logging"
 )
 
 func printConfiguration() {
@@ -66,6 +67,17 @@ const EngineIRONHAWK = "ironhawk"
 const EngineSILVERPINE = "silverpine"
 
 func Start() {
+	// Lightweight CLI toggles for logging tags before any logging occurs
+	// Supports: --verbose | -v to enable "verbose" tag, and --log-tags=csv
+	for _, a := range os.Args[1:] {
+		switch {
+		case a == "--verbose" || a == "-v":
+			logging.Enable("verbose")
+		case strings.HasPrefix(a, "--log-tags="):
+			logging.EnableMany(strings.TrimPrefix(a, "--log-tags="))
+		}
+	}
+
 	printBanner()
 	printConfiguration()
 

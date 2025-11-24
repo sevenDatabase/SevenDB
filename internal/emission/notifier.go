@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sevenDatabase/SevenDB/config"
+	"github.com/sevenDatabase/SevenDB/internal/logging"
 )
 
 // Test hooks for crash window simulations in tests. These are no-ops in production
@@ -244,22 +245,26 @@ func (n *Notifier) processTick(ctx context.Context) {
 			}
 
 			if shouldSkip {
-				slog.Info("emission-notifier: skipping sent entry", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()), slog.String("last_sent", lastSent.String()))
+				logging.VInfo("verbose", "emission-notifier: skipping sent entry",
+					slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()), slog.String("last_sent", lastSent.String()))
 				continue
 			}
 			
 			if resumeIdx > 0 && e.Seq.CommitIndex < resumeIdx {
-				slog.Info("emission-notifier: skipping older entry", slog.String("sub_id", sub), slog.Uint64("commit_index", e.Seq.CommitIndex), slog.Uint64("resume_idx", resumeIdx))
+				logging.VInfo("verbose", "emission-notifier: skipping older entry",
+					slog.String("sub_id", sub), slog.Uint64("commit_index", e.Seq.CommitIndex), slog.Uint64("resume_idx", resumeIdx))
 				continue // skip older entries until reaching resume point
 			}
 			ev := &DataEvent{SubID: sub, EmitSeq: e.Seq, Delta: e.Delta}
 			sender := n.getSender()
 			if sender == nil {
 				// follower or sender not yet wired; elevate log to Info temporarily for field diagnosis
-				slog.Info("emission-notifier: no sender set; skipping delivery", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
+				logging.VInfo("verbose", "emission-notifier: no sender set; skipping delivery",
+					slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 				break
 			}
-			slog.Info("emission-notifier: sending event", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
+			logging.VInfo("verbose", "emission-notifier: sending event",
+				slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 			// Resolve hook: prefer instance-captured, else fall back to package-level for tests
 			hookBefore := n.hookBeforeSend
 			if hookBefore == nil {
@@ -280,10 +285,11 @@ func (n *Notifier) processTick(ctx context.Context) {
 			if err := sender.Send(ctx, ev); err != nil {
 				// Differentiate expected transient conditions to avoid noisy logs.
 				msg := err.Error()
-				if strings.Contains(msg, "not leader") || strings.Contains(msg, "no transport") ||
+					if strings.Contains(msg, "not leader") || strings.Contains(msg, "no transport") ||
 					strings.Contains(msg, "no active thread") || strings.Contains(msg, "no recipients") {
 					// Elevate to Info to aid diagnosis when deliveries are missing
-					slog.Info("emission-notifier: send deferred", slog.String("reason", msg), slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
+					logging.VInfo("verbose", "emission-notifier: send deferred",
+						slog.String("reason", msg), slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 				} else {
 					slog.Warn("send failed; will retry on next tick", slog.Any("error", err), slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 				}
@@ -308,7 +314,8 @@ func (n *Notifier) processTick(ctx context.Context) {
 				Metrics.ObserveSend(time.Since(start))
 			}
 				// Temporary elevated log to confirm every emission send; revert to Debug after investigation
-				slog.Info("emission-notifier sent", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
+				logging.VInfo("verbose", "emission-notifier sent",
+					slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 			// If we had a resume threshold and we reached/surpassed it, clear it
 			if resumeIdx > 0 && e.Seq.CommitIndex >= resumeIdx {
 				n.resumeMu.Lock()

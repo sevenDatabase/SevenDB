@@ -8,6 +8,7 @@ import (
 	"github.com/dicedb/dicedb-go/wire"
 	"github.com/sevenDatabase/SevenDB/internal/emission"
 	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
+	"github.com/sevenDatabase/SevenDB/internal/logging"
 )
 
 var cEMITRECONNECT = &CommandMeta{
@@ -32,7 +33,7 @@ var cEMITRECONNECT = &CommandMeta{
 			res.Rs.Message = "invalid last_commit_index"
 			return res, nil
 		}
-		slog.Info("cmd-emitreconnect: processing", slog.String("sub_id", subID), slog.Uint64("last_idx", lastIdx))
+		logging.VInfo("verbose", "cmd-emitreconnect: processing", slog.String("sub_id", subID), slog.Uint64("last_idx", lastIdx))
 		rn := sm.GetRaftNodeForKey(key)
 		if rn == nil {
 			res.Rs.Status = wire.Status_ERR
@@ -53,7 +54,7 @@ var cEMITRECONNECT = &CommandMeta{
 		// Workaround: the shard manager doesn't expose manager; instead we can rely on reconnect not mutating state and use ACK watermark stored in manager.
 		// Provide a minimal pathway: add a helper on shard manager to run reconnect (implemented there) and set resume on notifier when OK.
 	ack := sm.EmissionReconnectForKey(key, req)
-	slog.Info("cmd-emitreconnect: ack received", slog.Int("status", int(ack.Status)), slog.Uint64("next_idx", ack.NextCommitIndex))
+	logging.VInfo("verbose", "cmd-emitreconnect: ack received", slog.Int("status", int(ack.Status)), slog.Uint64("next_idx", ack.NextCommitIndex))
 
 	// Extract fingerprint from subID suffix and compute the new subID using this connection's clientID
 	// c.ClientID is the current connection id; subID is "oldClient:fp" possibly from before restart
@@ -70,7 +71,7 @@ var cEMITRECONNECT = &CommandMeta{
 		// newSub = c.ClientID + ":" + strconv.FormatUint(fp, 10)
 		// First rebind pending outbox entries and watermarks to the new subID
 		moved := sm.EmissionRebindForKey(key, fp, oldClientID, c.ClientID)
-		slog.Info("cmd-emitreconnect: rebind attempt", slog.String("key", key), slog.Uint64("fp", fp), slog.String("oldClient", oldClientID), slog.String("newClient", c.ClientID), slog.Bool("moved", moved))
+		logging.VInfo("verbose", "cmd-emitreconnect: rebind attempt", slog.String("key", key), slog.Uint64("fp", fp), slog.String("oldClient", oldClientID), slog.String("newClient", c.ClientID), slog.Bool("moved", moved))
 	}
 
 		// Observe reconnect outcome for observability (label by bucket/shard)

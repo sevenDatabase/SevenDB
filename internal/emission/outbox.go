@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"github.com/sevenDatabase/SevenDB/internal/logging"
 )
 
 // OutboxEntry represents a durable emission awaiting delivery/ack.
@@ -211,7 +212,7 @@ func (m *Manager) RebindByFingerprint(fp uint64, oldClientID, newClientID string
 				if existsAck || existsCompact {
 					oldSub = candidate
 				} else {
-					slog.Info("RebindByFingerprint: exact match not found, falling back to search", slog.String("candidate", candidate))
+						logging.VInfo("verbose", "RebindByFingerprint: exact match not found, falling back to search", slog.String("candidate", candidate))
 				}
 			}
 		}
@@ -302,7 +303,7 @@ func (m *Manager) RebindByFingerprint(fp uint64, oldClientID, newClientID string
 
 	if oldSub == "" {
 		// Nothing to migrate
-		slog.Info("RebindByFingerprint: oldSub not found", slog.Uint64("fp", fp), slog.String("oldClient", oldClientID))
+		logging.VInfo("verbose", "RebindByFingerprint: oldSub not found", slog.Uint64("fp", fp), slog.String("oldClient", oldClientID))
 		
 		m.ob.mu.RLock()
 		keys := make([]string, 0, len(m.ob.bySub))
@@ -310,7 +311,7 @@ func (m *Manager) RebindByFingerprint(fp uint64, oldClientID, newClientID string
 			keys = append(keys, k)
 		}
 		m.ob.mu.RUnlock()
-		slog.Info("RebindByFingerprint: available subs", slog.Any("keys", keys))
+		logging.VInfo("verbose", "RebindByFingerprint: available subs", slog.Any("keys", keys))
 
 		if newSub == "" && fp != 0 {
 			newSub = newClientID + ":" + strconv.FormatUint(fp, 10)
@@ -329,7 +330,7 @@ func (m *Manager) RebindByFingerprint(fp uint64, oldClientID, newClientID string
 		}
 	}
 
-	slog.Info("RebindByFingerprint: resolving", slog.String("oldSub", oldSub), slog.String("newSub", newSub))
+	logging.VInfo("verbose", "RebindByFingerprint: resolving", slog.String("oldSub", oldSub), slog.String("newSub", newSub))
 
 	if oldSub == newSub {
 		return oldSub, newSub, 0
@@ -379,7 +380,7 @@ func (m *Manager) RebindByFingerprint(fp uint64, oldClientID, newClientID string
 	}
 	m.mu.Unlock()
 
-	slog.Info("rebinding subscription", slog.String("from", oldSub), slog.String("to", newSub), slog.Int("moved_entries", moved))
+	logging.VInfo("verbose", "rebinding subscription", slog.String("from", oldSub), slog.String("to", newSub), slog.Int("moved_entries", moved))
 	return oldSub, newSub, moved
 }
 

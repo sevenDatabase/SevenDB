@@ -8,6 +8,7 @@ import (
 	"time"
 
 	raftimpl "github.com/sevenDatabase/SevenDB/internal/raft"
+	"github.com/sevenDatabase/SevenDB/internal/logging"
 )
 
 // RaftProposer is defined in raft_integration.go
@@ -81,7 +82,7 @@ func (a *Applier) applyCommand(ctx context.Context, cr *raftimpl.CommittedRecord
 			if _, _, err := a.node.ProposeAndWait(ctx, &raftimpl.RaftLogRecord{BucketID: a.epoch.BucketUUID, Type: raftimpl.RaftRecordTypeAppCommand, Payload: b}); err != nil {
 				slog.Error("propose OUTBOX_WRITE failed", slog.Any("error", err))
 			} else {
-				slog.Info("emission-applier: proposed OUTBOX_WRITE", slog.String("sub_id", sub))
+				logging.VInfo("verbose", "emission-applier: proposed OUTBOX_WRITE", slog.String("sub_id", sub))
 			}
 		}
 	case "OUTBOX_WRITE":
@@ -93,7 +94,7 @@ func (a *Applier) applyCommand(ctx context.Context, cr *raftimpl.CommittedRecord
 		seq := EmitSeq{Epoch: EpochID{BucketUUID: pl.Args[1], EpochCounter: parseUint(pl.Args[2])}, CommitIndex: parseUint(pl.Args[3])}
 		delta := []byte(pl.Args[4])
 		a.mgr.ApplyOutboxWrite(ctx, sub, seq, delta)
-		slog.Info("emission-applier: applied OUTBOX_WRITE", slog.String("sub_id", sub), slog.String("seq", seq.String()))
+		logging.VInfo("verbose", "emission-applier: applied OUTBOX_WRITE", slog.String("sub_id", sub), slog.String("seq", seq.String()))
 	case "ACK":
 		// Args: sub_id, bucket_uuid, epoch_counter, commit_index
 		if len(pl.Args) < 4 {
