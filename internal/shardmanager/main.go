@@ -460,6 +460,7 @@ func (manager *ShardManager) NotifierForKey(key string) *emission.Notifier {
 // EmissionReconnectForKey runs Manager.Reconnect for the shard owning the key.
 // Returns a ReconnectAck indicating whether the client can resume and the next commit index.
 func (manager *ShardManager) EmissionReconnectForKey(key string, req emission.ReconnectRequest) emission.ReconnectAck {
+	slog.Info("EmissionReconnectForKey called", "key", key, "subID", req.SubID, "lastCommitIndex", req.LastProcessedEmitSeq.CommitIndex)
 	var zero emission.ReconnectAck
 	if manager == nil || manager.emissionMgrs == nil {
 		return zero
@@ -477,7 +478,7 @@ func (manager *ShardManager) EmissionReconnectForKey(key string, req emission.Re
 
 // EmissionRebindForKey migrates pending outbox entries for fingerprint fp to the current clientID for the shard owning key.
 // No-op if emission is disabled. Returns true if any entries were moved.
-func (manager *ShardManager) EmissionRebindForKey(key string, fp uint64, newClientID string) bool {
+func (manager *ShardManager) EmissionRebindForKey(key string, fp uint64, oldClientID, newClientID string) bool {
 	if manager == nil || manager.emissionMgrs == nil {
 		return false
 	}
@@ -489,7 +490,7 @@ func (manager *ShardManager) EmissionRebindForKey(key string, fp uint64, newClie
 	if mgr == nil {
 		return false
 	}
-	_, _, moved := mgr.RebindByFingerprint(fp, newClientID)
+	_, _, moved := mgr.RebindByFingerprint(fp, oldClientID, newClientID)
 	return moved > 0
 }
 
@@ -573,4 +574,17 @@ func (manager *ShardManager) ProposeDataEventForKey(ctx context.Context, key str
 	}
 	_, _, err = rn.ProposeAndWait(ctx, rec)
 	return err
+}
+
+// ClearEmissionWatermarksForClient clears emission watermarks for the given client ID across all shards.
+// This is called on client disconnect to ensure subsequent reconnections do not skip pending entries.
+func (manager *ShardManager) ClearEmissionWatermarksForClient(clientID string) {
+	if manager == nil || manager.emissionNotifiers == nil {
+		return
+	}
+	for _, n := range manager.emissionNotifiers {
+		if n != nil {
+			n.ClearWatermarksForClient(clientID)
+		}
+	}
 }
