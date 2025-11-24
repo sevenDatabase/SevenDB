@@ -4,6 +4,8 @@
 package cmd
 
 import (
+	"log/slog"
+
 	"github.com/dicedb/dicedb-go/wire"
 	"github.com/sevenDatabase/SevenDB/internal/errors"
 	"github.com/sevenDatabase/SevenDB/internal/shardmanager"
@@ -67,6 +69,7 @@ func evalGETWATCH(c *Cmd, s *dstore.Store) (*CmdRes, error) {
 	}
 
 	r.Rs.Fingerprint64 = c.Fingerprint()
+	slog.Info("evalGETWATCH setting fingerprint", "fp", r.Rs.Fingerprint64)
 	return r, nil
 }
 
