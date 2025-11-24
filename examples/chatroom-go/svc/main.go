@@ -33,12 +33,9 @@ func SendMessage(username, message string) {
 }
 
 func Subscribe() {
-	resp := client.Fire(&wire.Command{
-		Cmd:  "GET.WATCH",
-		Args: []string{"last_message"},
-	})
-	if resp.Status == wire.Status_ERR {
-		fmt.Println("error subscribing:", resp.Message)
+	err := client.Watch("last_message")
+	if err != nil {
+		fmt.Println("error subscribing:", err)
 	}
 }
 

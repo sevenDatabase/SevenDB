@@ -29,3 +29,5 @@ require (
 	golang.org/x/text v0.3.8 // indirect
 	google.golang.org/protobuf v1.36.5 // indirect
 )
+
+replace github.com/dicedb/dicedb-go => ../../vendor/github.com/dicedb/dicedb-go
