@@ -67,7 +67,7 @@ func TestOutboxSendAndAck(t *testing.T) {
 func TestReconnectSemantics(t *testing.T) {
 	mgr := emission.NewManager("a")
 	// Mark compaction through index 5 for sub
-	mgr.SetCompactedThrough("s1", 5)
+	mgr.SetCompactedThrough("s1", emission.EmitSeq{Epoch: emission.EpochID{BucketUUID: "a"}, CommitIndex: 5})
 	// Record last ack 10 via ValidateAck path
 	if !mgr.ValidateAck("s1", emission.EmitSeq{Epoch: emission.EpochID{BucketUUID: "a"}, CommitIndex: 10}) {
 		t.Fatal("unexpected ack regression")

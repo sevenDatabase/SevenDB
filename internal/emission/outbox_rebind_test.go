@@ -18,10 +18,10 @@ func TestRebindByFingerprint_MovesEntriesAndWatermarks(t *testing.T) {
 	if !mgr.ValidateAck(oldSub, EmitSeq{Epoch: epoch, CommitIndex: 10}) {
 		t.Fatalf("unexpected ack regression")
 	}
-	mgr.SetCompactedThrough(oldSub, 7)
+	mgr.SetCompactedThrough(oldSub, EmitSeq{Epoch: epoch, CommitIndex: 7})
 
 	// Rebind to a new client for the same fingerprint
-	from, to, moved := mgr.RebindByFingerprint(42, "newClient")
+	from, to, moved := mgr.RebindByFingerprint(42, "", "newClient")
 	if from != oldSub {
 		t.Fatalf("expected from=%s, got %s", oldSub, from)
 	}

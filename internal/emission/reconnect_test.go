@@ -53,7 +53,7 @@ func TestEmission_Reconnect_OK_ResumesFromNextIndex(t *testing.T) {
 	mgr.ValidateAck(oldSub, emission.EmitSeq{Epoch: epoch, CommitIndex: 3})
 
 	// Rebind to new client id for same fingerprint
-	_, newSub, _ := mgr.RebindByFingerprint(42, "new")
+	_, newSub, _ := mgr.RebindByFingerprint(42, "", "new")
 
 	// Reconnect request with last processed 3 (valid)
 	ack := mgr.Reconnect(emission.ReconnectRequest{SubID: newSub, LastProcessedEmitSeq: emission.EmitSeq{Epoch: epoch, CommitIndex: 3}})
@@ -103,7 +103,7 @@ func runReconnectOKHash(t *testing.T) string {
 		mgr.ApplyOutboxWrite(ctx, oldSub, emission.EmitSeq{Epoch: epoch, CommitIndex: i}, []byte("x"+strconv.FormatUint(i, 10)))
 	}
 	mgr.ValidateAck(oldSub, emission.EmitSeq{Epoch: epoch, CommitIndex: 2})
-	_, newSub, _ := mgr.RebindByFingerprint(77, "new")
+	_, newSub, _ := mgr.RebindByFingerprint(77, "", "new")
 	ack := mgr.Reconnect(emission.ReconnectRequest{SubID: newSub, LastProcessedEmitSeq: emission.EmitSeq{Epoch: epoch, CommitIndex: 2}})
 	if ack.Status != emission.ReconnectOK || ack.NextCommitIndex != 3 {
 		t.Fatalf("bad ack: %+v", ack)
@@ -145,9 +145,9 @@ func TestEmission_Reconnect_Stale_ResumesFromCompactedIndex(t *testing.T) {
 		}
 		mgr.ApplyOutboxWrite(ctx, sub, emission.EmitSeq{Epoch: epoch, CommitIndex: i}, payload)
 	}
-	mgr.SetCompactedThrough(sub, 4)
+	mgr.SetCompactedThrough(sub, emission.EmitSeq{Epoch: epoch, CommitIndex: 4})
 	// Rebind and reconnect with stale position 2
-	_, newSub, _ := mgr.RebindByFingerprint(7, "cli")
+	_, newSub, _ := mgr.RebindByFingerprint(7, "", "cli")
 	ack := mgr.Reconnect(emission.ReconnectRequest{SubID: newSub, LastProcessedEmitSeq: emission.EmitSeq{Epoch: epoch, CommitIndex: 2}})
 	if ack.Status != emission.ReconnectStaleSequence || ack.NextCommitIndex != 4 {
 		t.Fatalf("expected STALE next=4, got %+v", ack)
@@ -178,7 +178,7 @@ func TestEmission_Reconnect_InvalidSequence_Future(t *testing.T) {
 		t.Fatal("setup ack regression")
 	}
 	// Rebind
-	_, newSub, _ := mgr.RebindByFingerprint(9, "cli")
+	_, newSub, _ := mgr.RebindByFingerprint(9, "", "cli")
 	// Client claims it processed 10 (ahead of last+1)
 	ack := mgr.Reconnect(emission.ReconnectRequest{SubID: newSub, LastProcessedEmitSeq: emission.EmitSeq{Epoch: epoch, CommitIndex: 10}})
 	if ack.Status != emission.ReconnectInvalidSequence || ack.NextCommitIndex != 6 {

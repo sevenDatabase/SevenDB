@@ -203,7 +203,7 @@ func runReconnectOKTranscript(t *testing.T) []byte {
 		mgr.ApplyOutboxWrite(ctx, oldSub, emission.EmitSeq{Epoch: epoch, CommitIndex: i}, []byte("x"+strconv.FormatUint(i, 10)))
 	}
 	mgr.ValidateAck(oldSub, emission.EmitSeq{Epoch: epoch, CommitIndex: 2})
-	_, newSub, _ := mgr.RebindByFingerprint(77, "new")
+	_, newSub, _ := mgr.RebindByFingerprint(77, "", "new")
 	ack := mgr.Reconnect(emission.ReconnectRequest{SubID: newSub, LastProcessedEmitSeq: emission.EmitSeq{Epoch: epoch, CommitIndex: 2}})
 	if ack.Status != emission.ReconnectOK || ack.NextCommitIndex != 3 {
 		t.Fatalf("bad ack: %+v", ack)
@@ -250,10 +250,10 @@ func runReconnectStaleTranscript(t *testing.T) []byte {
 		}
 		mgr.ApplyOutboxWrite(ctx, oldSub, emission.EmitSeq{Epoch: epoch, CommitIndex: i}, payload)
 	}
-	mgr.SetCompactedThrough(oldSub, 4)
+	mgr.SetCompactedThrough(oldSub, emission.EmitSeq{Epoch: epoch, CommitIndex: 4})
 
 	// Rebind and reconnect with stale position 2
-	_, newSub, _ := mgr.RebindByFingerprint(7, "new")
+	_, newSub, _ := mgr.RebindByFingerprint(7, "", "new")
 	ack := mgr.Reconnect(emission.ReconnectRequest{SubID: newSub, LastProcessedEmitSeq: emission.EmitSeq{Epoch: epoch, CommitIndex: 2}})
 	if ack.Status != emission.ReconnectStaleSequence || ack.NextCommitIndex != 4 {
 		t.Fatalf("bad stale ack: %+v", ack)
@@ -303,7 +303,7 @@ func runReconnectInvalidTranscript(t *testing.T) []byte {
 	}
 
 	// Rebind; client claims future position (10) -> INVALID with next=6
-	_, newSub, _ := mgr.RebindByFingerprint(9, "cli")
+	_, newSub, _ := mgr.RebindByFingerprint(9, "", "cli")
 	ack := mgr.Reconnect(emission.ReconnectRequest{SubID: newSub, LastProcessedEmitSeq: emission.EmitSeq{Epoch: epoch, CommitIndex: 10}})
 	if ack.Status != emission.ReconnectInvalidSequence || ack.NextCommitIndex != 6 {
 		t.Fatalf("bad invalid ack: %+v", ack)
