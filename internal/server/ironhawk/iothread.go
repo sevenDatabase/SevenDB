@@ -87,6 +87,9 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 			return err
 		case tmp := <-recvCh:
 			c = tmp
+			if c != nil {
+				slog.Info("iothread: received command", slog.String("cmd", c.Cmd), slog.Any("args", c.Args))
+			}
 		}
 
 		_c := &cmd.Cmd{
@@ -166,6 +169,7 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 		if c.Cmd == "HANDSHAKE" && err == nil {
 			t.ClientID = _c.C.Args[0]
 			t.Mode = _c.C.Args[1]
+			slog.Info("HANDSHAKE processed", slog.String("client_id", t.ClientID), slog.String("mode", t.Mode))
 		}
 
 		var watchRegistered bool
@@ -184,6 +188,17 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 			// still point at a stale clientID. Rebind to this connection so future
 			// emissions are delivered here.
 			watchManager.RebindClientForFP(_c.Fingerprint(), t.ClientID)
+
+			// Also rebind any pending outbox entries from a previous connection (if any)
+			// to this new connection. This handles the case where a client reconnects
+			// and re-issues the WATCH command but does not send EMITRECONNECT.
+			// We pass empty oldClientID to let the manager search by fingerprint.
+			if shardManager != nil {
+				moved := shardManager.EmissionRebindForKey(_c.Key(), _c.Fingerprint(), "", t.ClientID)
+				if moved {
+					slog.Info("iothread: implicit rebind on WATCH", slog.String("key", _c.Key()), slog.Uint64("fp", _c.Fingerprint()), slog.String("newClient", t.ClientID))
+				}
+			}
 		} else if strings.HasSuffix(c.Cmd, "UNWATCH") {
 			if err := watchManager.HandleUnwatch(_c, t); err != nil {
 				errRes := &wire.Result{Status: wire.Status_ERR, Message: err.Error()}
@@ -195,15 +210,64 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 		}
 
 		watchManager.RegisterThread(t)
+		slog.Info("iothread: registered thread", slog.String("client_id", t.ClientID))
 
 		// On successful EMITRECONNECT, rebind the subscription fingerprint to this connection's clientID
-		if c.Cmd == "EMITRECONNECT" && res != nil && res.Rs != nil && res.Rs.Status == wire.Status_OK && len(c.Args) >= 3 {
-			// c.Args[1] is sub_id => clientId:fp
-			parts := strings.SplitN(c.Args[1], ":", 2)
-			if len(parts) == 2 {
-				if fp, perr := strconv.ParseUint(parts[1], 10, 64); perr == nil {
-					watchManager.RebindClientForFP(fp, t.ClientID)
+		if strings.EqualFold(c.Cmd, "EMITRECONNECT") {
+			if res != nil && res.Rs != nil && res.Rs.Status == wire.Status_OK && len(c.Args) >= 3 {
+				// c.Args[1] is sub_id => clientId:fp
+				var fp uint64
+				var oldClientID string
+				parts := strings.SplitN(c.Args[1], ":", 2)
+				if len(parts) == 2 {
+					oldClientID = parts[0]
+					if v, perr := strconv.ParseUint(parts[1], 10, 64); perr == nil {
+						fp = v
+					}
 				}
+				
+				if fp != 0 {
+					slog.Info("iothread: rebinding client for fp", slog.Uint64("fp", fp), slog.String("old_client", oldClientID), slog.String("client_id", t.ClientID))
+					watchManager.RebindClientForFP(fp, t.ClientID)
+				} else if oldClientID != "" {
+					// Fallback: if fp is 0 (unknown), try to find the subscription by key and oldClientID
+					key := c.Args[0]
+					slog.Info("iothread: rebinding client for key", slog.String("key", key), slog.String("old_client", oldClientID), slog.String("client_id", t.ClientID))
+					watchManager.RebindClientForKey(key, oldClientID, t.ClientID)
+				}
+
+				// Trigger resume on Notifier (moved from cmd_emitreconnect to avoid race)
+				if strings.HasPrefix(res.Rs.Message, "OK ") {
+							if nextIdx, err := strconv.ParseUint(strings.TrimPrefix(res.Rs.Message, "OK "), 10, 64); err == nil {
+								key := c.Args[0]
+								if n := shardManager.NotifierForKey(key); n != nil {
+									subID := c.Args[1]
+									var newSub string
+									// If fp is 0, we might have rebound by key, so we need to find the real fp to construct newSub
+									if fp == 0 {
+										foundFP := watchManager.GetFingerprintForClient(key, t.ClientID)
+										if foundFP != 0 {
+											fp = foundFP
+											newSub = t.ClientID + ":" + strconv.FormatUint(fp, 10)
+										}
+									} else {
+										newSub = t.ClientID + ":" + strconv.FormatUint(fp, 10)
+									}
+									
+									if newSub != "" {
+										n.SetResumeFrom(subID, 0)
+										n.SetResumeFrom(newSub, nextIdx)
+										slog.Info("iothread: triggered resume", slog.String("old_sub", subID), slog.String("new_sub", newSub), slog.Uint64("next_idx", nextIdx))
+									}
+								} else {
+									slog.Error("iothread: notifier not found for key", slog.String("key", key))
+								}
+							}
+						}
+			} else {
+				slog.Warn("iothread: EMITRECONNECT skipped rebind",
+					slog.Bool("res_ok", res != nil && res.Rs != nil && res.Rs.Status == wire.Status_OK),
+					slog.Int("args_len", len(c.Args)))
 			}
 		}
 
@@ -227,7 +291,25 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 		if err == nil {
 			// Only notify watchers (which also sends the initial watch response) after successful registration
 			if !isWatchCmd || (isWatchCmd && watchRegistered) {
-				watchManager.NotifyWatchers(_c, shardManager, t)
+				// Avoid spurious emissions for non-mutating commands (e.g., EMITACK/EMITRECONNECT/HANDSHAKE).
+				// Notify for:
+				//   - initial GET.WATCH registration (isWatchCmd && watchRegistered)
+				//   - known mutating commands that can affect watched values (SET/DEL/RENAME/GETSET)
+				cmdName := c.Cmd
+				shouldNotify := false
+				if isWatchCmd && watchRegistered {
+					shouldNotify = true
+				} else {
+					switch cmdName {
+					case "SET", "GETSET", "DEL", "RENAME":
+						shouldNotify = true
+					}
+				}
+				if shouldNotify {
+					watchManager.NotifyWatchers(_c, shardManager, t)
+				} else {
+					slog.Debug("skip notify for non-mutating command", slog.String("cmd", cmdName))
+				}
 			}
 		}
 	}
