@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strconv"
+	"time"
 
 	raftimpl "github.com/sevenDatabase/SevenDB/internal/raft"
 )
@@ -19,7 +20,12 @@ type Applier struct {
 }
 
 func NewApplier(node *raftimpl.ShardRaftNode, mgr *Manager, bucketUUID string) *Applier {
-	return &Applier{node: node, mgr: mgr, epoch: EpochID{BucketUUID: bucketUUID, EpochCounter: 0}}
+	// Use current timestamp as epoch counter to ensure monotonicity across restarts
+	// This fixes the issue where a restart resets the raft index but the client
+	// still has a high watermark from the previous run.
+	epoch := EpochID{BucketUUID: bucketUUID, EpochCounter: uint64(time.Now().UnixNano())}
+	mgr.SetCurrentEpoch(epoch)
+	return &Applier{node: node, mgr: mgr, epoch: epoch}
 }
 
 func (a *Applier) Start(ctx context.Context) {
@@ -65,13 +71,17 @@ func (a *Applier) applyCommand(ctx context.Context, cr *raftimpl.CommittedRecord
 		}
 		sub := pl.Args[0]
 		delta := []byte(pl.Args[1])
-		seq := EmitSeq{Epoch: a.epoch, CommitIndex: cr.CommitIndex}
+		// seq := EmitSeq{Epoch: a.epoch, CommitIndex: cr.CommitIndex}
 		// Only the leader should propose the OUTBOX_WRITE; followers will apply it via the handler
 		if a.node.IsLeader() {
-			out := &raftimpl.ReplicationPayload{Version: 1, Cmd: "OUTBOX_WRITE", Args: []string{sub, a.epoch.BucketUUID, formatUint(a.epoch.EpochCounter), formatUint(seq.CommitIndex), string(delta)}}
+			// Use the commit index of the DATA_EVENT itself as the sequence number for the emission.
+			// This ensures that the emission sequence is tied to the original event's position in the log.
+			out := &raftimpl.ReplicationPayload{Version: 1, Cmd: "OUTBOX_WRITE", Args: []string{sub, a.epoch.BucketUUID, formatUint(a.epoch.EpochCounter), formatUint(cr.CommitIndex), string(delta)}}
 			b, _ := json.Marshal(out)
 			if _, _, err := a.node.ProposeAndWait(ctx, &raftimpl.RaftLogRecord{BucketID: a.epoch.BucketUUID, Type: raftimpl.RaftRecordTypeAppCommand, Payload: b}); err != nil {
 				slog.Error("propose OUTBOX_WRITE failed", slog.Any("error", err))
+			} else {
+				slog.Info("emission-applier: proposed OUTBOX_WRITE", slog.String("sub_id", sub))
 			}
 		}
 	case "OUTBOX_WRITE":
@@ -83,6 +93,7 @@ func (a *Applier) applyCommand(ctx context.Context, cr *raftimpl.CommittedRecord
 		seq := EmitSeq{Epoch: EpochID{BucketUUID: pl.Args[1], EpochCounter: parseUint(pl.Args[2])}, CommitIndex: parseUint(pl.Args[3])}
 		delta := []byte(pl.Args[4])
 		a.mgr.ApplyOutboxWrite(ctx, sub, seq, delta)
+		slog.Info("emission-applier: applied OUTBOX_WRITE", slog.String("sub_id", sub), slog.String("seq", seq.String()))
 	case "ACK":
 		// Args: sub_id, bucket_uuid, epoch_counter, commit_index
 		if len(pl.Args) < 4 {
