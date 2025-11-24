@@ -51,6 +51,28 @@ func (w *WatchManager) RebindClientForFP(fp uint64, newClientID string) {
 		delete(w.fpClientMap[fp], cid)
 	}
 	w.fpClientMap[fp][newClientID] = true
+	slog.Info("watch-manager: rebound client for fp", slog.Uint64("fp", fp), slog.String("new_client", newClientID))
+}
+
+// RebindClientForKey searches for any subscription on the given key belonging to oldClientID
+// and rebinds it to newClientID. This is used when the fingerprint is not known (e.g. 0).
+func (w *WatchManager) RebindClientForKey(key string, oldClientID, newClientID string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	fps := w.keyFPMap[key]
+	if fps == nil {
+		return
+	}
+
+	for fp := range fps {
+		clients := w.fpClientMap[fp]
+		if clients != nil && clients[oldClientID] {
+			delete(clients, oldClientID)
+			clients[newClientID] = true
+			slog.Info("watch-manager: rebound client for key", slog.String("key", key), slog.Uint64("fp", fp), slog.String("old_client", oldClientID), slog.String("new_client", newClientID))
+		}
+	}
 }
 
 func (w *WatchManager) RegisterThread(t *IOThread) {
@@ -65,6 +87,7 @@ func (w *WatchManager) RegisterThread(t *IOThread) {
 	// safe; CleanupThreadWatchSubscriptions will prune on disconnect.
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	slog.Info("RegisterThread", slog.String("client_id", t.ClientID))
 	w.clientWatchThreadMap[t.ClientID] = t
 }
 
@@ -203,9 +226,17 @@ func (w *WatchManager) RemoveSubscription(clientID string, fp uint64) error {
 	return nil
 }
 
-func (w *WatchManager) CleanupThreadWatchSubscriptions(t *IOThread) {
+func (w *WatchManager) CleanupThreadWatchSubscriptions(t *IOThread) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	// Check if the current registered thread for this clientID is THIS thread.
+	// If not, it means a new thread has already taken over (race condition where
+	// new connection registered before old connection cleanup), so we should NOT clean up.
+	if existing, ok := w.clientWatchThreadMap[t.ClientID]; ok && existing != t {
+		slog.Info("skipping cleanup for replaced thread", slog.String("client_id", t.ClientID))
+		return false
+	}
 
 	// Delete the mapping of Watch thread to client id
 	delete(w.clientWatchThreadMap, t.ClientID)
@@ -219,6 +250,7 @@ func (w *WatchManager) CleanupThreadWatchSubscriptions(t *IOThread) {
 			delete(w.fpClientMap, fp)
 		}
 	}
+	return true
 }
 
 func (w *WatchManager) NotifyWatchers(c *cmd.Cmd, shardManager *shardmanager.ShardManager, t *IOThread) {
@@ -278,11 +310,19 @@ func (w *WatchManager) NotifyWatchers(c *cmd.Cmd, shardManager *shardmanager.Sha
 					}
 				}
 				deltaBytes := []byte(deltaStr)
+				// Emit an info log per propose to help diagnose missing emissions in production
+				slog.Info("emission-contract: proposing DATA_EVENT",
+					slog.String("key", key),
+					slog.Uint64("fingerprint", f.fp),
+					slog.Int("subs", len(f.subs)),
+					slog.Int("delta_bytes", len(deltaBytes)))
 				for _, clientID := range f.subs {
 					subID := fmt.Sprintf("%s:%d", clientID, f.fp)
 					// Propose by key to ensure the correct shard's raft group is used
 					if err := shardManager.ProposeDataEventForKey(context.Background(), key, subID, deltaBytes); err != nil {
 						slog.Warn("emission-contract: propose DATA_EVENT failed", slog.String("sub_id", subID), slog.Any("error", err))
+					} else {
+						slog.Info("emission-contract: proposed DATA_EVENT", slog.String("sub_id", subID), slog.Int("delta_bytes", len(deltaBytes)))
 					}
 				}
 			}
@@ -332,9 +372,32 @@ func (w *WatchManager) NotifyWatchers(c *cmd.Cmd, shardManager *shardmanager.Sha
 					slog.Any("client_id", thread.ClientID),
 					slog.String("mode", thread.Mode),
 					slog.Any("error", err))
+			} else {
+				// Temporary elevated log for legacy path to confirm each emission delivery
+				slog.Info("legacy emission delivered", slog.String("key", key), slog.Uint64("fingerprint", fp), slog.String("client_id", thread.ClientID))
 			}
 		}
 
 		slog.Debug("notifying watchers for key", slog.String("key", key), slog.Int("watchers", len(w.fpClientMap[fp])))
 	}
+}
+
+// GetFingerprintForClient returns the fingerprint for a given key and clientID.
+// Returns 0 if not found.
+func (w *WatchManager) GetFingerprintForClient(key string, clientID string) uint64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	fps := w.keyFPMap[key]
+	if fps == nil {
+		return 0
+	}
+
+	for fp := range fps {
+		clients := w.fpClientMap[fp]
+		if clients != nil && clients[clientID] {
+			return fp
+		}
+	}
+	return 0
 }
