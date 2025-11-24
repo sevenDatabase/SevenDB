@@ -57,6 +57,11 @@ func SetupWAL() {
 		slog.Error("could not initialize WAL", slog.Any("error", err))
 		panic(err)
 	}
+	// Log the initialized WAL variant and directory used for clarity
+	slog.Info("wal initialized",
+		slog.String("variant", config.Config.WALVariant),
+		slog.String("dir", config.Config.WALDir),
+	)
 }
 
 // SetTestClock injects a test clock function into the default WAL when supported.
