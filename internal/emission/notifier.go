@@ -48,10 +48,10 @@ type Notifier struct {
 	// resumeFrom optionally holds the next commit index to resume from per sub after reconnect
 	resumeMu   sync.Mutex
 	resumeFrom map[string]uint64
-	// sentThrough tracks the highest commit index already sent to a sub (but not necessarily ACKed yet).
+	// sentThrough tracks the highest sequence already sent to a sub (but not necessarily ACKed yet).
 	// This prevents resending the same entry on every poll tick and spamming clients when ACKs lag.
 	sentMu      sync.Mutex
-	sentThrough map[string]uint64
+	sentThrough map[string]EmitSeq
 	// bucketID labels metrics for this notifier's shard/bucket
 	bucketID string
 }
@@ -62,7 +62,7 @@ func NewNotifier(mgr *Manager, sender Sender, proposer Proposer, bucketID string
 	if config.Config != nil && config.Config.EmissionNotifierPollMs > 0 {
 		pollMs = config.Config.EmissionNotifierPollMs
 	}
-	return &Notifier{mgr: mgr, sender: sender, proposer: proposer, ackCh: make(chan *ClientAck, 1024), interval: time.Duration(pollMs) * time.Millisecond, stopCh: make(chan struct{}), resumeFrom: make(map[string]uint64), sentThrough: make(map[string]uint64), bucketID: bucketID}
+	return &Notifier{mgr: mgr, sender: sender, proposer: proposer, ackCh: make(chan *ClientAck, 1024), interval: time.Duration(pollMs) * time.Millisecond, stopCh: make(chan struct{}), resumeFrom: make(map[string]uint64), sentThrough: make(map[string]EmitSeq), bucketID: bucketID}
 }
 
 // Ack injects a client ack (test/simulated path for now).
@@ -107,8 +107,9 @@ func (n *Notifier) loop(ctx context.Context) {
 			}
 			// Advance sentThrough watermark up to the acked index for this sub.
 			n.sentMu.Lock()
-			if last, ok := n.sentThrough[ack.SubID]; !ok || last < ack.EmitSeq.CommitIndex {
-				n.sentThrough[ack.SubID] = ack.EmitSeq.CommitIndex
+			// Compare full EmitSeq (Epoch + CommitIndex)
+			if last, ok := n.sentThrough[ack.SubID]; !ok || (ack.EmitSeq.Epoch.EpochCounter > last.Epoch.EpochCounter) || (ack.EmitSeq.Epoch.EpochCounter == last.Epoch.EpochCounter && ack.EmitSeq.CommitIndex > last.CommitIndex) {
+				n.sentThrough[ack.SubID] = ack.EmitSeq
 			}
 			n.sentMu.Unlock()
 			if n.bucketID != "" {
@@ -141,22 +142,41 @@ func (n *Notifier) TestTickOnce(ctx context.Context) {
 func (n *Notifier) TestProcessAcks(ctx context.Context) { n.processAcks(ctx) }
 
 // SetResumeFrom sets the next commit index to resume sending for a subscription.
+// Note: This assumes the resume is for the CURRENT epoch or a known valid epoch.
+// Since we don't pass epoch here, we construct a synthetic one or just update the index if epoch matches.
+// For MVP, we will assume the caller wants to resume in the current epoch context or reset.
+// However, since sentThrough now tracks EmitSeq, we need to be careful.
+// If we are resuming, we likely want to reset the watermark to (CurrentEpoch, nextCommitIdx-1).
+// But we don't know CurrentEpoch here easily without querying Manager or Applier.
+// Workaround: We will invalidate the sentThrough entry if we are forcing a resume,
+// effectively clearing the watermark so the Notifier picks up from the resume point.
 func (n *Notifier) SetResumeFrom(sub string, nextCommitIdx uint64) {
 	n.resumeMu.Lock()
 	defer n.resumeMu.Unlock()
 	if nextCommitIdx == 0 {
 		delete(n.resumeFrom, sub)
-		// Do not reset sentThrough here; harmless to keep last sent watermark.
 		return
 	}
 	n.resumeFrom[sub] = nextCommitIdx
-	// Ensure sentThrough watermark does not prevent resuming from requested index.
+	
+	// Clear sentThrough to allow Notifier to re-evaluate based on resumeFrom
 	n.sentMu.Lock()
-	if last, ok := n.sentThrough[sub]; ok && last >= nextCommitIdx {
-		// Set just before resume index so notifier will deliver from resume index next.
-		n.sentThrough[sub] = nextCommitIdx - 1
-	}
+	delete(n.sentThrough, sub)
 	n.sentMu.Unlock()
+}
+
+// ClearWatermarksForClient removes sentThrough entries for a given client ID prefix.
+// This ensures that if a client disconnects and reconnects without explicit resume,
+// we don't skip sending pending entries due to stale watermarks.
+func (n *Notifier) ClearWatermarksForClient(clientID string) {
+	prefix := clientID + ":"
+	n.sentMu.Lock()
+	defer n.sentMu.Unlock()
+	for sub := range n.sentThrough {
+		if strings.HasPrefix(sub, prefix) {
+			delete(n.sentThrough, sub)
+		}
+	}
 }
 
 // processAcks drains the ack channel once and applies purges/metrics. Intended for deterministic tests.
@@ -169,8 +189,10 @@ func (n *Notifier) processAcks(ctx context.Context) {
 				continue
 			}
 			n.sentMu.Lock()
-			if last, ok := n.sentThrough[ack.SubID]; !ok || last < ack.EmitSeq.CommitIndex {
-				n.sentThrough[ack.SubID] = ack.EmitSeq.CommitIndex
+			last, ok := n.sentThrough[ack.SubID]
+			isNewer := !ok || ack.EmitSeq.Epoch.EpochCounter > last.Epoch.EpochCounter || (ack.EmitSeq.Epoch.EpochCounter == last.Epoch.EpochCounter && ack.EmitSeq.CommitIndex > last.CommitIndex)
+			if isNewer {
+				n.sentThrough[ack.SubID] = ack.EmitSeq
 			}
 			n.sentMu.Unlock()
 			if n.bucketID != "" {
@@ -207,23 +229,37 @@ func (n *Notifier) processTick(ctx context.Context) {
 			n.sentMu.Lock()
 			lastSent := n.sentThrough[sub]
 			n.sentMu.Unlock()
-			if e.Seq.CommitIndex <= lastSent {
-				continue
-			}
-			// honor resume point if present for this sub
+			
 			n.resumeMu.Lock()
 			resumeIdx := n.resumeFrom[sub]
 			n.resumeMu.Unlock()
+
+			shouldSkip := false
+			if e.Seq.Epoch.EpochCounter < lastSent.Epoch.EpochCounter {
+				shouldSkip = true
+			} else if e.Seq.Epoch.EpochCounter == lastSent.Epoch.EpochCounter {
+				if e.Seq.CommitIndex <= lastSent.CommitIndex {
+					shouldSkip = true
+				}
+			}
+
+			if shouldSkip {
+				slog.Info("emission-notifier: skipping sent entry", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()), slog.String("last_sent", lastSent.String()))
+				continue
+			}
+			
 			if resumeIdx > 0 && e.Seq.CommitIndex < resumeIdx {
+				slog.Info("emission-notifier: skipping older entry", slog.String("sub_id", sub), slog.Uint64("commit_index", e.Seq.CommitIndex), slog.Uint64("resume_idx", resumeIdx))
 				continue // skip older entries until reaching resume point
 			}
 			ev := &DataEvent{SubID: sub, EmitSeq: e.Seq, Delta: e.Delta}
 			sender := n.getSender()
 			if sender == nil {
-				// follower or sender not yet wired; skip quietly to avoid log spam in multi-node tests
-				slog.Debug("no sender set; skipping delivery", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
+				// follower or sender not yet wired; elevate log to Info temporarily for field diagnosis
+				slog.Info("emission-notifier: no sender set; skipping delivery", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 				break
 			}
+			slog.Info("emission-notifier: sending event", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 			// Resolve hook: prefer instance-captured, else fall back to package-level for tests
 			hookBefore := n.hookBeforeSend
 			if hookBefore == nil {
@@ -246,7 +282,8 @@ func (n *Notifier) processTick(ctx context.Context) {
 				msg := err.Error()
 				if strings.Contains(msg, "not leader") || strings.Contains(msg, "no transport") ||
 					strings.Contains(msg, "no active thread") || strings.Contains(msg, "no recipients") {
-					slog.Debug("send deferred", slog.String("reason", msg), slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
+					// Elevate to Info to aid diagnosis when deliveries are missing
+					slog.Info("emission-notifier: send deferred", slog.String("reason", msg), slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 				} else {
 					slog.Warn("send failed; will retry on next tick", slog.Any("error", err), slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 				}
@@ -261,8 +298,8 @@ func (n *Notifier) processTick(ctx context.Context) {
 			}
 			// Mark this commit index as sent for this subscription to avoid spamming until ACK.
 			n.sentMu.Lock()
-			if lastSent < e.Seq.CommitIndex {
-				n.sentThrough[sub] = e.Seq.CommitIndex
+			if lastSent.Epoch.EpochCounter < e.Seq.Epoch.EpochCounter || (lastSent.Epoch.EpochCounter == e.Seq.Epoch.EpochCounter && lastSent.CommitIndex < e.Seq.CommitIndex) {
+				n.sentThrough[sub] = e.Seq
 			}
 			n.sentMu.Unlock()
 			if n.bucketID != "" {
@@ -270,7 +307,8 @@ func (n *Notifier) processTick(ctx context.Context) {
 			} else {
 				Metrics.ObserveSend(time.Since(start))
 			}
-			slog.Debug("SEND", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
+				// Temporary elevated log to confirm every emission send; revert to Debug after investigation
+				slog.Info("emission-notifier sent", slog.String("sub_id", sub), slog.String("emit_seq", e.Seq.String()))
 			// If we had a resume threshold and we reached/surpassed it, clear it
 			if resumeIdx > 0 && e.Seq.CommitIndex >= resumeIdx {
 				n.resumeMu.Lock()
