@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+    "path/filepath"
 	"runtime"
 	"runtime/pprof"
 	"runtime/trace"
@@ -86,7 +87,45 @@ func Start() {
 		serverErrCh = make(chan error, 2)
 	)
 
+	// Surface effective WAL directory and detect potential legacy dir mismatches before init
 	if config.Config.EnableWAL {
+		// Log resolved metadata and wal directories for visibility
+		slog.Info("wal configuration",
+			slog.String("metadata_dir", config.MetadataDir),
+			slog.String("wal_dir", config.Config.WALDir),
+		)
+
+		// Best-effort warning for legacy relative "logs" in CWD vs anchored path under metadata dir
+		// This helps diagnose cases where users previously wrote to ./logs and now read from .sevendb_meta/logs
+		func() {
+			cwd, _ := os.Getwd()
+			legacy := filepath.Join(cwd, "logs")
+			// Only warn when the effective wal_dir differs from the legacy path
+			if legacy != config.Config.WALDir {
+				// Count seg-*.wal files in each dir without failing startup
+				countSegs := func(dir string) int {
+					matches, err := filepath.Glob(filepath.Join(dir, "seg-*.wal"))
+					if err != nil {
+						return 0
+					}
+					return len(matches)
+				}
+				newCnt := countSegs(config.Config.WALDir)
+				oldCnt := countSegs(legacy)
+				// Warn if the new dir is empty but the legacy dir has data; suggest actions
+				if newCnt == 0 && oldCnt > 0 {
+					slog.Warn("wal dir is empty but legacy './logs' has segments; database may restore from a different set than expected",
+						slog.String("effective_wal_dir", config.Config.WALDir),
+						slog.Int("effective_segments", newCnt),
+						slog.String("legacy_dir", legacy),
+						slog.Int("legacy_segments", oldCnt),
+					)
+					slog.Info("to use legacy data, either set 'wal-dir' to the legacy absolute path, or move/copy existing seg-*.wal files into the effective wal-dir before restart")
+				}
+			}
+		}()
+
+		// Initialize WAL after visibility logs
 		wal.SetupWAL()
 	}
 
