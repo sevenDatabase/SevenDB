@@ -39,8 +39,9 @@ entered the watch mode for ZRANK.WATCH users
 OK [fingerprint=3262833422269415227] 2) 10, bob
 OK [fingerprint=3262833422269415227] 1) 10, bob
 	`,
-	Eval:    evalZRANKWATCH,
-	Execute: executeZRANKWATCH,
+	Eval:        evalZRANKWATCH,
+	Execute:     executeZRANKWATCH,
+	IsWatchable: true,
 }
 
 func init() {

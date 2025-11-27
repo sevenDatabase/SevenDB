@@ -36,8 +36,9 @@ client1:7379> ...
 entered the watch mode for ZCARD.WATCH users
 OK [fingerprint=8372868704969517043] 4
 	`,
-	Eval:    evalZCARDWATCH,
-	Execute: executeZCARDWATCH,
+	Eval:        evalZCARDWATCH,
+	Execute:     executeZCARDWATCH,
+	IsWatchable: true,
 }
 
 func init() {

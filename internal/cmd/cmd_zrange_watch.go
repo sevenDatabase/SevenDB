@@ -40,8 +40,9 @@ OK [fingerprint=1007898011883907067]
 3) 30, charlie
 4) 40, daniel
 	`,
-	Eval:    evalZRANGEWATCH,
-	Execute: executeZRANGEWATCH,
+	Eval:        evalZRANGEWATCH,
+	Execute:     executeZRANGEWATCH,
+	IsWatchable: true,
 }
 
 func init() {

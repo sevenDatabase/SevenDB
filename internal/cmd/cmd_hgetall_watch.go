@@ -38,8 +38,9 @@ OK [fingerprint=4237011426]
 0) f1="v1"
 1) f2="v2"
 	`,
-	Eval:    evalHGETALLWATCH,
-	Execute: executeHGETALLWATCH,
+	Eval:        evalHGETALLWATCH,
+	Execute:     executeHGETALLWATCH,
+	IsWatchable: true,
 }
 
 func init() {

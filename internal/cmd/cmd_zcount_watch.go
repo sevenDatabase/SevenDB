@@ -36,8 +36,9 @@ client1:7379> ...
 entered the watch mode for ZCOUNT.WATCH users
 OK [fingerprint=7042915837159566899] 4
 	`,
-	Eval:    evalZCOUNTWATCH,
-	Execute: executeZCOUNTWATCH,
+	Eval:        evalZCOUNTWATCH,
+	Execute:     executeZCOUNTWATCH,
+	IsWatchable: true,
 }
 
 func init() {

@@ -36,8 +36,9 @@ client1:7379> ...
 entered the watch mode for HGET.WATCH k1 f1
 OK [fingerprint=3432795955] "v2"
 	`,
-	Eval:    evalHGETWATCH,
-	Execute: executeHGETWATCH,
+	Eval:        evalHGETWATCH,
+	Execute:     executeHGETWATCH,
+	IsWatchable: true,
 }
 
 func init() {

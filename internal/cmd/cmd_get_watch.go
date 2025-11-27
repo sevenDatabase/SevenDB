@@ -38,8 +38,9 @@ client1:7379> ...
 entered the watch mode for GET.WATCH k1
 OK [fingerprint=2356444921] "v2"
 	`,
-	Eval:    evalGETWATCH,
-	Execute: executeGETWATCH,
+	Eval:        evalGETWATCH,
+	Execute:     executeGETWATCH,
+	IsWatchable: true,
 }
 
 func init() {
