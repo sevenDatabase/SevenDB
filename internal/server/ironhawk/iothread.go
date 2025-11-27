@@ -274,14 +274,15 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 
 		// Send responses:
 		// - Non-watch commands: always send directly (legacy behavior)
-		// - Watch commands: under emission-contract, send the initial ack (with Fingerprint)
-		//   directly here because the emission path defers delivery to the notifier and no
-		//   immediate NotifyWatchers send occurs. In legacy path, NotifyWatchers will send.
+		// - Watch commands: always send the initial ack with Fingerprint64 so clients
+		//   can build a valid SubID for UNWATCH. Under emission-contract, this is the
+		//   only direct send; under legacy path, NotifyWatchers will send updates.
 		if !isWatchCmd {
 			if sendErr := t.serverWire.Send(ctx, res.Rs); sendErr != nil {
 				return sendErr.Unwrap()
 			}
-		} else if config.Config != nil && config.Config.EmissionContractEnabled {
+		} else if watchRegistered {
+			// Send initial watch response with fingerprint
 			if sendErr := t.serverWire.Send(ctx, res.Rs); sendErr != nil {
 				return sendErr.Unwrap()
 			}
