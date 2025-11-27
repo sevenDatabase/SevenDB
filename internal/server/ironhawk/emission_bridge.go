@@ -91,10 +91,10 @@ func (b *BridgeSender) Send(ctx context.Context, ev *emission.DataEvent) error {
 			continue
 		}
 
-		// Construct response
+		// Construct response with fingerprint so client can identify this as an emission update
 		epochStr := ev.EmitSeq.Epoch.BucketUUID + ":" + strconv.FormatUint(uint64(ev.EmitSeq.Epoch.EpochCounter), 10)
 		prefixedMsg := "[emit_epoch=" + epochStr + ", emit_commit_index=" + strconv.FormatUint(ev.EmitSeq.CommitIndex, 10) + "] " + string(ev.Delta)
-		rs := &wire.Result{Status: wire.Status_OK, Message: prefixedMsg}
+		rs := &wire.Result{Status: wire.Status_OK, Message: prefixedMsg, Fingerprint64: fp}
 
 		// Best-effort: embed command-specific response (e.g., GET) when known
 		if fp != 0 {

@@ -159,7 +159,7 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 			t.ClientID = _c.ClientID
 		}
 
-		if _c.Meta.IsWatchable {
+		if _c.Meta != nil && _c.Meta.IsWatchable {
 			// Use the base command fingerprint for watch subscriptions.
 			// This ensures the fingerprint returned to the client matches the one
 			// used internally for registration and persisted to WAL, allowing
