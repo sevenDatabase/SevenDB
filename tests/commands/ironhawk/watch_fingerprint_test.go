@@ -262,12 +262,20 @@ func TestResubscribe_AfterUnwatch(t *testing.T) {
 	fp1 := subRes1.Fingerprint64
 	t.Logf("First subscription fingerprint: %d", fp1)
 
+	// Small delay to let any async emissions settle
+	time.Sleep(50 * time.Millisecond)
+
 	// Unsubscribe
 	fpStr := strconv.FormatUint(fp1, 10)
 	unwatchRes := client.Fire(&wire.Command{Cmd: "UNWATCH", Args: []string{fpStr}})
+	// Note: unwatchRes might actually be an emission response if timing is unlucky.
+	// We check Status_OK but emissions also have Status_OK, so this isn't a perfect check.
 	if unwatchRes.Status != wire.Status_OK {
 		t.Logf("UNWATCH returned: %+v (continuing anyway)", unwatchRes)
 	}
+
+	// Small delay to let UNWATCH fully process and any pending emissions clear
+	time.Sleep(50 * time.Millisecond)
 
 	// Second subscription (resubscribe) - THIS IS THE BUG SCENARIO
 	subRes2 := client.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{"resubkey"}})

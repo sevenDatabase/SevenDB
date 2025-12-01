@@ -99,6 +99,38 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 			Mode:     t.Mode,
 		}
 
+		// Determine if this is a watch command. Require the explicit ".WATCH" suffix
+		// so that commands like "UNWATCH" are not misclassified as watch commands.
+		isWatchCmd := strings.HasSuffix(c.Cmd, ".WATCH")
+
+		// Register subscription EARLY (before execution).
+		// This prevents a race condition where an update occurs between execution (read) and subscription,
+		// causing the client to miss the update.
+		// It also ensures the thread is registered in WatchManager so the emission bridge can find it.
+		var watchRegistered bool
+		if isWatchCmd {
+			if err := watchManager.HandleWatch(_c, t); err != nil {
+				// WAL write (inside HandleWatch) failed; send error and continue
+				errRes := &wire.Result{Status: wire.Status_ERR, Message: err.Error()}
+				if sendErr := t.serverWire.Send(ctx, errRes); sendErr != nil {
+					return sendErr.Unwrap()
+				}
+				continue
+			}
+			watchRegistered = true
+			_ = watchRegistered // suppress unused warning - kept for future use
+			// Ensure this fingerprint routes to the current connection's clientID.
+			watchManager.RebindClientForFP(_c.Fingerprint(), t.ClientID)
+
+			// Also rebind any pending outbox entries from a previous connection
+			if shardManager != nil {
+				moved := shardManager.EmissionRebindForKey(_c.Key(), _c.Fingerprint(), "", t.ClientID)
+				if moved {
+					logging.VInfo("verbose", "iothread: implicit rebind on WATCH", slog.String("key", _c.Key()), slog.Uint64("fp", _c.Fingerprint()), slog.String("newClient", t.ClientID))
+				}
+			}
+		}
+
 		res, err := _c.Execute(shardManager)
 		if err != nil {
 			res = &cmd.CmdRes{
@@ -118,10 +150,6 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 		if res != nil && res.Rs != nil && res.Rs.Status == wire.Status_OK && res.Rs.Message == "" {
 			res.Rs.Message = "OK"
 		}
-
-		// Determine if this is a watch command. Require the explicit ".WATCH" suffix
-		// so that commands like "UNWATCH" are not misclassified as watch commands.
-		isWatchCmd := strings.HasSuffix(c.Cmd, ".WATCH")
 
 		// Log command to WAL if enabled and not a replay and not a watch/unwatch op
 		// Watch/Unwatch are logged via WatchManager as SUBSCRIBE/UNSUBSCRIBE and must be atomic with ack
@@ -153,54 +181,17 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 		// TODO: Optimize this. We are doing this for all command execution
 		// Also, we are allowing people to override the client ID.
 		// Also, CLientID is duplicated in command and io-thread.
-		// Also, we shouldn't allow execution/registration incase of invalid commands
-		// like for B.WATCH cmd since it'll err out we shall return and not create subscription
-		if err == nil {
-			t.ClientID = _c.ClientID
-		}
-
-		if _c.Meta != nil && _c.Meta.IsWatchable {
-			// Use the base command fingerprint for watch subscriptions.
-			// This ensures the fingerprint returned to the client matches the one
-			// used internally for registration and persisted to WAL, allowing
-			// UNWATCH to correctly identify and remove the subscription across restarts.
-			res.Rs.Fingerprint64 = _c.Fingerprint()
-		}
-
-		if c.Cmd == "HANDSHAKE" && err == nil {
-			t.ClientID = _c.C.Args[0]
-			t.Mode = _c.C.Args[1]
-			slog.Info("HANDSHAKE processed", slog.String("client_id", t.ClientID), slog.String("mode", t.Mode))
-		}
-
-		var watchRegistered bool
+		// For WATCH commands, send the initial response with fingerprint IMMEDIATELY
+		// before any other processing. This ensures the response is first in the
+		// client's receive buffer, ahead of any asynchronous emission deliveries.
 		if isWatchCmd {
-			if err := watchManager.HandleWatch(_c, t); err != nil {
-				// WAL write (inside HandleWatch) failed; send error and continue
-				errRes := &wire.Result{Status: wire.Status_ERR, Message: err.Error()}
-				if sendErr := t.serverWire.Send(ctx, errRes); sendErr != nil {
-					return sendErr.Unwrap()
-				}
-				continue
+			slog.Info("iothread: processing watch command", slog.String("cmd", c.Cmd), slog.String("client_id", t.ClientID))
+			if sendErr := t.serverWire.Send(ctx, res.Rs); sendErr != nil {
+				return sendErr.Unwrap()
 			}
-			watchRegistered = true
-			// Ensure this fingerprint routes to the current connection's clientID.
-			// This addresses the case where, after a restart, WAL-replayed subscriptions
-			// still point at a stale clientID. Rebind to this connection so future
-			// emissions are delivered here.
-			watchManager.RebindClientForFP(_c.Fingerprint(), t.ClientID)
+		}
 
-			// Also rebind any pending outbox entries from a previous connection (if any)
-			// to this new connection. This handles the case where a client reconnects
-			// and re-issues the WATCH command but does not send EMITRECONNECT.
-			// We pass empty oldClientID to let the manager search by fingerprint.
-			if shardManager != nil {
-				moved := shardManager.EmissionRebindForKey(_c.Key(), _c.Fingerprint(), "", t.ClientID)
-				if moved {
-					logging.VInfo("verbose", "iothread: implicit rebind on WATCH", slog.String("key", _c.Key()), slog.Uint64("fp", _c.Fingerprint()), slog.String("newClient", t.ClientID))
-				}
-			}
-		} else if strings.HasSuffix(c.Cmd, "UNWATCH") {
+		if strings.HasSuffix(c.Cmd, "UNWATCH") {
 			if err := watchManager.HandleUnwatch(_c, t); err != nil {
 				errRes := &wire.Result{Status: wire.Status_ERR, Message: err.Error()}
 				if sendErr := t.serverWire.Send(ctx, errRes); sendErr != nil {
@@ -272,17 +263,14 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 			}
 		}
 
-		// Send responses:
-		// - Non-watch commands: always send directly (legacy behavior)
-		// - Watch commands: always send the initial ack with Fingerprint64 so clients
-		//   can build a valid SubID for UNWATCH. Under emission-contract, this is the
-		//   only direct send; under legacy path, NotifyWatchers will send updates.
+		// Send responses for non-watch commands.
+		// Watch commands already sent their response earlier (before HandleWatch)
+		// to ensure it arrives before any async emission deliveries.
 		if !isWatchCmd {
-			if sendErr := t.serverWire.Send(ctx, res.Rs); sendErr != nil {
-				return sendErr.Unwrap()
-			}
-		} else if watchRegistered {
-			// Send initial watch response with fingerprint
+			slog.Info("iothread: sending non-watch response",
+				slog.String("cmd", c.Cmd),
+				slog.Uint64("fingerprint", res.Rs.Fingerprint64),
+				slog.String("status", res.Rs.Status.String()))
 			if sendErr := t.serverWire.Send(ctx, res.Rs); sendErr != nil {
 				return sendErr.Unwrap()
 			}
@@ -291,21 +279,16 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 		// TODO: Streamline this because we need ordering of updates
 		// that are being sent to watchers.
 		if err == nil {
-			// Only notify watchers (which also sends the initial watch response) after successful registration
-			if !isWatchCmd || (isWatchCmd && watchRegistered) {
+			// Only notify watchers for mutating commands that can affect watched values.
+			// WATCH commands should NOT trigger notifications - they're just subscriptions,
+			// not data changes. The initial WATCH response already contains the current value.
+			if !isWatchCmd {
 				// Avoid spurious emissions for non-mutating commands (e.g., EMITACK/EMITRECONNECT/HANDSHAKE).
-				// Notify for:
-				//   - initial GET.WATCH registration (isWatchCmd && watchRegistered)
-				//   - known mutating commands that can affect watched values (SET/DEL/RENAME/GETSET)
 				cmdName := c.Cmd
 				shouldNotify := false
-				if isWatchCmd && watchRegistered {
+				switch cmdName {
+				case "SET", "GETSET", "DEL", "RENAME":
 					shouldNotify = true
-				} else {
-					switch cmdName {
-					case "SET", "GETSET", "DEL", "RENAME":
-						shouldNotify = true
-					}
 				}
 				if shouldNotify {
 					watchManager.NotifyWatchers(_c, shardManager, t)

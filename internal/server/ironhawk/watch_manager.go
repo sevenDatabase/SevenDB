@@ -47,11 +47,25 @@ func (w *WatchManager) RebindClientForFP(fp uint64, newClientID string) {
 		w.fpClientMap[fp] = make(map[string]bool)
 	}
 	// Remove all existing clientIDs for this fingerprint and bind only the new one.
+	// Log previous bindings for diagnostics
+	prev := make([]string, 0, len(w.fpClientMap[fp]))
+	for cid := range w.fpClientMap[fp] {
+		prev = append(prev, cid)
+	}
 	for cid := range w.fpClientMap[fp] {
 		delete(w.fpClientMap[fp], cid)
 	}
 	w.fpClientMap[fp][newClientID] = true
-	slog.Info("watch-manager: rebound client for fp", slog.Uint64("fp", fp), slog.String("new_client", newClientID))
+	// Also log current thread mapping for the new client (if present)
+	var hasThread bool
+	if _, ok := w.clientWatchThreadMap[newClientID]; ok {
+		hasThread = true
+	}
+	slog.Info("watch-manager: rebound client for fp",
+		slog.Uint64("fp", fp),
+		slog.String("new_client", newClientID),
+		slog.String("prev_clients", strings.Join(prev, ",")),
+		slog.Bool("new_client_has_thread", hasThread))
 }
 
 // RebindClientForKey searches for any subscription on the given key belonging to oldClientID
