@@ -220,19 +220,21 @@ go run ./scripts/bench/failover_bench.go \
 
 ### Sample output
 
+this was the test results on my local machine with the nodes on the same machine
+
 ```
 === Failover Benchmark Summary ===
-Iterations: 5
+Iterations: 3
 Raft Config: heartbeat=100ms, election=1000ms
 
 Detection Time (ms):
-  p50=152.34 p95=198.45 p99=210.12 avg=165.23
+  p50=1.98 p95=2.16 p99=2.17 avg=1.81
 
 Election Time (ms):
-  p50=320.12 p95=450.34 p99=512.67 avg=355.89
+  p50=0.14 p95=0.19 p99=0.20 avg=0.14
 
 Total Failover Time (ms):
-  p50=472.46 p95=648.79 p99=722.79 avg=521.12
+  p50=11.36 p95=12.57 p99=12.68 avg=11.76
 ```
 
 ---
