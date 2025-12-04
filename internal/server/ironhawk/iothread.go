@@ -7,9 +7,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-    "github.com/sevenDatabase/SevenDB/internal/logging"
 	"strconv"
 	"strings"
+
+	"github.com/sevenDatabase/SevenDB/internal/logging"
 
 	"github.com/dicedb/dicedb-go"
 
@@ -132,6 +133,18 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 		}
 
 		res, err := _c.Execute(shardManager)
+
+		// Sync ClientID and Mode from command back to thread.
+		// Commands like HANDSHAKE/HELLO set these fields, and the thread needs them
+		// for proper subscription routing. Without this sync, all threads would
+		// register under empty ClientID, causing emissions to go to wrong clients.
+		if _c.ClientID != "" && t.ClientID != _c.ClientID {
+			t.ClientID = _c.ClientID
+		}
+		if _c.Mode != "" && t.Mode != _c.Mode {
+			t.Mode = _c.Mode
+		}
+
 		if err != nil {
 			res = &cmd.CmdRes{
 				Rs: &wire.Result{
@@ -217,8 +230,8 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 						fp = v
 					}
 				}
-				
-					if fp != 0 {
+
+				if fp != 0 {
 					logging.VInfo("verbose", "iothread: rebinding client for fp", slog.Uint64("fp", fp), slog.String("old_client", oldClientID), slog.String("client_id", t.ClientID))
 					watchManager.RebindClientForFP(fp, t.ClientID)
 				} else if oldClientID != "" {
@@ -230,32 +243,32 @@ func (t *IOThread) Start(ctx context.Context, shardManager *shardmanager.ShardMa
 
 				// Trigger resume on Notifier (moved from cmd_emitreconnect to avoid race)
 				if strings.HasPrefix(res.Rs.Message, "OK ") {
-							if nextIdx, err := strconv.ParseUint(strings.TrimPrefix(res.Rs.Message, "OK "), 10, 64); err == nil {
-								key := c.Args[0]
-								if n := shardManager.NotifierForKey(key); n != nil {
-									subID := c.Args[1]
-									var newSub string
-									// If fp is 0, we might have rebound by key, so we need to find the real fp to construct newSub
-									if fp == 0 {
-										foundFP := watchManager.GetFingerprintForClient(key, t.ClientID)
-										if foundFP != 0 {
-											fp = foundFP
-											newSub = t.ClientID + ":" + strconv.FormatUint(fp, 10)
-										}
-									} else {
-										newSub = t.ClientID + ":" + strconv.FormatUint(fp, 10)
-									}
-									
-									if newSub != "" {
-										n.SetResumeFrom(subID, 0)
-										n.SetResumeFrom(newSub, nextIdx)
-										logging.VInfo("verbose", "iothread: triggered resume", slog.String("old_sub", subID), slog.String("new_sub", newSub), slog.Uint64("next_idx", nextIdx))
-									}
-								} else {
-									slog.Error("iothread: notifier not found for key", slog.String("key", key))
+					if nextIdx, err := strconv.ParseUint(strings.TrimPrefix(res.Rs.Message, "OK "), 10, 64); err == nil {
+						key := c.Args[0]
+						if n := shardManager.NotifierForKey(key); n != nil {
+							subID := c.Args[1]
+							var newSub string
+							// If fp is 0, we might have rebound by key, so we need to find the real fp to construct newSub
+							if fp == 0 {
+								foundFP := watchManager.GetFingerprintForClient(key, t.ClientID)
+								if foundFP != 0 {
+									fp = foundFP
+									newSub = t.ClientID + ":" + strconv.FormatUint(fp, 10)
 								}
+							} else {
+								newSub = t.ClientID + ":" + strconv.FormatUint(fp, 10)
 							}
+
+							if newSub != "" {
+								n.SetResumeFrom(subID, 0)
+								n.SetResumeFrom(newSub, nextIdx)
+								logging.VInfo("verbose", "iothread: triggered resume", slog.String("old_sub", subID), slog.String("new_sub", newSub), slog.Uint64("next_idx", nextIdx))
+							}
+						} else {
+							slog.Error("iothread: notifier not found for key", slog.String("key", key))
 						}
+					}
+				}
 			} else {
 				slog.Warn("iothread: EMITRECONNECT skipped rebind",
 					slog.Bool("res_ok", res != nil && res.Rs != nil && res.Rs.Status == wire.Status_OK),

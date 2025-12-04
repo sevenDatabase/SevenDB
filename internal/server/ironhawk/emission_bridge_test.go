@@ -11,10 +11,11 @@ import (
 func TestBridge_NoActiveThreadError(t *testing.T) {
 	wm := NewWatchManager()
 	b := NewBridgeSender(wm)
-	// SubID encodes clientID:fp; but no thread registered for client
+	// SubID encodes clientID:fp; but no subscription registered for this fingerprint
 	err := b.Send(context.Background(), &emission.DataEvent{SubID: "missingClient:123", EmitSeq: emission.EmitSeq{CommitIndex: 1}, Delta: []byte("x")})
-	if err == nil || !strings.Contains(err.Error(), "no active thread") {
-		t.Fatalf("expected no active thread error, got %v", err)
+	// With the fix, we now return "no active subscribers for fp" when the fingerprint has no bindings
+	if err == nil || !strings.Contains(err.Error(), "no active subscribers for fp") {
+		t.Fatalf("expected no active subscribers error, got %v", err)
 	}
 }
 

@@ -71,17 +71,29 @@ func (b *BridgeSender) Send(ctx context.Context, ev *emission.DataEvent) error {
 	}
 
 	// Determine target clients.
-	// If the fingerprint is bound to active clients (via RebindClientForFP), use them.
-	// This handles the case where the subscription's original clientID (in SubID)
-	// differs from the current connection's clientID.
+	// Prefer explicit binding via fpClientMap (handles rebinds after restarts).
+	// IMPORTANT: do NOT fall back to the encoded original client ID when a
+	// fingerprint exists but has no active subscribers. Falling back silently
+	// caused emissions to be delivered to the wrong client in some cases
+	// (e.g. stale or mis-bound subIDs). Instead, treat that as "no recipients"
+	// and return an error so callers can retry/rebind as appropriate.
 	var targetIDs []string
 	usedFPMap := false
-	if fp != 0 && len(b.wm.fpClientMap[fp]) > 0 {
-		usedFPMap = true
-		for cid := range b.wm.fpClientMap[fp] {
-			targetIDs = append(targetIDs, cid)
+	if fp != 0 {
+		if clients, ok := b.wm.fpClientMap[fp]; ok && len(clients) > 0 {
+			usedFPMap = true
+			for cid := range clients {
+				targetIDs = append(targetIDs, cid)
+			}
+		} else {
+			// Fingerprint present but no active subscribers; don't silently deliver
+			// to the original encoded clientID (which might be stale/wrong).
+			slog.Info("emission-bridge: no active subscribers for fp; aborting delivery", slog.Uint64("fp", fp), slog.String("sub_id", ev.SubID))
+			return fmt.Errorf("bridge: no active subscribers for fp %d", fp)
 		}
 	} else {
+		// No fingerprint parsed: fall back to the original client encoded in subID
+		// (this is rare / development-only behaviour).
 		targetIDs = []string{originalClientID}
 	}
 	// Diagnostic log: show how targets resolved for this emission
@@ -141,7 +153,7 @@ func (b *BridgeSender) Send(ctx context.Context, ev *emission.DataEvent) error {
 		slog.Info("emission-bridge: attempting fallback delivery by scanning all threads",
 			slog.Uint64("fp", fp),
 			slog.String("sub_id", ev.SubID))
-		
+
 		// Look for any thread that might be watching this fingerprint
 		for clientID, thread := range b.wm.clientWatchThreadMap {
 			if thread == nil {
@@ -152,7 +164,7 @@ func (b *BridgeSender) Send(ctx context.Context, ev *emission.DataEvent) error {
 				epochStr := ev.EmitSeq.Epoch.BucketUUID + ":" + strconv.FormatUint(uint64(ev.EmitSeq.Epoch.EpochCounter), 10)
 				prefixedMsg := "[emit_epoch=" + epochStr + ", emit_commit_index=" + strconv.FormatUint(ev.EmitSeq.CommitIndex, 10) + "] " + string(ev.Delta)
 				rs := &wire.Result{Status: wire.Status_OK, Message: prefixedMsg, Fingerprint64: fp}
-				
+
 				if c := b.wm.fpCmdMap[fp]; c != nil && c.C != nil {
 					base := c.C.Cmd
 					if strings.HasSuffix(base, ".WATCH") {
@@ -162,7 +174,7 @@ func (b *BridgeSender) Send(ctx context.Context, ev *emission.DataEvent) error {
 						rs.Response = &wire.Result_GETRes{GETRes: &wire.GETRes{Value: string(ev.Delta)}}
 					}
 				}
-				
+
 				if err := thread.serverWire.Send(ctx, rs); err == nil {
 					slog.Info("emission-bridge: fallback delivery succeeded",
 						slog.String("client_id", clientID),
@@ -179,9 +191,9 @@ func (b *BridgeSender) Send(ctx context.Context, ev *emission.DataEvent) error {
 		for k := range b.wm.clientWatchThreadMap {
 			keys = append(keys, k)
 		}
-		slog.Warn("bridge: no active thread for client(s)", 
-			slog.Any("targets", targetIDs), 
-			slog.String("sub_id", ev.SubID), 
+		slog.Warn("bridge: no active thread for client(s)",
+			slog.Any("targets", targetIDs),
+			slog.String("sub_id", ev.SubID),
 			slog.Any("available_clients", keys),
 			slog.String("wm_ptr", fmt.Sprintf("%p", b.wm)))
 		return fmt.Errorf("bridge: no active thread for client(s) %v", targetIDs)
