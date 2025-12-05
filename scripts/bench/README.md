@@ -281,21 +281,22 @@ go run ./scripts/bench/reconnect_bench.go \
 ```
 === Subscription Reconnection Benchmark Summary ===
 Target: localhost:7379
-Iterations: 10
-Warmup emissions per iteration: 5
+Iterations: 1
+Warmup emissions per iteration: 500
 
 Reconnection Time (TCP connect, ms):
-  p50=0.85 p95=1.23 p99=1.45 avg=0.92
+  p50=0.64 p95=0.64 p99=0.64 avg=0.64
 
 Resume Time (EMITRECONNECT, ms):
-  p50=0.34 p95=0.56 p99=0.78 avg=0.41
+  p50=0.21 p95=0.21 p99=0.21 avg=0.21
 
 Total Reconnect+Resume Time (ms):
-  p50=1.19 p95=1.79 p99=2.23
+  p50=0.97 p95=0.97 p99=0.97
 
 Data Integrity:
   Total missed emissions: 0
   Total duplicate emissions: 0
+
 ```
 
 ---
@@ -369,19 +370,56 @@ go run ./scripts/bench/crash_recovery_bench.go \
 Scenario: client
 Target: localhost:7379
 Iterations: 5
-Total updates: 500
+Total updates: 10
 
 --- Delivery Guarantees ---
-Exactly-once rate: 100.0% (5/5 iterations with no duplicates and no loss)
+Exactly-once rate: 40.0% (2/5 iterations with no duplicates and no loss)
 At-least-once rate: 100.0% (5/5 iterations with no loss)
-At-most-once rate: 100.0% (5/5 iterations with no duplicates)
+At-most-once rate: 40.0% (2/5 iterations with no duplicates)
 
 --- Data Integrity ---
-Total duplicates: 0
+Total duplicates: 6
 Total missed: 0
 
 --- Recovery Time (ms) ---
-  p50=45.23 p95=78.45 p99=92.34 avg=52.67
+  p50=0.94 p95=1.12 p99=1.14 avg=0.96
+
+--- Detailed Issues ---
+Iteration 2: dups=[1 2]
+Iteration 3: dups=[1 2]
+Iteration 5: dups=[1 2]
+
+
+```
+
+
+```
+=== Crash Recovery Benchmark Summary ===
+Scenario: server
+Target: localhost:7379
+Iterations: 5
+Total updates: 1000
+
+--- Delivery Guarantees ---
+Exactly-once rate: 0.0% (0/5 iterations with no duplicates and no loss)
+At-least-once rate: 100.0% (5/5 iterations with no loss)
+At-most-once rate: 0.0% (0/5 iterations with no duplicates)
+
+--- Data Integrity ---
+Total duplicates: 495
+Total missed: 0
+
+--- Recovery Time (ms) ---
+  p50=2001.45 p95=2002.13 p99=2002.27 avg=2001.50
+
+--- Detailed Issues ---
+Iteration 1: dups=[2 3 4 5 6 7 8 9 10 11]
+Iteration 2: dups=[2 3 4 5 6 7 8 9 10 11]
+Iteration 3: dups=[2 3 4 5 6 7 8 9 10 11]
+Iteration 4: dups=[2 3 4 5 6 7 8 9 10 11]
+Iteration 5: dups=[2 3 4 5 6 7 8 9 10 11]
+
+
 ```
 
 ---
@@ -406,7 +444,7 @@ sleep 3
 echo "=== Running throughput benchmark ==="
 go run ./scripts/bench/main.go -duration 30s -json > results_throughput.json
 
-# 2. Reconnection benchmark  
+# 2. Reconnection benchmark
 echo "=== Running reconnection benchmark ==="
 go run ./scripts/bench/reconnect_bench.go --iterations 10 --json > results_reconnect.json
 
