@@ -161,29 +161,32 @@ func runCrashRecoveryIteration(cfg CrashRecoveryConfig, iteration int) (CrashRec
 }
 
 // runClientCrashScenario simulates client crash/disconnect during emission reception
+// Uses single-connection pattern like the e2e tests: handshake as "watch" mode,
+// then GET.WATCH and PING polling on the same connection.
 func runClientCrashScenario(cfg CrashRecoveryConfig, iteration int) (CrashRecoveryResult, error) {
 	clientID := fmt.Sprintf("crash-client-%d-%d", iteration, time.Now().UnixNano())
 	key := fmt.Sprintf("crash-key-%d", iteration)
 
-	// Publisher
+	// Publisher connection (command mode) - uses default handshake
 	pub, err := dicedb.NewClient(cfg.Host, cfg.Port)
 	if err != nil {
 		return CrashRecoveryResult{}, fmt.Errorf("publisher connect failed: %w", err)
 	}
 	defer pub.Close()
 
-	// First watch session
-	watch1, err := dicedb.NewClient(cfg.Host, cfg.Port)
+	// Watch client - single connection, will handshake as "watch" mode
+	watch1, err := dicedb.NewClient(cfg.Host, cfg.Port, dicedb.WithID(clientID))
 	if err != nil {
 		return CrashRecoveryResult{}, fmt.Errorf("watch connect failed: %w", err)
 	}
 
-	hsResp := watch1.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{clientID, "watch"}})
-	if hsResp.Status != wire.Status_OK {
+	// Re-handshake as "watch" mode (overwrites the default "command" handshake)
+	if r := watch1.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{clientID, "watch"}}); r.Status != wire.Status_OK {
 		watch1.Close()
-		return CrashRecoveryResult{}, fmt.Errorf("handshake failed: %v", hsResp.Message)
+		return CrashRecoveryResult{}, fmt.Errorf("watch handshake failed: %v", r.Message)
 	}
 
+	// Subscribe to key on the same watch connection
 	subResp := watch1.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{key}})
 	if subResp.Status != wire.Status_OK || subResp.Fingerprint64 == 0 {
 		watch1.Close()
@@ -196,6 +199,54 @@ func runClientCrashScenario(cfg CrashRecoveryConfig, iteration int) (CrashRecove
 	received := make(map[int64]*EmissionRecord)
 	var receivedMu sync.Mutex
 	var totalReceived int64
+	var lastCommitIndex uint64
+
+	// Start emission receiver goroutine - uses PING polling on watch connection
+	receiverCtx, receiverCancel := context.WithCancel(context.Background())
+	receiverWg := sync.WaitGroup{}
+	receiverWg.Add(1)
+	go func() {
+		defer receiverWg.Done()
+		for {
+			select {
+			case <-receiverCtx.Done():
+				return
+			default:
+			}
+			// Poll with PING - emissions are piggy-backed onto responses
+			resp := watch1.Fire(&wire.Command{Cmd: "PING"})
+			if resp == nil {
+				time.Sleep(cfg.PollInterval)
+				continue
+			}
+			// Check for emission in the message
+			value := resp.Message
+			if strings.HasPrefix(value, "[emit_epoch=") {
+				// Extract the actual value from the emission format
+				// Format: "[emit_epoch=..., emit_commit_index=N] actual_value"
+				idx := strings.Index(value, "] ")
+				if idx != -1 {
+					value = value[idx+2:]
+				}
+			}
+			if strings.HasPrefix(value, "seq=") {
+				seq := parseSequence(value)
+				if seq > 0 {
+					receivedMu.Lock()
+					if _, exists := received[seq]; !exists {
+						received[seq] = &EmissionRecord{
+							Sequence:   seq,
+							Value:      value,
+							ReceivedAt: time.Now(),
+						}
+						atomic.AddInt64(&totalReceived, 1)
+					}
+					receivedMu.Unlock()
+				}
+			}
+			time.Sleep(cfg.PollInterval)
+		}
+	}()
 
 	// Start producer
 	var producerDone int64
@@ -211,49 +262,42 @@ func runClientCrashScenario(cfg CrashRecoveryConfig, iteration int) (CrashRecove
 			default:
 			}
 			value := fmt.Sprintf("seq=%d|data=test-%d", seq, time.Now().UnixNano())
-			pub.Fire(&wire.Command{Cmd: "SET", Args: []string{key, value}})
+			// Use DURABLE to force WAL sync for benchmark durability
+			pub.Fire(&wire.Command{Cmd: "SET", Args: []string{key, value, "DURABLE"}})
 			time.Sleep(10 * time.Millisecond)
 		}
 		atomic.StoreInt64(&producerDone, 1)
 	}()
 
-	// Receive emissions for first half, then "crash"
+	// Wait for first half of emissions, then "crash"
 	crashAfter := cfg.UpdatesPerIter / 2
-	for i := 0; i < crashAfter*2; i++ { // Extra iterations to catch up
-		pingResp := watch1.Fire(&wire.Command{Cmd: "PING"})
-		if strings.HasPrefix(pingResp.Message, "seq=") {
-			seq := parseSequence(pingResp.Message)
-			if seq > 0 {
-				receivedMu.Lock()
-				if _, exists := received[seq]; !exists {
-					received[seq] = &EmissionRecord{
-						Sequence:   seq,
-						Value:      pingResp.Message,
-						ReceivedAt: time.Now(),
-					}
-				}
-				receivedMu.Unlock()
-				atomic.AddInt64(&totalReceived, 1)
-			}
-		}
-		if len(received) >= crashAfter {
+	deadline := time.Now().Add(cfg.MaxWaitEmission)
+	for time.Now().Before(deadline) {
+		receivedMu.Lock()
+		count := len(received)
+		receivedMu.Unlock()
+		if count >= crashAfter {
 			break
 		}
 		time.Sleep(cfg.PollInterval)
 	}
 
-	var lastCommitIndex uint64 = uint64(len(received))
+	receivedMu.Lock()
+	lastCommitIndex = uint64(len(received))
+	receivedMu.Unlock()
 
-	// Simulate crash
+	// Simulate client crash - close watch connection
+	receiverCancel()
+	receiverWg.Wait()
 	watch1.Close()
 	crashTime := time.Now()
 
 	// Wait for some more updates while "crashed"
 	time.Sleep(200 * time.Millisecond)
 
-	// Reconnect
+	// Reconnect with new watch client (same clientID for resume)
 	recoveryStart := time.Now()
-	watch2, err := dicedb.NewClient(cfg.Host, cfg.Port)
+	watch2, err := dicedb.NewClient(cfg.Host, cfg.Port, dicedb.WithID(clientID))
 	if err != nil {
 		producerCancel()
 		producerWg.Wait()
@@ -261,14 +305,14 @@ func runClientCrashScenario(cfg CrashRecoveryConfig, iteration int) (CrashRecove
 	}
 	defer watch2.Close()
 
-	hsResp2 := watch2.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{clientID, "watch"}})
-	if hsResp2.Status != wire.Status_OK {
+	// Re-handshake as watch mode
+	if r := watch2.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{clientID, "watch"}}); r.Status != wire.Status_OK {
 		producerCancel()
 		producerWg.Wait()
-		return CrashRecoveryResult{}, fmt.Errorf("reconnect handshake failed: %v", hsResp2.Message)
+		return CrashRecoveryResult{}, fmt.Errorf("reconnect handshake failed: %v", r.Message)
 	}
 
-	// Resume from last commit
+	// Resume from last commit using EMITRECONNECT
 	recResp := watch2.Fire(&wire.Command{
 		Cmd:  "EMITRECONNECT",
 		Args: []string{key, subID, strconv.FormatUint(lastCommitIndex, 10)},
@@ -277,56 +321,101 @@ func runClientCrashScenario(cfg CrashRecoveryConfig, iteration int) (CrashRecove
 	_ = crashTime // suppress unused
 
 	if recResp.Status != wire.Status_OK && recResp.Message != "STALE_SEQUENCE" {
-		// Log but continue to collect data
 		fmt.Printf("  Warning: EMITRECONNECT returned: %v\n", recResp.Message)
 	}
 
-	// Continue receiving
-	for atomic.LoadInt64(&producerDone) == 0 || time.Since(recoveryStart) < cfg.MaxWaitEmission {
-		pingResp := watch2.Fire(&wire.Command{Cmd: "PING"})
-		if strings.HasPrefix(pingResp.Message, "seq=") {
-			seq := parseSequence(pingResp.Message)
-			if seq > 0 {
-				receivedMu.Lock()
-				if existing, exists := received[seq]; exists {
-					// Duplicate
-					existing.Value += " [DUP]"
-				} else {
-					received[seq] = &EmissionRecord{
-						Sequence:   seq,
-						Value:      pingResp.Message,
-						ReceivedAt: time.Now(),
-					}
-				}
-				receivedMu.Unlock()
-				atomic.AddInt64(&totalReceived, 1)
+	// Re-subscribe to key
+	subResp2 := watch2.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{key}})
+	_ = subResp2
+
+	// Start receiver for reconnected session
+	receiver2Ctx, receiver2Cancel := context.WithCancel(context.Background())
+	receiver2Wg := sync.WaitGroup{}
+	receiver2Wg.Add(1)
+	go func() {
+		defer receiver2Wg.Done()
+		for {
+			select {
+			case <-receiver2Ctx.Done():
+				return
+			default:
 			}
+			resp := watch2.Fire(&wire.Command{Cmd: "PING"})
+			if resp == nil {
+				time.Sleep(cfg.PollInterval)
+				continue
+			}
+			value := resp.Message
+			if strings.HasPrefix(value, "[emit_epoch=") {
+				idx := strings.Index(value, "] ")
+				if idx != -1 {
+					value = value[idx+2:]
+				}
+			}
+			if strings.HasPrefix(value, "seq=") {
+				seq := parseSequence(value)
+				if seq > 0 {
+					receivedMu.Lock()
+					if existing, exists := received[seq]; exists {
+						existing.Value += " [DUP]"
+					} else {
+						received[seq] = &EmissionRecord{
+							Sequence:   seq,
+							Value:      value,
+							ReceivedAt: time.Now(),
+						}
+					}
+					atomic.AddInt64(&totalReceived, 1)
+					receivedMu.Unlock()
+				}
+			}
+			time.Sleep(cfg.PollInterval)
 		}
-		if len(received) >= cfg.UpdatesPerIter {
+	}()
+
+	// Wait for remaining emissions
+	deadline = time.Now().Add(cfg.MaxWaitEmission)
+	for time.Now().Before(deadline) && atomic.LoadInt64(&producerDone) == 0 {
+		receivedMu.Lock()
+		count := len(received)
+		receivedMu.Unlock()
+		if count >= cfg.UpdatesPerIter {
 			break
 		}
 		time.Sleep(cfg.PollInterval)
 	}
+	// Extra wait after producer done
+	time.Sleep(500 * time.Millisecond)
 
+	receiver2Cancel()
+	receiver2Wg.Wait()
 	producerCancel()
 	producerWg.Wait()
 
 	// Analyze results
-	return analyzeResults(cfg, iteration, "client", received, int(totalReceived), recoveryDuration)
+	return analyzeResults(cfg, iteration, "client", received, int(atomic.LoadInt64(&totalReceived)), recoveryDuration)
 }
 
 // runServerCrashScenario simulates server crash during emission
+// Uses single-connection pattern like the e2e tests.
 func runServerCrashScenario(cfg CrashRecoveryConfig, iteration int) (CrashRecoveryResult, error) {
 	iterDir := fmt.Sprintf("%s/server-crash-%d", cfg.BaseDir, iteration)
 	os.RemoveAll(iterDir)
 	os.MkdirAll(iterDir, 0755)
 	defer os.RemoveAll(iterDir)
 
-	// Start server
+	// Start server with WAL enabled and durable-set support for the benchmark so
+	// that SETs are fsynced before acknowledgement and survive hard kills.
+	walDir := fmt.Sprintf("%s/wal", iterDir)
 	serverArgs := []string{
 		fmt.Sprintf("--port=%d", cfg.Port),
 		"--log-level=warn",
 		fmt.Sprintf("--status-file-path=%s/status.json", iterDir),
+		"--enable-wal=true",
+		fmt.Sprintf("--wal-dir=%s", walDir),
+		"--wal-enable-durable-set=true",
+		"--wal-buffer-sync-interval-ms=0",
+		fmt.Sprintf("--metadata-dir=%s", iterDir),
 	}
 	cmd := exec.Command(cfg.BinaryPath, serverArgs...)
 	cmd.Dir = iterDir
@@ -339,7 +428,7 @@ func runServerCrashScenario(cfg CrashRecoveryConfig, iteration int) (CrashRecove
 	clientID := fmt.Sprintf("server-crash-client-%d", iteration)
 	key := fmt.Sprintf("server-crash-key-%d", iteration)
 
-	// Publisher
+	// Publisher connection (command mode)
 	pub, err := dicedb.NewClient("127.0.0.1", cfg.Port)
 	if err != nil {
 		cmd.Process.Signal(syscall.SIGTERM)
@@ -347,8 +436,8 @@ func runServerCrashScenario(cfg CrashRecoveryConfig, iteration int) (CrashRecove
 		return CrashRecoveryResult{}, fmt.Errorf("publisher connect failed: %w", err)
 	}
 
-	// Watch client
-	watch, err := dicedb.NewClient("127.0.0.1", cfg.Port)
+	// Watch client with single-connection pattern (handshake as "watch")
+	watch, err := dicedb.NewClient("127.0.0.1", cfg.Port, dicedb.WithID(clientID))
 	if err != nil {
 		pub.Close()
 		cmd.Process.Signal(syscall.SIGTERM)
@@ -356,13 +445,13 @@ func runServerCrashScenario(cfg CrashRecoveryConfig, iteration int) (CrashRecove
 		return CrashRecoveryResult{}, fmt.Errorf("watch connect failed: %w", err)
 	}
 
-	hsResp := watch.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{clientID, "watch"}})
-	if hsResp.Status != wire.Status_OK {
+	// Re-handshake as watch mode
+	if r := watch.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{clientID, "watch"}}); r.Status != wire.Status_OK {
 		watch.Close()
 		pub.Close()
 		cmd.Process.Signal(syscall.SIGTERM)
 		cmd.Wait()
-		return CrashRecoveryResult{}, fmt.Errorf("handshake failed: %v", hsResp.Message)
+		return CrashRecoveryResult{}, fmt.Errorf("watch handshake failed: %v", r.Message)
 	}
 
 	subResp := watch.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{key}})
@@ -377,35 +466,78 @@ func runServerCrashScenario(cfg CrashRecoveryConfig, iteration int) (CrashRecove
 	subID := fmt.Sprintf("%s:%d", clientID, fingerprint)
 
 	received := make(map[int64]*EmissionRecord)
+	var receivedMu sync.Mutex
 	var totalReceived int64
 
-	// Produce first half
+	// Start emission receiver with PING polling
+	receiverCtx, receiverCancel := context.WithCancel(context.Background())
+	receiverWg := sync.WaitGroup{}
+	receiverWg.Add(1)
+	go func() {
+		defer receiverWg.Done()
+		for {
+			select {
+			case <-receiverCtx.Done():
+				return
+			default:
+			}
+			resp := watch.Fire(&wire.Command{Cmd: "PING"})
+			if resp == nil {
+				time.Sleep(cfg.PollInterval)
+				continue
+			}
+			value := resp.Message
+			if strings.HasPrefix(value, "[emit_epoch=") {
+				idx := strings.Index(value, "] ")
+				if idx != -1 {
+					value = value[idx+2:]
+				}
+			}
+			if strings.HasPrefix(value, "seq=") {
+				seq := parseSequence(value)
+				if seq > 0 {
+					receivedMu.Lock()
+					if _, exists := received[seq]; !exists {
+						received[seq] = &EmissionRecord{
+							Sequence:   seq,
+							Value:      value,
+							ReceivedAt: time.Now(),
+						}
+						atomic.AddInt64(&totalReceived, 1)
+					}
+					receivedMu.Unlock()
+				}
+			}
+			time.Sleep(cfg.PollInterval)
+		}
+	}()
+
+	// Produce first half with DURABLE
 	for seq := int64(1); seq <= int64(cfg.UpdatesPerIter/2); seq++ {
 		value := fmt.Sprintf("seq=%d|pre-crash", seq)
-		pub.Fire(&wire.Command{Cmd: "SET", Args: []string{key, value}})
+		pub.Fire(&wire.Command{Cmd: "SET", Args: []string{key, value, "DURABLE"}})
+		time.Sleep(5 * time.Millisecond)
 	}
 
-	// Receive what we can
-	for i := 0; i < cfg.UpdatesPerIter; i++ {
-		pingResp := watch.Fire(&wire.Command{Cmd: "PING"})
-		if strings.HasPrefix(pingResp.Message, "seq=") {
-			seq := parseSequence(pingResp.Message)
-			if seq > 0 && received[seq] == nil {
-				received[seq] = &EmissionRecord{
-					Sequence:   seq,
-					Value:      pingResp.Message,
-					ReceivedAt: time.Now(),
-				}
-				totalReceived++
-			}
-		}
-		time.Sleep(cfg.PollInterval)
-		if len(received) >= cfg.UpdatesPerIter/2 {
+	// Wait for emissions
+	deadline := time.Now().Add(cfg.MaxWaitEmission)
+	for time.Now().Before(deadline) {
+		receivedMu.Lock()
+		count := len(received)
+		receivedMu.Unlock()
+		if count >= cfg.UpdatesPerIter/2 {
 			break
 		}
+		time.Sleep(cfg.PollInterval)
 	}
 
+	receivedMu.Lock()
 	lastCommit := uint64(len(received))
+	receivedMu.Unlock()
+
+	// Stop receiver before crash
+	receiverCancel()
+	receiverWg.Wait()
 
 	// Crash server
 	watch.Close()
@@ -428,22 +560,23 @@ func runServerCrashScenario(cfg CrashRecoveryConfig, iteration int) (CrashRecove
 	time.Sleep(cfg.StabilizeWait)
 	recoveryDuration := time.Since(recoveryStart)
 
-	// Reconnect and resume
+	// Reconnect publisher
 	pub2, err := dicedb.NewClient("127.0.0.1", cfg.Port)
 	if err != nil {
 		return CrashRecoveryResult{}, fmt.Errorf("post-recovery publisher connect failed: %w", err)
 	}
 	defer pub2.Close()
 
-	watch2, err := dicedb.NewClient("127.0.0.1", cfg.Port)
+	// Reconnect watch client with single-connection pattern
+	watch2, err := dicedb.NewClient("127.0.0.1", cfg.Port, dicedb.WithID(clientID))
 	if err != nil {
 		return CrashRecoveryResult{}, fmt.Errorf("post-recovery watch connect failed: %w", err)
 	}
 	defer watch2.Close()
 
-	hsResp2 := watch2.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{clientID, "watch"}})
-	if hsResp2.Status != wire.Status_OK {
-		return CrashRecoveryResult{}, fmt.Errorf("post-recovery handshake failed: %v", hsResp2.Message)
+	// Re-handshake as watch mode
+	if r := watch2.Fire(&wire.Command{Cmd: "HANDSHAKE", Args: []string{clientID, "watch"}}); r.Status != wire.Status_OK {
+		return CrashRecoveryResult{}, fmt.Errorf("post-recovery watch handshake failed: %v", r.Message)
 	}
 
 	// Attempt reconnect
@@ -452,41 +585,80 @@ func runServerCrashScenario(cfg CrashRecoveryConfig, iteration int) (CrashRecove
 		Args: []string{key, subID, strconv.FormatUint(lastCommit, 10)},
 	})
 
-	// Re-subscribe if needed
+	// Re-subscribe
 	subResp2 := watch2.Fire(&wire.Command{Cmd: "GET.WATCH", Args: []string{key}})
 	_ = subResp2
 
-	// Produce remaining
+	// Start emission receiver for post-recovery with PING polling
+	receiver2Ctx, receiver2Cancel := context.WithCancel(context.Background())
+	receiver2Wg := sync.WaitGroup{}
+	receiver2Wg.Add(1)
+	go func() {
+		defer receiver2Wg.Done()
+		for {
+			select {
+			case <-receiver2Ctx.Done():
+				return
+			default:
+			}
+			resp := watch2.Fire(&wire.Command{Cmd: "PING"})
+			if resp == nil {
+				time.Sleep(cfg.PollInterval)
+				continue
+			}
+			value := resp.Message
+			if strings.HasPrefix(value, "[emit_epoch=") {
+				idx := strings.Index(value, "] ")
+				if idx != -1 {
+					value = value[idx+2:]
+				}
+			}
+			if strings.HasPrefix(value, "seq=") {
+				seq := parseSequence(value)
+				if seq > 0 {
+					receivedMu.Lock()
+					if existing, exists := received[seq]; exists {
+						existing.Value += " [DUP]"
+					} else {
+						received[seq] = &EmissionRecord{
+							Sequence:   seq,
+							Value:      value,
+							ReceivedAt: time.Now(),
+						}
+					}
+					atomic.AddInt64(&totalReceived, 1)
+					receivedMu.Unlock()
+				}
+			}
+			time.Sleep(cfg.PollInterval)
+		}
+	}()
+
+	// Produce remaining with DURABLE
 	for seq := int64(cfg.UpdatesPerIter/2 + 1); seq <= int64(cfg.UpdatesPerIter); seq++ {
 		value := fmt.Sprintf("seq=%d|post-crash", seq)
-		pub2.Fire(&wire.Command{Cmd: "SET", Args: []string{key, value}})
+		pub2.Fire(&wire.Command{Cmd: "SET", Args: []string{key, value, "DURABLE"}})
+		time.Sleep(5 * time.Millisecond)
 	}
 
-	// Receive remaining
-	for i := 0; i < cfg.UpdatesPerIter*2; i++ {
-		pingResp := watch2.Fire(&wire.Command{Cmd: "PING"})
-		if strings.HasPrefix(pingResp.Message, "seq=") {
-			seq := parseSequence(pingResp.Message)
-			if seq > 0 {
-				if existing, exists := received[seq]; exists {
-					existing.Value += " [DUP]"
-				} else {
-					received[seq] = &EmissionRecord{
-						Sequence:   seq,
-						Value:      pingResp.Message,
-						ReceivedAt: time.Now(),
-					}
-				}
-				totalReceived++
-			}
-		}
-		time.Sleep(cfg.PollInterval)
-		if len(received) >= cfg.UpdatesPerIter {
+	// Wait for remaining emissions
+	deadline = time.Now().Add(cfg.MaxWaitEmission)
+	for time.Now().Before(deadline) {
+		receivedMu.Lock()
+		count := len(received)
+		receivedMu.Unlock()
+		if count >= cfg.UpdatesPerIter {
 			break
 		}
+		time.Sleep(cfg.PollInterval)
 	}
+	// Extra wait
+	time.Sleep(500 * time.Millisecond)
 
-	return analyzeResults(cfg, iteration, "server", received, int(totalReceived), recoveryDuration)
+	receiver2Cancel()
+	receiver2Wg.Wait()
+
+	return analyzeResults(cfg, iteration, "server", received, int(atomic.LoadInt64(&totalReceived)), recoveryDuration)
 }
 
 // runBothCrashScenario simulates both client and server crash
