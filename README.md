@@ -237,7 +237,7 @@ Additional docs:
 - [Emission Contract architecture](./docs/src/content/docs/architecture/emission-contract.mdx)
 - [Emission} Contract – operations & config](./docs/src/content/docs/emission-contract-ops.mdx)
 
-## Determinism
+## Benchmarks and Determinism
 
 See docs: [Determinism: scope, harness, and how to run](./docs/DETERMINISM.md)
 
@@ -250,6 +250,43 @@ go test ./internal/emission -run 'Determinism_Repeat100' -count=1
 # WAL determinism (rotation and prune)
 go test ./internal/raftwal -run 'Determinism_Repeat100' -count=1
 ```
+
+Reconnect Benchmarks:
+
+```zsh
+go run ./scripts/bench/reconnect_bench.go --host localhost --port 7379 --iterations 1 --warmup-emissions 50
+```
+
+**Crash Recovery Benchmarks:**
+
+Server Crash Scenario :
+```zsh
+  go run scripts/bench/crash_recovery_bench.go \ 
+  --scenario=server \
+  --binary=/home/blagden/Documents/sevenDB/sevendb \
+  --iterations=5 \
+  --updates=200
+```
+
+Client Crash Scenario:
+```zsh
+./sevendb --enable-wal --wal-enable-durable-set  # in another terminal
+go run scripts/bench/crash_recovery_bench.go \
+  --scenario=client \
+  --iterations=5 \
+  --updates=2
+
+```
+Failover Benchmarks:
+```zsh
+go run failover_bench.go -binary /home/blagden/Documents/sevenDB/sevendb -iterations 30
+```
+
+Throughput, Latency Benchmarks:
+```zsh
+make bench
+```
+
 
 ## Core Concepts
 
