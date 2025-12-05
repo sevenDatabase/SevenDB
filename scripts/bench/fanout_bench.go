@@ -229,3 +229,20 @@ func runBenchmark(host string, port int, duration time.Duration, payloadSize int
 		LatencyMaxMs:     max,
 	}
 }
+
+
+
+/*
+The reasoning for limiting the throughput (specifically via the time.Sleep(1 * time.Millisecond) in the writer loop) was to prevent a broadcast storm that would inevitably overwhelm the system.
+
+Here is the breakdown of the calculation:
+
+The Multiplier Effect: In a fan-out scenario, every 1 write operation generates N discrete network messages (one for each watcher).
+The Scale: With $N=10,000$ watchers:
+If the writer pushed at full speed (e.g., 100,000 writes/sec), the server would theoretically need to dispatch 1,000,000,000 (1 Billion) messages per second.
+The Bottleneck: No single machine (localhost) can handle 1 billion TCP packets per second. Without throttling, the server's outbound network buffers would fill instantly, causing massive packet loss, TCP retransmissions, and likely crashing the clients or the server (as we saw with the initial connection errors).
+By adding time.Sleep(1 * time.Millisecond), we effectively capped the writer to ~1,000 ops/sec.
+
+Target Load: 1,000 writes/sec * 10,000 watchers = 10,000,000 notifications/sec.
+Result: This prevented the "denial of service" effect while still testing the system under extremely heavy concurrency.
+*/
