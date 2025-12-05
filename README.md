@@ -294,6 +294,17 @@ go run scripts/bench/fanout_bench.go
 ```
 
 
+Throughput vs Latency Benchmarks:
+```zsh
+go run scripts/bench/throughput_vs_latency_bench.go \
+  --start-rate 1000 \
+  --end-rate 50000 \
+  --step-rate 2000 \
+  --step-duration 5s \
+  --conns 50
+```
+
+
 ## Core Concepts
 
 ### 1. Buckets
