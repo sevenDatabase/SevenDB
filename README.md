@@ -261,7 +261,7 @@ go run ./scripts/bench/reconnect_bench.go --host localhost --port 7379 --iterati
 
 Server Crash Scenario :
 ```zsh
-  go run scripts/bench/crash_recovery_bench.go \ 
+  go run scripts/bench/crash_recovery_bench.go \
   --scenario=server \
   --binary=/home/blagden/Documents/sevenDB/sevendb \
   --iterations=5 \
@@ -285,6 +285,12 @@ go run failover_bench.go -binary /home/blagden/Documents/sevenDB/sevendb -iterat
 Throughput, Latency Benchmarks:
 ```zsh
 make bench
+```
+
+
+Fan-out Benchmarks:
+```zsh
+go run scripts/bench/fanout_bench.go
 ```
 
 
