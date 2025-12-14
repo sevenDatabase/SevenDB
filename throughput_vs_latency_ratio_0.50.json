@@ -1,0 +1,90 @@
+[
+  {
+    "targetOpsSec": 10000,
+    "actualOpsSec": 9993.945999312624,
+    "latencyP50Ms": 1.144,
+    "latencyP95Ms": 2.36,
+    "latencyP99Ms": 2.945,
+    "latencyMaxMs": 10.395
+  },
+  {
+    "targetOpsSec": 15000,
+    "actualOpsSec": 14989.623687825706,
+    "latencyP50Ms": 1.125,
+    "latencyP95Ms": 2.4,
+    "latencyP99Ms": 4.892,
+    "latencyMaxMs": 11.22
+  },
+  {
+    "targetOpsSec": 20000,
+    "actualOpsSec": 19988.642581547687,
+    "latencyP50Ms": 1.158,
+    "latencyP95Ms": 2.409,
+    "latencyP99Ms": 5.283,
+    "latencyMaxMs": 13.47
+  },
+  {
+    "targetOpsSec": 25000,
+    "actualOpsSec": 24987.640357748485,
+    "latencyP50Ms": 1.246,
+    "latencyP95Ms": 2.427,
+    "latencyP99Ms": 4.165,
+    "latencyMaxMs": 16.533
+  },
+  {
+    "targetOpsSec": 30000,
+    "actualOpsSec": 29984.393335904788,
+    "latencyP50Ms": 1.297,
+    "latencyP95Ms": 2.376,
+    "latencyP99Ms": 3.925,
+    "latencyMaxMs": 12.604
+  },
+  {
+    "targetOpsSec": 35000,
+    "actualOpsSec": 34959.3748812538,
+    "latencyP50Ms": 1.297,
+    "latencyP95Ms": 2.276,
+    "latencyP99Ms": 3.877,
+    "latencyMaxMs": 13.859
+  },
+  {
+    "targetOpsSec": 40000,
+    "actualOpsSec": 39752.961339189686,
+    "latencyP50Ms": 1.275,
+    "latencyP95Ms": 2.101,
+    "latencyP99Ms": 3.16,
+    "latencyMaxMs": 13.313
+  },
+  {
+    "targetOpsSec": 45000,
+    "actualOpsSec": 41951.51528812839,
+    "latencyP50Ms": 1.245,
+    "latencyP95Ms": 1.984,
+    "latencyP99Ms": 3.025,
+    "latencyMaxMs": 14.169
+  },
+  {
+    "targetOpsSec": 50000,
+    "actualOpsSec": 39458.74891035699,
+    "latencyP50Ms": 1.28,
+    "latencyP95Ms": 2.162,
+    "latencyP99Ms": 3.396,
+    "latencyMaxMs": 13.29
+  },
+  {
+    "targetOpsSec": 55000,
+    "actualOpsSec": 39363.835858743376,
+    "latencyP50Ms": 1.282,
+    "latencyP95Ms": 2.131,
+    "latencyP99Ms": 3.093,
+    "latencyMaxMs": 12.221
+  },
+  {
+    "targetOpsSec": 60000,
+    "actualOpsSec": 38915.65978772688,
+    "latencyP50Ms": 1.29,
+    "latencyP95Ms": 2.185,
+    "latencyP99Ms": 3.499,
+    "latencyMaxMs": 13.422
+  }
+]

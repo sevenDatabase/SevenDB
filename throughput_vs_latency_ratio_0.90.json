@@ -1,0 +1,66 @@
+[
+  {
+    "targetOpsSec": 10000,
+    "actualOpsSec": 9995.677409287064,
+    "latencyP50Ms": 1.105,
+    "latencyP95Ms": 2.397,
+    "latencyP99Ms": 3.596,
+    "latencyMaxMs": 10.584
+  },
+  {
+    "targetOpsSec": 20000,
+    "actualOpsSec": 19988.888069182343,
+    "latencyP50Ms": 1.109,
+    "latencyP95Ms": 2.391,
+    "latencyP99Ms": 5.101,
+    "latencyMaxMs": 13.95
+  },
+  {
+    "targetOpsSec": 30000,
+    "actualOpsSec": 29983.592807904344,
+    "latencyP50Ms": 1.198,
+    "latencyP95Ms": 2.321,
+    "latencyP99Ms": 3.939,
+    "latencyMaxMs": 12.806
+  },
+  {
+    "targetOpsSec": 40000,
+    "actualOpsSec": 39972.239992772236,
+    "latencyP50Ms": 1.228,
+    "latencyP95Ms": 2.135,
+    "latencyP99Ms": 3.503,
+    "latencyMaxMs": 12.437
+  },
+  {
+    "targetOpsSec": 50000,
+    "actualOpsSec": 44887.602547555274,
+    "latencyP50Ms": 1.222,
+    "latencyP95Ms": 2.089,
+    "latencyP99Ms": 3.099,
+    "latencyMaxMs": 12.671
+  },
+  {
+    "targetOpsSec": 60000,
+    "actualOpsSec": 42957.65225547861,
+    "latencyP50Ms": 1.241,
+    "latencyP95Ms": 2.16,
+    "latencyP99Ms": 3.307,
+    "latencyMaxMs": 13.155
+  },
+  {
+    "targetOpsSec": 70000,
+    "actualOpsSec": 42660.10519461735,
+    "latencyP50Ms": 1.247,
+    "latencyP95Ms": 2.187,
+    "latencyP99Ms": 3.305,
+    "latencyMaxMs": 18.188
+  },
+  {
+    "targetOpsSec": 80000,
+    "actualOpsSec": 42325.722347090894,
+    "latencyP50Ms": 1.247,
+    "latencyP95Ms": 2.181,
+    "latencyP99Ms": 3.432,
+    "latencyMaxMs": 12.565
+  }
+]
