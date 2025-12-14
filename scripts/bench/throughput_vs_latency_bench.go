@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"runtime/pprof"
+
 	"github.com/dicedb/dicedb-go"
 	"github.com/dicedb/dicedb-go/wire"
 )
@@ -26,22 +28,25 @@ type ResultPoint struct {
 
 func main() {
 	var (
-		host      = flag.String("host", "localhost", "server host")
-		port      = flag.Int("port", 7379, "server port")
-		startRate = flag.Int("start-rate", 1000, "starting requests per second")
-		endRate   = flag.Int("end-rate", 50000, "maximum requests per second")
-		stepRate  = flag.Int("step-rate", 5000, "increment of requests per second per step")
-		duration  = flag.Duration("step-duration", 10*time.Second, "duration of each step")
-		conns     = flag.Int("conns", 50, "number of concurrent connections")
-		payload   = flag.Int("payload", 64, "payload size in bytes")
-		cmdName   = flag.String("cmd", "SET", "command to use (SET, GET)")
+		host        = flag.String("host", "localhost", "server host")
+		port        = flag.Int("port", 7379, "server port")
+		startRate   = flag.Int("start-rate", 1000, "starting requests per second")
+		endRate     = flag.Int("end-rate", 50000, "maximum requests per second")
+		stepRate    = flag.Int("step-rate", 5000, "increment of requests per second per step")
+		duration    = flag.Duration("step-duration", 10*time.Second, "duration of each step")
+		conns       = flag.Int("conns", 50, "number of concurrent connections")
+		payload     = flag.Int("payload", 64, "payload size in bytes")
+		cmdName     = flag.String("cmd", "SET", "command to use (SET, GET). Ignored if ratio is set.")
+		ratio       = flag.Float64("ratio", 0.0, "ratio of GET operations (0.0=all SET, 1.0=all GET). Overrides -cmd.")
+		cpuProfile  = flag.String("cpu-profile", "", "write cpu profile to file")
+		profileRate = flag.Int("profile-rate", 0, "target ops/sec rate at which to capture cpu profile")
 	)
 	flag.Parse()
 
 	fmt.Printf("Throughput vs Latency Benchmark\n")
 	fmt.Printf("Host: %s:%d\n", *host, *port)
 	fmt.Printf("Rate: %d to %d, step %d\n", *startRate, *endRate, *stepRate)
-	fmt.Printf("Conns: %d, Duration per step: %s, Payload: %dB, Cmd: %s\n", *conns, *duration, *payload, *cmdName)
+	fmt.Printf("Conns: %d, Duration per step: %s, Payload: %dB, Ratio: %.2f\n", *conns, *duration, *payload, *ratio)
 
 	var curve []ResultPoint
 
@@ -67,7 +72,26 @@ func main() {
 	for rate := *startRate; rate <= *endRate; rate += *stepRate {
 		fmt.Printf("Testing Target Rate: %d ops/sec...", rate)
 
-		res := runStep(clients, rate, *duration, keyPrefix, value, *cmdName)
+		// Start CPU profiling if configured and we are at the target rate
+		if *cpuProfile != "" && *profileRate > 0 && rate >= *profileRate && rate < *profileRate+*stepRate {
+			f, err := os.Create(*cpuProfile)
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Printf(" [Profiling CPU to %s] ", *cpuProfile)
+			pprof.StartCPUProfile(f)
+			defer pprof.StopCPUProfile() // Safety deferred
+		}
+
+		res := runStep(clients, rate, *duration, keyPrefix, value, *ratio, *cmdName)
+
+		if *cpuProfile != "" && *profileRate > 0 && rate >= *profileRate && rate < *profileRate+*stepRate {
+			pprof.StopCPUProfile()
+			fmt.Printf(" [Profile stopped] ")
+			// Disable profiling for subsequent steps so we don't overwrite or error
+			*profileRate = -1
+		}
+
 		curve = append(curve, res)
 
 		fmt.Printf(" done. Actual: %.2f ops/sec, P99 Latency: %.2f ms\n", res.ActualThroughput, res.LatencyP99Ms)
@@ -91,7 +115,7 @@ func main() {
 	fmt.Println("\nResults saved to throughput_vs_latency.json")
 }
 
-func runStep(clients []*dicedb.Client, targetTotalRate int, duration time.Duration, keyPrefix, value, cmdName string) ResultPoint {
+func runStep(clients []*dicedb.Client, targetTotalRate int, duration time.Duration, keyPrefix, value string, ratio float64, defaultCmd string) ResultPoint {
 	var wg sync.WaitGroup
 	numClients := len(clients)
 	ratePerClient := float64(targetTotalRate) / float64(numClients)
@@ -143,7 +167,21 @@ func runStep(clients []*dicedb.Client, targetTotalRate int, duration time.Durati
 				// Execute Op
 				key := fmt.Sprintf("%s%d", keyPrefix, id) // Simple key strategy
 				var err error
-				if cmdName == "SET" {
+
+				isGet := false
+				if ratio > 0 {
+					// Deterministic ratio check
+					// e.g. ratio 0.9 (90% GET): ops % 100 < 90
+					if float64(ops%100) < ratio*100.0 {
+						isGet = true
+					}
+				} else {
+					if defaultCmd == "GET" {
+						isGet = true
+					}
+				}
+
+				if !isGet {
 					wcmd := &wire.Command{Cmd: "SET", Args: []string{key, value}}
 					resp := c.Fire(wcmd)
 					if resp == nil || resp.Status == wire.Status_ERR {
